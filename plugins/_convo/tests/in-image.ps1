@@ -1,8 +1,8 @@
 param(
     [ValidateSet('agentspine-standard-v9.9','agent-zero-v2.11')]
-    [string]$SourceContainer = 'agentspine-standard-v9.9',
+    [string]$SourceContainer = 'agent-zero-v2.11',
     [ValidatePattern('^convo-test-[a-zA-Z0-9-]+$')]
-    [string]$Name = ('convo-test-' + [Guid]::NewGuid().ToString('N').Substring(0,12)),
+    [string]$Name = 'convo-test-v211-doctor-20260908',
     [switch]$Reuse
 )
 $ErrorActionPreference = 'Stop'
@@ -33,7 +33,9 @@ $runArgs = @('run','--name',$Name,'--pull','never','--network','none','--read-on
     '--workdir','/git/agent-zero','--entrypoint','/opt/venv-a0/bin/python',$imageId,
     '/git/agent-zero/plugins/_convo/tests/in_image.py')
 Write-Host "Testing $SourceContainer image $imageId without starting that container."
-if ($Reuse) {
+$existingId = docker ps -a --filter "name=^/$Name$" --format '{{.ID}}'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inventory the named reusable fixture.' }
+if ($Reuse -or $existingId) {
     $existing = docker inspect $Name | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or !$existing) { throw 'Named test container does not exist.' }
     $container = $existing[0]

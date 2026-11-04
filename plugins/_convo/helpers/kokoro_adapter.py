@@ -4,6 +4,7 @@ import base64
 import importlib
 import importlib.util
 import io
+import math
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ def _resolve_local_device(policy: str) -> tuple[str, str]:
 @lifecycle.owned_patch('kokoro', [('plugins._kokoro_tts.helpers.runtime', (
     'normalize_config', 'get_config', 'synthesize_sentences', 'is_downloaded',
     '_agentspine_convo_patched', '_agentspine_original_normalize_config',
+    '_agentspine_enhanced_speech_patched',
     '_agentspine_original_get_config', '_agentspine_original_synthesize_sentences',
     '_agentspine_original_is_downloaded'))])
 def patch_runtime() -> bool:
@@ -101,11 +103,12 @@ def patch_runtime() -> bool:
         if cfg.get("remote_enabled"):
             remote_url = str(cfg.get("remote_url") or "")
             try:
+                voice, secondary, blend = remote_voice_pair(cfg)
                 result = await remote_worker.synthesize(
                     sentences=sentences,
-                    voice=str(cfg["voice"]),
-                    secondary_voice=str(cfg.get("secondary_voice") or ""),
-                    voice_blend=int(cfg.get("voice_blend") or 50),
+                    voice=voice,
+                    secondary_voice=secondary,
+                    voice_blend=blend,
                     speed=float(cfg.get("speed") or 1.1),
                     remote_url=remote_url,
                     remote_token=str(cfg.get("remote_token") or ""),
@@ -134,6 +137,7 @@ def patch_runtime() -> bool:
     runtime.synthesize_sentences = synthesize_sentences
     runtime.is_downloaded = is_downloaded
     runtime._agentspine_convo_patched = True
+    runtime._agentspine_enhanced_speech_patched = True
     return True
 
 
@@ -153,7 +157,7 @@ async def _ensure_pipeline_for_device(runtime: Any, cfg: dict[str, Any]) -> None
         if getattr(runtime, 'is_updating_model', False) or getattr(runtime, '_pipeline', None) is not cfg.get('_convo_pipeline'):
             raise ValueError('Kokoro changed during this response; reselect after native loading completes')
         voices = getattr(runtime._pipeline, 'voices', {})
-        required = [str(cfg.get('voice') or ''), str(cfg.get('secondary_voice') or '')]
+        required = list(cfg.get('voice_weights') or {}) or [item.strip() for item in str(cfg.get('voice') or '').split(',') if item.strip()]
         if not isinstance(voices, dict) or any(voice and voice not in voices for voice in required):
             raise ValueError('Prepare the selected Kokoro voices through native preview first; Convo does not download voice embeddings')
         return
@@ -192,11 +196,14 @@ async def _synthesize_local(runtime: Any, sentences: list[str], cfg: dict[str, A
     pipeline = cfg.get('_convo_pipeline') if cfg.get('_convo_no_load') else runtime._pipeline
     combined_audio: list[float] = []
     voice = str(cfg.get("voice") or "am_michael")
-    secondary = str(cfg.get("secondary_voice") or "").strip()
     speed = float(cfg.get("speed") or 1.1)
     voice_value: Any = voice
 
-    if secondary:
+    weights = cfg.get("voice_weights") or {}
+    resolver = getattr(runtime, "_resolve_voice", None)
+    if callable(resolver):
+        voice_value = resolver(pipeline, voice, weights)
+    elif weights:
         load_voice = getattr(pipeline, "load_voice", None)
         if not callable(load_voice):
             # Older Kokoro releases used this name.  Current Kokoro exposes
@@ -205,10 +212,11 @@ async def _synthesize_local(runtime: Any, sentences: list[str], cfg: dict[str, A
             load_voice = getattr(pipeline, "load_single_voice", None)
         if not callable(load_voice):
             raise RuntimeError("The installed Kokoro runtime cannot load voice embeddings.")
-        v1 = load_voice(voice)
-        v2 = load_voice(secondary)
-        ratio = max(1, min(99, int(cfg.get("voice_blend") or 50))) / 100.0
-        voice_value = v1 * ratio + v2 * (1.0 - ratio)
+        total = sum(weights.values())
+        voice_value = None
+        for voice_id, weight in weights.items():
+            pack = load_voice(voice_id) * (weight / total)
+            voice_value = pack if voice_value is None else voice_value + pack
 
     for sentence in sentences:
         if not sentence.strip():
@@ -227,3 +235,20 @@ async def _synthesize_local(runtime: Any, sentences: list[str], cfg: dict[str, A
     buffer = io.BytesIO()
     sf.write(buffer, combined_audio, 24000, format="WAV")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def remote_voice_pair(cfg: dict[str, Any]) -> tuple[str, str, int]:
+    """Reject blends the existing integer-percent worker cannot represent."""
+    weights = cfg.get("voice_weights") or dict.fromkeys(
+        (item.strip() for item in str(cfg.get("voice") or "").split(",") if item.strip()), 1.0
+    )
+    if not 1 <= len(weights) <= 2:
+        raise ValueError("Remote Kokoro supports one or two voices. Select at most two voices or use local mode.")
+    voices = list(weights)
+    if len(voices) == 1:
+        return voices[0], "", 100
+    percentage = 100.0 * weights[voices[0]] / sum(weights.values())
+    blend = round(percentage)
+    if not 1 <= blend <= 99 or not math.isclose(percentage, blend, rel_tol=0, abs_tol=1e-9):
+        raise ValueError("Remote Kokoro supports whole-number blend percentages from 1 to 99. Use an exact ratio or local mode.")
+    return voices[0], voices[1], blend

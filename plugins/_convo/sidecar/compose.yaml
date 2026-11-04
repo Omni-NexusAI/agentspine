@@ -8,11 +8,14 @@ services:
     environment:
       CONVO_SIDECAR_TOKEN: ${CONVO_SIDECAR_TOKEN:?Set a fresh token shared with the host}
       CONVO_AUDIO_TOKEN: ${CONVO_AUDIO_TOKEN:-}
+      CONVO_DATA_DIR: /convo-data
     networks:
       - host-network
     extra_hosts:
       - host.docker.internal:host-gateway
     read_only: true
+    volumes:
+      - convo-data:/convo-data
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]
@@ -48,6 +51,7 @@ services:
               capabilities: [gpu]
     # Separate explicit profile. Startup loads no model and downloads nothing.
 volumes:
+  convo-data:
   convo-models:
   convo-voices:
 networks:

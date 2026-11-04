@@ -1,5 +1,14 @@
-<div x-data class="right-canvas-surface-panel" data-surface-id="convo" x-show="$store.rightCanvas?.activeSurfaceId === 'convo'">
-  <template x-if="$store.rightCanvas?.mountedSurfaces?.convo">
-    <x-component path="/plugins/_convo/webui/main.html"></x-component>
+<div
+  class="right-canvas-surface-panel convo-canvas-surface"
+  data-surface-id="convo"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('convo'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('convo')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('convo')).toString()"
+  x-effect="$store.convo && ($store.convo.panelOpen = !!$store.rightCanvas?.isSurfaceVisible('convo'))"
+>
+  <template x-if="$store.rightCanvas?.isSurfaceMounted('convo')">
+    <x-component path="/plugins/_convo/webui/main.html" mode="canvas"></x-component>
   </template>
 </div>

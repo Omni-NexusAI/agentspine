@@ -136,7 +136,8 @@ def get_capabilities() -> dict[str, Any]:
     tts_options = list(stt_options)
 
     try:
-        from plugins._convo.helpers import remote_tts
+        prefix = 'usr.plugins' if Path(__file__).resolve().parents[2].parent.name == 'usr' else 'plugins'
+        remote_tts = importlib.import_module(prefix + '._convo.helpers.remote_tts')
 
         tts_options = remote_tts.ensure_remote_tts_option(tts_options, getattr(settings, "_settings", None))
     except Exception:

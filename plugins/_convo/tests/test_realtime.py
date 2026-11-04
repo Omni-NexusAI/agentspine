@@ -56,7 +56,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules, {'helpers.ws': module_stub}):
             # Do not leave host stubs behind for any neighboring tests.
             self.module = importlib.import_module('plugins._convo.api.realtime')
-        self.patch = patch.object(self.module, 'modules', return_value=(types.SimpleNamespace(settings=lambda:self.config, service=lambda:self.service), convo_policy, types.SimpleNamespace(Sidecar=SidecarStub)))
+        self.patch = patch.object(self.module, 'modules', return_value=(types.SimpleNamespace(__package__='plugins._convo.helpers', settings=lambda:self.config, service=lambda:self.service), convo_policy, types.SimpleNamespace(Sidecar=SidecarStub)))
         self.patch.start(); self.handler = self.module.Realtime()
         response = await self.handler.process('convo.start', {'target':'a'}, 'browser')
         self.session = response['session']; self.ids = {'session_id':self.session['id'], 'epoch':self.session['epoch']}
@@ -84,6 +84,53 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('assistant', self.store.context('a')['turns'][0]['content'])
         await self.handler.process('convo.playback', {**self.ids, 'turn_id':'t', 'phrase_id':phrase}, 'browser')
         self.assertEqual(self.store.context('a')['turns'][0]['content']['assistant'], 'A complete answer.')
+
+    async def test_incremental_phrase_waits_for_verified_end_before_completion_ack(self):
+        state = self.handler.connections['browser']
+        self.store.accept_turn(self.session['id'], 'browser', 0, 'pcm', {'transcript': 'Question'})
+        released = asyncio.Event()
+        async def chunks(role, text):
+            yield {'audio': b'\0\0', 'format': 'pcm_s16le', 'sample_rate': 24000, 'channels': 1}
+            await released.wait()
+        state['sidecar'].speech_stream = chunks
+        task = asyncio.create_task(self.handler._speak('browser', state, self.session, 'pcm', 'Answer', {'capabilities': {'native_pcm': True}}))
+        await asyncio.sleep(0)
+        phrase = next(iter(state['phrases']))
+        result = await self.handler.process('convo.playback', {**self.ids, 'turn_id':'pcm', 'phrase_id':phrase}, 'browser')
+        self.assertTrue(result['incomplete'])
+        self.assertNotIn('assistant', self.store.context('a')['turns'][0]['content'])
+        released.set(); await task
+        self.assertEqual([event[2]['type'] for event in self.handler.sent], ['audio.begin', 'audio.chunk', 'audio.end'])
+        await self.handler.process('convo.playback', {**self.ids, 'turn_id':'pcm', 'phrase_id':phrase}, 'browser')
+        self.assertEqual(self.store.context('a')['turns'][0]['content']['assistant'], 'Answer')
+
+    async def test_truncated_incremental_phrase_aborts_and_cannot_be_delivered(self):
+        state = self.handler.connections['browser']
+        async def chunks(role, text):
+            yield {'audio': b'\0\0', 'format':'pcm_s16le', 'sample_rate':24000, 'channels':1}
+            raise ValueError('Missing terminal receipt')
+        state['sidecar'].speech_stream = chunks
+        with self.assertRaises(ValueError):
+            await self.handler._speak('browser', state, self.session, 'pcm', 'Answer', {'capabilities': {'native_pcm':True}})
+        self.assertEqual(state['phrases'], {})
+        self.assertEqual(self.handler.sent[-1][2]['type'], 'audio.abort')
+        self.assertFalse(any(event[2]['type'] == 'audio.end' for event in self.handler.sent))
+
+    async def test_selected_system_one_never_falls_back_when_unregistered(self):
+        await self.handler.on_disconnect('browser')
+        self.config['system_one'] = {'enabled':True, 'backend':'unavailable'}
+        refusal = await self.handler.process('convo.start', {'target':'a'}, 'browser')
+        self.assertEqual((refusal['ok'], refusal['refused']), (False, True))
+        self.assertRegex(refusal['message'], 'not registered')
+        self.assertEqual(self.handler.connections, {})
+
+    async def test_ambient_remote_main_audio_requires_separate_consent(self):
+        await self.handler.on_disconnect('browser')
+        self.config['ambient_enabled'] = True
+        self.config['roles']['conversation']['remote'] = True
+        refusal = await self.handler.process('convo.start', {'target':'a', 'mode':'ambient'}, 'browser')
+        self.assertFalse(refusal['ok'])
+        self.assertRegex(refusal['message'], 'separate explicit opt-in')
 
     async def test_delayed_transcript_updates_original_target_after_retarget(self):
         await self.turn()

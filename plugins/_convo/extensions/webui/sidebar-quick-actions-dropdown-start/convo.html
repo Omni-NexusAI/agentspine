@@ -1,2 +1,2 @@
-<div x-data><button class="dropdown-item" @click="$store.convo.show(); dropdownOpen = false" title="Convo">
+<div x-data><button class="dropdown-item" @click="import('/plugins/_convo/webui/convo-store.js').then(m => m.store.show()); dropdownOpen = false" title="Convo">
 <span class="material-symbols-outlined">graphic_eq</span><span>Convo</span></button></div>

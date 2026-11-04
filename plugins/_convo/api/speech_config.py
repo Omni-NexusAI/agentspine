@@ -152,6 +152,11 @@ def _runtime_config(helper) -> dict:
 
 
 def _save_runtime_config(helper, requested: dict) -> dict:
+    with helper._transactions().lock():
+        return _save_runtime_config_locked(helper, requested)
+
+
+def _save_runtime_config_locked(helper, requested: dict) -> dict:
     normalized = helper.normalize_kokoro_config({**_runtime_config(helper), **requested})
 
     provider_path = _plugin_config_path("_kokoro_tts")

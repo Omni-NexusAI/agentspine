@@ -138,7 +138,8 @@ def _lifecycle():
 
 @_lifecycle().owned_patch('remote', [
     ('helpers.build_type', ('get_tts_device_options', 'get_tts_defaults')),
-    ('helpers.settings', ('get_tts_device_options', 'get_tts_defaults', 'get_settings', '_agentspine_convo_patched'))])
+    ('helpers.settings', ('get_tts_device_options', 'get_tts_defaults', 'get_settings', '_agentspine_convo_patched',
+                          '_agentspine_enhanced_speech_patched'))])
 def patch_runtime() -> bool:
     """Install optional remote-worker defaults when this host exposes them.
 
@@ -174,5 +175,6 @@ def patch_runtime() -> bool:
     settings_module.get_tts_defaults = patched_defaults
     settings_module.get_settings = patched_get_settings
     settings_module._agentspine_convo_patched = True
+    settings_module._agentspine_enhanced_speech_patched = True
 
     return True

@@ -1,7 +1,15 @@
 // These module locations changed between A0 1.2 and 2.7.  Do not use static
-// imports: a missing optional recorder store must leave the host recorder
-// intact instead of failing the complete extension bundle.
+// imports of host modules: a missing optional recorder store must leave the
+// host recorder intact instead of failing the complete extension bundle. The
+// one static import is Convo's own pure dictation module.
+import { continuousDraft } from "../../../webui/dictation.js";
+
 let callJsonApi = null;
+// The host's composer append (index.js `updateChatInput`: adds the text with a separating space). Continuous drafting needs it;
+// without it (older hosts) every transcript goes to the host as before.
+let updateChatInput = null;
+// Convo's drafting flag (`voice_message_draft`, refreshed by Convo's status poll and by its settings card). Read per phrase.
+let convoDraftFlag = () => globalThis.Alpine?.store?.("convo")?.settings?.voice_message_draft;
 let speechStore = null;
 let microphoneSettingStore = null;
 let microphonePatchTarget = null;
@@ -130,6 +138,9 @@ async function loadHostBindings() {
 
       callJsonApi = api.callJsonApi;
       transcriptionEndpoint = "/plugins/_whisper_stt/transcribe";
+      // The same module the host's Whisper store imports its composer helpers from (never a second copy of it).
+      const composer = await import("/index.js").catch(() => null);
+      updateChatInput = typeof composer?.updateChatInput === "function" ? composer.updateChatInput : null;
       microphonePatchTarget = store;
       microphoneSettingStore = {
         getSelectedDevice: () => store.getSelectedDevice(),
@@ -249,6 +260,28 @@ class EnhancedMicrophoneInput {
     this.analysisFrame = null;
     this.stopPromise = null;
     this.mimeType = "";
+    // Convo's hold-to-dictate (orb gesture). `manual`: the recorder records unconditionally while a press is held instead of
+    // waiting for voice and silence. `cancelled`: nothing already recorded may reach the host. `lastOutcome`: what the last
+    // transcription did ("delivered" | "empty" | "silent" | "cancelled" | "error"), so Convo can say so when nothing arrives.
+    this.manual = false;
+    this.cancelled = false;
+    this.lastOutcome = null;
+    this.heardSpeech = false;
+    this.analysisFrames = 0;
+    // Continuous drafting. `owner`: the host speech store this recorder serves (its message_mode and finalTranscriptHandler).
+    // `phrasesAdded`: phrases this dictation added to the composer. `appendGate`: after a manual send, a phrase that finishes
+    // transcribing waits on it, so it lands in the composer the send has emptied instead of being wiped with the sent text.
+    this.owner = null;
+    this.phrasesAdded = 0;
+    this.appendGate = null;
+  }
+
+  // Whether the next final transcript is added to the composer while listening goes on (see continuousDraft in dictation.js).
+  continuousDraft() {
+    if (typeof updateChatInput !== "function") return false;
+    let flag = "";
+    try { flag = convoDraftFlag(); } catch {}
+    return continuousDraft({ flag, messageMode: this.owner?.config?.message_mode, handler: this.owner?.finalTranscriptHandler });
   }
 
   get status() {
@@ -261,6 +294,9 @@ class EnhancedMicrophoneInput {
     this._status = newStatus;
     this.handleStatusChange(oldStatus, newStatus);
     microphoneStatusChanged?.();
+    // Convo follows the recorder: when the host itself ends dictation (its draft voice-message mode stops after one utterance),
+    // the orb must say so. Observation only; a failing observer never affects the recorder.
+    try { this.onConvoStatus?.(newStatus); } catch {}
   }
 
   async initialize() {
@@ -399,8 +435,10 @@ class EnhancedMicrophoneInput {
       const rms = Math.sqrt(sum / dataArray.length);
       const now = Date.now();
 
+      this.analysisFrames += 1;
       if (rms > this.densify(speechStore.stt_silence_threshold)) {
         this.lastAudioTime = now;
+        this.heardSpeech = true;
         this.silenceStartTime = null;
 
         if (
@@ -409,7 +447,7 @@ class EnhancedMicrophoneInput {
         ) {
           this.status = Status.RECORDING;
         }
-      } else if (this.status === Status.RECORDING) {
+      } else if (this.status === Status.RECORDING && !this.manual) {
         if (!this.silenceStartTime) this.silenceStartTime = now;
 
         const silenceDuration = now - this.silenceStartTime;
@@ -470,6 +508,7 @@ class EnhancedMicrophoneInput {
     const size = this.audioChunks.reduce((total, chunk) => total + chunk.size, 0);
     if (size < MIN_AUDIO_BYTES) {
       console.debug("[Enhanced Speech] Ignoring empty or tiny recording", size);
+      this.lastOutcome = "empty";
       this.audioChunks = [];
       this.status = Status.LISTENING;
       return;
@@ -485,15 +524,25 @@ class EnhancedMicrophoneInput {
       });
       const text = this.filterResult(result.text || "");
 
-      if (text) {
+      if (this.cancelled) {
+        // Dictation was cancelled while this was being transcribed: the host never sees the text.
+        this.lastOutcome = "cancelled";
+      } else if (text) {
         console.log("[Enhanced Speech] Transcription:", result.text);
-        await this.updateCallback(result.text, true);
+        const handled = await this.updateCallback(result.text, true);
+        this.lastOutcome = handled === "cancelled" ? "cancelled" : "delivered";
+      } else {
+        this.lastOutcome = "empty";
       }
     } catch (error) {
+      this.lastOutcome = "error";
       notifyTranscriptionError(error);
     } finally {
       this.audioChunks = [];
-      this.status = Status.LISTENING;
+      // Back to listening for the next utterance (continuous drafting always comes back here), unless the host stopped dictation
+      // while handling this one (draft mode calls its own stop() from sendVoiceMessage): a stopped recorder must not start
+      // listening again by itself.
+      if (this.status !== Status.INACTIVE) this.status = Status.LISTENING;
     }
   }
 
@@ -517,22 +566,72 @@ class EnhancedMicrophoneInput {
     if (!hasPermission) return;
 
     if (this.status === Status.INACTIVE || this.status === Status.ACTIVATING) {
+      this.phrasesAdded = 0;
+      this.appendGate = null;
       this.status = Status.LISTENING;
+    } else if (this.owner?.microphoneInput === this && typeof this.owner.stop === "function") {
+      // The host's own contract for a second microphone click: its stop() releases the stream and clears its handler. A phrase
+      // already being transcribed still arrives; the one being recorded is dropped, as with the host's own recorder.
+      this.owner.stop();
     } else {
       this.status = Status.INACTIVE;
     }
   }
 
+  // Convo hold-to-dictate. Starts recording at once and keeps recording until finish/discard, whatever the silence (push-to-talk).
+  // The capture is the one this recorder already owns: no second stream is opened, and the host's permission probe is skipped
+  // because initialize() has already been granted the device.
+  async startManual() {
+    this.cancelled = false;
+    this.heardSpeech = false;
+    this.analysisFrames = 0;
+    this.phrasesAdded = 0;
+    this.appendGate = null;
+    this.manual = true;
+    if (this.status === Status.INACTIVE || this.status === Status.ACTIVATING) this.status = Status.LISTENING;
+    if (this.status !== Status.RECORDING) this.status = Status.RECORDING;
+  }
+
+  // Held -> released: the same recording carries on under the host's own voice and silence rules (latched dictation). If nothing
+  // has been said yet, discard the silence recorded so far rather than send it to speech-to-speech.
+  setManual(flag) {
+    flag = Boolean(flag);
+    if (this.manual === flag) return;
+    this.manual = flag;
+    if (!flag && this.status === Status.RECORDING && !this.heardSpeech) {
+      this.silenceStartTime = null;
+      this.status = Status.LISTENING;
+    }
+  }
+
+  // Stop dictating and hand over what was said, exactly like the host's voice button would. Resolves to what happened, so the
+  // caller can say so when nothing arrived.
   async finishConvoDictation() {
     this.stopAudioAnalysis();
     if (this.waitingTimer) { clearTimeout(this.waitingTimer); this.waitingTimer = null; }
+    this.lastOutcome = null;
     try {
       if (this.processingPromise) await this.processingPromise;
       else if (this.hasStartedRecording || this.audioChunks.length) {
-        this._status = Status.PROCESSING;
-        await this.process();
+        // A held recording of pure silence is not sent: speech-to-speech models invent words for silence. Only when the
+        // meter actually ran (a hidden page pauses it) and heard nothing.
+        if (this.manual && this.analysisFrames > 0 && !this.heardSpeech) this.lastOutcome = "silent";
+        else {
+          this._status = Status.PROCESSING;
+          await this.process();
+        }
       }
     } finally { this.dispose(); }
+    return this.lastOutcome;
+  }
+
+  // Cancel: whatever is recorded or being transcribed is dropped and never reaches the host.
+  discardConvoDictation() {
+    this.cancelled = true;
+    this.lastOutcome = "cancelled";
+    this.audioChunks = [];
+    this.dispose();
+    return this.lastOutcome;
   }
 
   async requestPermission() {
@@ -572,6 +671,35 @@ class EnhancedMicrophoneInput {
   }
 }
 
+// Where a final transcript goes. Continuous drafting adds it to the composer and keeps listening; nothing is sent. Otherwise it
+// goes to the host exactly as the host's own recorder hands it over: deliverVoiceMessage (which honours a host finalTranscriptHandler,
+// then leaves the text in the composer or sends it, as its message_mode says), or the older hosts' send path.
+async function deliverTranscript(owner, input, text) {
+  if (input.continuousDraft()) {
+    if (input.appendGate) await input.appendGate;
+    if (input.cancelled) return "cancelled";                 // Escape while it waited: the phrase in progress is dropped
+    const phrase = String(text || "").trim();
+    if (!phrase) return "empty";
+    updateChatInput(phrase);
+    input.phrasesAdded += 1;
+    return "appended";
+  }
+  if (typeof owner?.deliverVoiceMessage === "function") await owner.deliverVoiceMessage(text);
+  else if (typeof owner?.sendMessage === "function") await owner.sendMessage(text);
+  else await speechStore.sendMessage(text);
+  return "delivered";
+}
+
+// The recorder Convo puts in the host's place, serving `owner` (the host speech store).
+function createConvoRecorder(owner) {
+  const input = new EnhancedMicrophoneInput(async (text, isFinal) => {
+    if (!isFinal) return null;
+    return deliverTranscript(owner, input, text);
+  });
+  input.owner = owner;
+  return input;
+}
+
 export default async function patchEnhancedSttRecorder() {
   const hostBindingsReady = await loadHostBindings();
   // Run this from the known-loaded `initFw_end` module. The bridge remains
@@ -592,14 +720,7 @@ export default async function patchEnhancedSttRecorder() {
   microphonePatchTarget.initMicrophone = async function initEnhancedMicrophone() {
     if (this.microphoneInput) return this.microphoneInput;
 
-    this.microphoneInput = new EnhancedMicrophoneInput(async (text, isFinal) => {
-      if (!isFinal) return;
-      if (typeof this.sendMessage === "function") {
-        await this.sendMessage(text);
-      } else {
-        await speechStore.sendMessage(text);
-      }
-    });
+    this.microphoneInput = createConvoRecorder(this);
 
     const initialized = await this.microphoneInput.initialize();
     if (!initialized) {
@@ -611,3 +732,19 @@ export default async function patchEnhancedSttRecorder() {
 
   console.log("[Enhanced Speech] STT recorder patch active");
 }
+
+// Test hook only: lets the node fixtures drive the recorder without the host modules.
+export const __test = {
+  EnhancedMicrophoneInput,
+  Status,
+  createConvoRecorder,
+  deliverTranscript,
+  configure(values) {
+    if ("speechStore" in values) speechStore = values.speechStore;
+    if ("microphoneSettingStore" in values) microphoneSettingStore = values.microphoneSettingStore;
+    if ("callJsonApi" in values) callJsonApi = values.callJsonApi;
+    if ("transcriptionEndpoint" in values) transcriptionEndpoint = values.transcriptionEndpoint;
+    if ("updateChatInput" in values) updateChatInput = values.updateChatInput;
+    if ("convoDraftFlag" in values) convoDraftFlag = values.convoDraftFlag;
+  },
+};

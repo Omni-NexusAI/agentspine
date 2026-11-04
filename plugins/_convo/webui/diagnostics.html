@@ -1,0 +1,335 @@
+<html><head><title>Convo diagnostics</title><script type="module">
+import { store as convo } from '/plugins/_convo/webui/convo-store.js';
+import { store as setup } from '/plugins/_convo/webui/setup-store.js';
+import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js';
+</script></head><body>
+<!-- Developer diagnostics (diagnostics-store.js, diagnostics-model.js). Every graphic has its words next to it; bars and meters are
+     aria-hidden and nothing here is a live region. Origin: written afresh after the diagnostics panel of Omni-NexusAI/speech-to-speech
+     (Apache-2.0); nothing is copied. -->
+<div class="convo-diag-host" x-data="{ uid: 'cd' + Math.random().toString(36).slice(2, 8), mode: (globalThis.xAttrs?.($el)?.mode === 'window' ? 'window' : 'canvas') }">
+<template x-if="$store.convoDiagnostics">
+<section class="convo-diag" :data-mode="mode" aria-label="Convo diagnostics" x-init="$store.convoDiagnostics.bindPanel($el)" x-destroy="$store.convoDiagnostics.unbindPanel($el)">
+
+  <header class="convo-diag-head">
+    <h2 x-show="mode === 'canvas'">Convo diagnostics</h2>
+    <p class="convo-diag-status" x-text="$store.convoDiagnostics.live?.session ? 'Voice session running · updated every second' : 'No voice session · updated every 4 seconds while shown'"></p>
+    <div class="convo-diag-actions">
+      <button type="button" class="button" @click="$store.convoDiagnostics.pollNow()"><span class="material-symbols-outlined" aria-hidden="true">refresh</span>Refresh</button>
+      <button type="button" class="button" data-diag-popout x-show="mode === 'canvas' && !$store.convoDiagnostics.floating" @click="$store.convoDiagnostics.popOut()"><span class="material-symbols-outlined" aria-hidden="true">open_in_new</span>Pop out</button>
+    </div>
+  </header>
+  <p class="convo-diag-error" role="alert" x-show="$store.convoDiagnostics.error"><span class="material-symbols-outlined" aria-hidden="true">error</span><span x-text="$store.convoDiagnostics.error"></span></p>
+
+  <template x-if="mode === 'canvas' && $store.convoDiagnostics.floating">
+    <div class="convo-diag-away">
+      <span class="material-symbols-outlined" aria-hidden="true">open_in_new</span>
+      <p>Diagnostics is open in its own window.</p>
+      <button type="button" class="button" data-diag-popout @click="$store.convoDiagnostics.dock()">Dock it here</button>
+    </div>
+  </template>
+
+  <template x-if="!(mode === 'canvas' && $store.convoDiagnostics.floating)">
+  <div class="convo-diag-body">
+
+    <!-- 1. Live strip -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.live)" :aria-controls="uid + '-live'" @click="$store.convoDiagnostics.toggle('live')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Live</button></h3>
+      <div :id="uid + '-live'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.live">
+        <template x-for="live in [$store.convoDiagnostics.live || {}]" :key="'live'">
+          <div class="convo-diag-stack">
+            <div class="convo-diag-tiles">
+              <div class="convo-diag-tile"><span class="convo-diag-k">State</span><span class="convo-diag-v"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.session ? 'graphic_eq' : 'mic_off'"></span><span x-text="live.state || 'Not started'"></span></span></div>
+              <div class="convo-diag-tile convo-diag-meter" data-diag-level="input"><span class="convo-diag-k">Microphone level</span><span class="convo-diag-bar" aria-hidden="true"><i></i></span><span class="convo-diag-v" data-diag-level-text>0%</span></div>
+              <div class="convo-diag-tile convo-diag-meter" data-diag-level="output"><span class="convo-diag-k">Playback level</span><span class="convo-diag-bar" aria-hidden="true"><i></i></span><span class="convo-diag-v" data-diag-level-text>0%</span></div>
+              <div class="convo-diag-tile"><span class="convo-diag-k">Playback volume</span><span class="convo-diag-v"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.ducked ? 'volume_down' : 'volume_up'"></span><span x-text="(live.ducked ? 'Ducked' : 'Full') + (live.toggles ? ' · ducked ' + live.toggles + '×' : '')"></span></span></div>
+              <div class="convo-diag-tile"><span class="convo-diag-k">Decision hold</span><span class="convo-diag-v"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.hold ? 'pause_circle' : 'check_circle'"></span><span x-text="live.hold ? 'Waiting for the classifier' : 'Nothing pending'"></span></span></div>
+              <div class="convo-diag-tile"><span class="convo-diag-k">Queued audio</span><span class="convo-diag-v" x-text="live.playing || live.queued ? (live.playing ? 'Playing' : 'Idle') + ' · ' + (live.queued || 0) + ' queued' : 'Nothing playing'"></span></div>
+            </div>
+            <div class="convo-diag-echo">
+              <h4>Echo guard <small x-text="live.echoSetting ? '(' + live.echoSetting + ')' : ''"></small></h4>
+              <p class="convo-diag-note" x-show="live.echoSetting === 'off'">Off: only the browser's own echo cancellation runs.</p>
+              <p class="convo-diag-note" x-show="live.echoSetting !== 'off' && !live.echo">No readings yet: they arrive while a voice session runs and this panel is shown.</p>
+              <template x-if="live.echo">
+                <div class="convo-diag-stack">
+                  <p class="convo-diag-line"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.echo.acoustic === 'coupled' ? 'speaker' : live.echo.acoustic === 'uncoupled' ? 'headphones' : 'hourglass_top'"></span><span x-text="live.echo.acousticText"></span></p>
+                  <p class="convo-diag-line" :data-severity="live.echo.suppressing ? 'warning' : 'ok'"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.echo.suppressing ? 'mic_off' : 'mic'"></span><span x-text="live.echo.suppressing ? 'Withholding the microphone (echo, or speech not yet confirmed)' : 'Passing the microphone on'"></span></p>
+                  <div class="convo-diag-row">
+                    <span class="convo-diag-k">Your speech during playback</span>
+                    <span class="convo-diag-bar convo-diag-bar-floor" aria-hidden="true" :style="'--level:' + live.echo.progress + ';--floor:1'"><i></i><b></b></span>
+                    <span class="convo-diag-v" x-text="live.echo.candidateMs + ' of ' + live.echo.confirmMs + ' ms' + (live.echo.doubleTalk ? ' · confirmed' : '')"></span>
+                  </div>
+                  <div class="convo-diag-row">
+                    <span class="convo-diag-k">Last 60 readings</span>
+                    <span class="convo-diag-ring" aria-hidden="true"><template x-for="(on, index) in live.echo.samples" :key="index"><i :class="on ? 'is-on' : ''"></i></template></span>
+                    <span class="convo-diag-v" x-text="'Withheld in ' + live.echo.withheld + ' of ' + live.echo.samples.length"></span>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <p class="convo-diag-note" x-text="$store.convoDiagnostics.view?.clock ? 'Server times are placed on this page’s clock to within ±' + $store.convoDiagnostics.view.clock.uncertainty + ' ms.' : 'The server clock is not mapped yet; server steps appear after the first read.'"></p>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 2. Turns: a waterfall on one time axis, which is also a list -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.turns)" :aria-controls="uid + '-turns'" @click="$store.convoDiagnostics.toggle('turns')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Turns</button></h3>
+      <div :id="uid + '-turns'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.turns">
+        <p class="convo-diag-note" x-show="!$store.convoDiagnostics.view?.turns?.length">No turns yet. Each completed utterance, and speech that tried to interrupt, appears here.</p>
+        <div class="convo-diag-turns" role="group" aria-label="Recent turns" x-show="$store.convoDiagnostics.view?.turns?.length">
+          <template x-for="turn in ($store.convoDiagnostics.view?.turns || [])" :key="turn.turn">
+            <button type="button" class="convo-diag-turn" :aria-pressed="String($store.convoDiagnostics.view?.selected?.turn === turn.turn)" :data-severity="turn.worst" @click="$store.convoDiagnostics.select(turn.turn)">
+              <span class="material-symbols-outlined" aria-hidden="true" x-text="turn.worst === 'error' ? 'error' : turn.worst === 'warning' ? 'warning' : turn.final ? 'record_voice_over' : 'voice_over_off'"></span>
+              <span x-text="$store.convoDiagnostics.clockTime(turn.at) + ' · ' + turn.outcome + (turn.total ? ' · ' + $store.convoDiagnostics.ms(turn.total) : '') + (turn.worst ? ' · ' + turn.issues.length + ' issue' + (turn.issues.length === 1 ? '' : 's') : '')"></span>
+            </button>
+          </template>
+        </div>
+        <template x-for="sel in ($store.convoDiagnostics.view?.selected ? [$store.convoDiagnostics.view.selected] : [])" :key="sel.turn">
+          <div class="convo-diag-stack">
+            <p class="convo-diag-summary"><strong x-text="sel.outcome"></strong><span x-text="' · turn ' + sel.short + (sel.total ? ' · ' + $store.convoDiagnostics.ms(sel.total) + ' from first to last step' : '')"></span><span x-show="sel.slowest" x-text="' · slowest: ' + (sel.steps.find(step => step.slowest)?.label || '')"></span></p>
+            <p class="convo-diag-note" x-show="!sel.steps.length">No step has both of its ends recorded yet.</p>
+            <ol class="convo-diag-waterfall" x-show="sel.steps.length" :aria-label="'Steps of turn ' + sel.short">
+              <template x-for="step in sel.steps" :key="step.id">
+                <li :class="{ 'is-slowest': step.slowest, 'has-issue': step.issues.length }">
+                  <span class="convo-diag-step"><span x-text="step.label"></span><small x-show="step.slowest">slowest</small></span>
+                  <span class="convo-diag-track" aria-hidden="true"><i :style="'left:' + step.left + '%;width:' + step.width + '%'"></i></span>
+                  <span class="convo-diag-v" x-text="$store.convoDiagnostics.ms(step.ms, step.uncertainty)"></span>
+                  <template x-for="issue in step.issues" :key="issue.kind + issue.text"><span class="convo-diag-issue" :data-severity="issue.severity"><span class="material-symbols-outlined" aria-hidden="true" x-text="issue.icon"></span><span x-text="issue.text + (issue.count > 1 ? ' ×' + issue.count : '')"></span></span></template>
+                </li>
+              </template>
+            </ol>
+            <div class="convo-diag-axis" aria-hidden="true" x-show="sel.steps.length"><span>0</span><span x-text="$store.convoDiagnostics.ms(sel.total)"></span></div>
+            <ul class="convo-diag-issues" x-show="sel.issues.some(issue => !sel.steps.some(step => step.id === issue.step))" aria-label="Other events in this turn">
+              <template x-for="issue in sel.issues.filter(issue => !sel.steps.some(step => step.id === issue.step))" :key="issue.kind + issue.text"><li class="convo-diag-issue" :data-severity="issue.severity"><span class="material-symbols-outlined" aria-hidden="true" x-text="issue.icon"></span><span x-text="issue.text + (issue.count > 1 ? ' ×' + issue.count : '')"></span></li></template>
+            </ul>
+            <p class="convo-diag-note">Steps measured across the page and the server carry the clock uncertainty (±). Times are content-free marks; nothing said is recorded.</p>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 3. Speech gate -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.gate)" :aria-controls="uid + '-gate'" @click="$store.convoDiagnostics.toggle('gate')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Speech gate</button></h3>
+      <div :id="uid + '-gate'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.gate">
+        <p class="convo-diag-note" x-show="!$store.convoDiagnostics.view?.selected?.gate">No classifier decision recorded for the selected turn.</p>
+        <template x-for="gate in ($store.convoDiagnostics.view?.selected?.gate ? [$store.convoDiagnostics.view.selected.gate] : [])" :key="'gate'">
+          <div class="convo-diag-stack">
+            <p class="convo-diag-line" :data-severity="gate.decision.disposition === 'admit' ? 'ok' : 'info'"><span class="material-symbols-outlined" aria-hidden="true" x-text="gate.decision.disposition === 'admit' ? 'check_circle' : gate.decision.disposition === 'ignore' ? 'do_not_disturb_on' : 'pause_circle'"></span><span x-text="gate.decision.label + (gate.decision.speech ? ' · ' + gate.decision.speech : '') + (gate.final ? ' · completed utterance' : ' · while speaking') + (gate.mode ? ' · ' + gate.mode + ' listening' : '')"></span></p>
+            <p class="convo-diag-note" x-text="gate.calibrated ? 'Calibrated gate: decided from the classifier’s probabilities.' : 'Fixed thresholds: this classifier reports only a confidence (answer at 0.85, tools at 0.9), so there are no probabilities to show.'"></p>
+            <template x-if="gate.calibrated">
+              <div class="convo-diag-stack">
+                <h4>Attention</h4>
+                <ul class="convo-diag-bars">
+                  <template x-for="item in gate.attention" :key="item.id"><li>
+                    <span class="convo-diag-k" x-text="item.label + (item.top ? ' (most likely)' : '')"></span>
+                    <span class="convo-diag-bar" aria-hidden="true" :style="'--level:' + item.value"><i></i></span>
+                    <span class="convo-diag-v" x-text="$store.convoDiagnostics.prob(item.value)"></span>
+                  </li></template>
+                </ul>
+                <h4>Scores against their floors</h4>
+                <ul class="convo-diag-bars">
+                  <template x-for="item in gate.scores" :key="item.id"><li>
+                    <span class="convo-diag-k" x-text="item.label"></span>
+                    <span class="convo-diag-bar convo-diag-bar-floor" aria-hidden="true" :style="'--level:' + item.value + ';--floor:' + (item.floor ?? 0)"><i></i><b x-show="item.floor !== null"></b></span>
+                    <span class="convo-diag-v" :data-severity="item.floor === null ? '' : item.reached ? 'ok' : 'info'"><span class="material-symbols-outlined" aria-hidden="true" x-show="item.floor !== null" x-text="item.reached ? 'arrow_upward' : 'arrow_downward'"></span><span x-text="$store.convoDiagnostics.prob(item.value) + (item.floor === null ? '' : (item.reached ? ' ≥ ' : ' < ') + 'floor ' + $store.convoDiagnostics.prob(item.floor))"></span></span>
+                  </li></template>
+                </ul>
+                <p class="convo-diag-note">The answer floor is the one this decision used; the other floors are the current saved settings. Work with side effects always needs an explicit request at 0.9 or more.</p>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 4. Early reply (speculation) -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.speculation)" :aria-controls="uid + '-spec'" @click="$store.convoDiagnostics.toggle('speculation')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Early reply</button></h3>
+      <div :id="uid + '-spec'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.speculation">
+        <p class="convo-diag-note" x-show="!$store.convoDiagnostics.view?.turns?.length">No turns yet.</p>
+        <ul class="convo-diag-issues">
+          <template x-for="turn in ($store.convoDiagnostics.view?.turns || []).filter(item => item.final).slice(0, 8)" :key="'s' + turn.turn"><li class="convo-diag-chip" :data-state="turn.speculation.state"><span class="material-symbols-outlined" aria-hidden="true" x-text="turn.speculation.icon"></span><span x-text="$store.convoDiagnostics.clockTime(turn.at) + ' · ' + turn.speculation.text"></span></li></template>
+        </ul>
+        <p class="convo-diag-note">“Start the reply while the classifier decides” (Tune → Turn engine) starts the reply early and keeps it hidden until the turn is admitted.</p>
+      </div>
+    </section>
+
+    <!-- 5. Rolling p50/p90 and counts -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.rolling)" :aria-controls="uid + '-rolling'" @click="$store.convoDiagnostics.toggle('rolling')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Over recent turns</button></h3>
+      <div :id="uid + '-rolling'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.rolling">
+        <template x-for="roll in [$store.convoDiagnostics.view?.rolling || { steps: [], counts: [], decided: {}, turns: 0 }]" :key="'roll'">
+          <div class="convo-diag-stack">
+            <p class="convo-diag-note" x-text="roll.turns ? 'Middle (p50) and slow (p90) times over the last ' + roll.turns + ' turns in memory; the bar runs from p50 to p90.' : 'Nothing measured yet.'"></p>
+            <ul class="convo-diag-bars">
+              <template x-for="item in roll.steps" :key="'r' + item.id"><li>
+                <span class="convo-diag-k" x-text="item.label + ' (' + item.n + ')'"></span>
+                <span class="convo-diag-track" aria-hidden="true"><i :style="'left:' + item.from + '%;width:' + item.span + '%'"></i></span>
+                <span class="convo-diag-v" x-text="'p50 ' + $store.convoDiagnostics.ms(item.p50) + ' · p90 ' + $store.convoDiagnostics.ms(item.p90)"></span>
+              </li></template>
+            </ul>
+            <p class="convo-diag-line" x-show="roll.turns"><span class="material-symbols-outlined" aria-hidden="true">fact_check</span><span x-text="'Answered ' + (roll.decided.admit || 0) + ' · not for the assistant ' + (roll.decided.ignore || 0) + ' · held back ' + (roll.decided.withhold || 0) + ' · classifier failed ' + (roll.decided.failed || 0)"></span></p>
+            <ul class="convo-diag-issues" x-show="roll.counts.length">
+              <template x-for="item in roll.counts" :key="'c' + item.kind"><li class="convo-diag-issue" :data-severity="item.severity"><span class="material-symbols-outlined" aria-hidden="true" x-text="item.icon"></span><span x-text="item.n + ' ' + item.label"></span></li></template>
+            </ul>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 6. Context against the window -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.context)" :aria-controls="uid + '-context'" @click="$store.convoDiagnostics.toggle('context')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Context</button></h3>
+      <div :id="uid + '-context'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.context">
+        <template x-for="ctx in [$store.convoDiagnostics.view?.context || { latest: null, history: [], markers: [] }]" :key="'ctx'">
+          <div class="convo-diag-stack">
+            <p class="convo-diag-note" x-show="!ctx.latest">No reply has been prepared yet.</p>
+            <template x-if="ctx.latest">
+              <div class="convo-diag-stack">
+                <div class="convo-diag-row">
+                  <span class="convo-diag-k">Latest request</span>
+                  <span class="convo-diag-bar convo-diag-bar-floor" aria-hidden="true" :class="{ 'is-over': ctx.latest.over }" :style="'--level:' + Math.min(1, ctx.latest.ratio) + ';--floor:1'"><i></i><b></b></span>
+                  <span class="convo-diag-v" :data-severity="ctx.latest.over ? 'error' : ''" x-text="ctx.latest.used.toLocaleString() + ' of ' + ctx.latest.window.toLocaleString() + ' (' + Math.round(ctx.latest.ratio * 100) + '%)'"></span>
+                </div>
+                <p class="convo-diag-line" data-severity="error" x-show="ctx.latest.over"><span class="material-symbols-outlined" aria-hidden="true">data_usage</span><span>Over the window: the reply was refused. Raise the context tokens in Tune → Budgets or let compaction run.</span></p>
+                <div class="convo-diag-history" aria-hidden="true">
+                  <template x-for="item in ctx.history" :key="'h' + item.turn"><i :class="{ 'is-over': item.over }" :style="'height:' + item.height + '%'"></i></template>
+                  <template x-for="(mark, index) in ctx.markers" :key="'m' + index"><b :style="'left:' + mark.left + '%'"></b></template>
+                </div>
+                <p class="convo-diag-note" x-text="ctx.history.length + ' recent requests, oldest on the left; vertical lines are compactions.'"></p>
+              </div>
+            </template>
+            <ul class="convo-diag-issues" x-show="ctx.markers.length">
+              <template x-for="(mark, index) in ctx.markers" :key="'cm' + index"><li class="convo-diag-issue" data-severity="info"><span class="material-symbols-outlined" aria-hidden="true">compress</span><span x-text="'Compacted ' + (mark.exchanges ?? '?') + ' exchanges at ' + $store.convoDiagnostics.clockTime(mark.at)"></span></li></template>
+            </ul>
+            <p class="convo-diag-note">The size is Convo’s own estimate of each request (its bytes plus the response and audio reserves, an upper bound), checked before every reply. Compaction times come from the journal’s clock.</p>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- 7. Tune: the tunables, saved through the same revision-aware draft as Settings -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.tune)" :aria-controls="uid + '-tune'" @click="$store.convoDiagnostics.toggle('tune')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Tune</button></h3>
+      <div :id="uid + '-tune'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.tune">
+        <template x-if="$store.convoDiagnostics.sections.tune">
+          <div class="convo-diag-tune" x-init="$store.convoSetup?.load()" @input="$store.convoSetup && ($store.convoSetup.message = '')">
+            <p class="convo-diag-note" x-show="!$store.convoSetup?.config" role="status">Loading Convo settings…</p>
+            <template x-if="$store.convoSetup?.config">
+              <div class="convo-stack">
+                <x-component path="/plugins/_convo/webui/settings-banner.html"></x-component>
+                <p class="convo-hint">The same settings as Convo settings: an unsaved edit there and here is one draft, and a change saved elsewhere shows the banner above.</p>
+                <label>Echo protection<select x-model="$store.convoSetup.config.echo_guard"><template x-for="option in [['adaptive','Adaptive: ignore Convo’s own voice, allow interruptions'],['strict','Strict: ignore the microphone while Convo speaks'],['off','Off: browser echo cancellation only']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.echo_guard" x-text="option[1]"></option></template></select></label>
+                <p class="convo-hint">Also in Voice &amp; Audio. Takes effect the next time you start Convo.</p>
+                <x-component path="/plugins/_convo/webui/tuning-controls.html"></x-component>
+                <p role="alert" class="convo-error" x-show="$store.convoSetup.error" x-text="$store.convoSetup.error"></p>
+                <p role="status" class="convo-hint" x-show="$store.convoSetup.message" x-text="$store.convoSetup.message"></p>
+                <div class="convo-actions convo-diag-save">
+                  <button type="button" class="button convo-diag-primary" :disabled="!$store.convoSetup.dirty || $store.convoSetup.busy" @click="$store.convoSetup.save()" x-text="$store.convoSetup.busy ? 'Saving…' : 'Save changes'"></button>
+                  <button type="button" class="button" @click="$store.convoSetup.load(true)">Reload saved</button>
+                  <small x-show="$store.convoSetup.dirty">Unsaved changes</small>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </section>
+
+  </div>
+  </template>
+</section>
+</template>
+</div>
+<style>
+/* Theme-aware tokens: text >= 4.5:1 and graphics >= 3:1 on the host panel, canvas and background colours in both themes. */
+.convo-diag{--cd-muted:#c8c8c8;--cd-err:#ff8a80;--cd-warn:#f2b456;--cd-ok:#7fd6a0;--cd-info:#b9b1ff;--cd-accent:#78adff;--cd-track:#3f3f3f;--cd-tile:color-mix(in srgb,#fff 6%,var(--color-panel))}
+.light-mode .convo-diag{--cd-muted:#4a4a4a;--cd-err:#a3211a;--cd-warn:#7a4f00;--cd-ok:#1b6e3f;--cd-info:#4b3fa8;--cd-accent:#2a5fb0;--cd-track:#d6d6d6;--cd-tile:color-mix(in srgb,#333 6%,var(--color-panel))}
+.convo-diag-host{display:flex;flex:1 1 auto;width:100%;min-width:0;min-height:0}
+.convo-diag{display:flex;flex-direction:column;gap:.6rem;box-sizing:border-box;width:100%;min-width:0;padding:.75rem;overflow:auto;overscroll-behavior:contain;background:var(--color-panel);color:var(--color-text);font:inherit;font-size:.86rem;line-height:1.45}
+.convo-diag[data-mode=window]{overflow:visible;padding-bottom:2.2rem}
+.convo-diag *{box-sizing:border-box}
+.convo-diag h2{margin:0;font-size:1.05rem;letter-spacing:-.01em}
+.convo-diag h3{margin:0;font-size:inherit}
+.convo-diag h4{margin:.2rem 0 0;font-size:.8rem;font-weight:650;color:var(--cd-muted)}
+.convo-diag-head{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .75rem}
+.convo-diag-head h2{flex:1 1 100%}
+.convo-diag-status{flex:1 1 12rem;margin:0;color:var(--cd-muted);font-size:.8rem}
+.convo-diag-actions{display:flex;gap:.35rem;flex-wrap:wrap}
+.convo-diag .button{display:inline-flex;align-items:center;gap:.3rem;min-height:36px;white-space:normal}
+.convo-diag .button .material-symbols-outlined{font-size:1.1rem}
+.convo-diag .material-symbols-outlined{font-size:1.05rem;line-height:1;flex-shrink:0}
+.convo-diag-error,.convo-diag-line,.convo-diag-issue,.convo-diag-chip{display:flex;align-items:flex-start;gap:.4rem;margin:0;overflow-wrap:anywhere}
+.convo-diag-error{color:var(--cd-err)}
+.convo-diag-away{display:flex;flex-direction:column;align-items:center;gap:.5rem;padding:2rem .5rem;text-align:center;color:var(--cd-muted)}
+.convo-diag-away p{margin:0}
+.convo-diag-body,.convo-diag-stack{display:flex;flex-direction:column;gap:.55rem;min-width:0}
+.convo-diag-section{border:1px solid var(--color-border);border-radius:10px;min-width:0}
+.convo-diag-toggle{display:flex;align-items:center;gap:.4rem;width:100%;min-height:40px;padding:.4rem .6rem;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;font-weight:650;text-align:left;cursor:pointer}
+.convo-diag-toggle:hover{background:var(--color-background-hover,rgba(127,127,127,.12))}
+.convo-diag-chevron{transform:rotate(-90deg);transition:transform .15s ease}
+.convo-diag-toggle[aria-expanded=true] .convo-diag-chevron{transform:none}
+.convo-diag-content{padding:0 .65rem .7rem;min-width:0}
+.convo-diag-note{margin:0;color:var(--cd-muted);font-size:.78rem;overflow-wrap:anywhere}
+.convo-diag-k{color:var(--cd-muted);font-size:.76rem;min-width:0;overflow-wrap:anywhere}
+.convo-diag-v{display:inline-flex;align-items:center;gap:.3rem;font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:anywhere}
+.convo-diag-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.45rem}
+.convo-diag-tile{display:flex;flex-direction:column;gap:.25rem;min-width:0;padding:.45rem .55rem;border-radius:8px;background:var(--cd-tile)}
+.convo-diag-bar{position:relative;display:block;height:8px;min-width:60px;border-radius:4px;background:var(--cd-track);overflow:visible}
+.convo-diag-bar>i{position:absolute;left:0;top:0;bottom:0;width:100%;border-radius:4px;background:var(--cd-accent);transform-origin:left center;transform:scaleX(var(--level,0));transition:transform .2s linear}
+.convo-diag-bar-floor>b{position:absolute;top:-3px;bottom:-3px;left:calc(var(--floor,0) * 100%);width:2px;margin-left:-1px;background:var(--color-text);box-shadow:0 0 0 1px var(--color-panel)}
+.convo-diag-bar.is-over>i{background:var(--cd-err)}
+.convo-diag-row,.convo-diag-bars>li{display:grid;grid-template-columns:minmax(7rem,.9fr) minmax(60px,1.4fr) minmax(5.5rem,auto);align-items:center;gap:.5rem;min-width:0}
+.convo-diag-bars,.convo-diag-issues,.convo-diag-waterfall{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.4rem;min-width:0}
+.convo-diag-echo{display:flex;flex-direction:column;gap:.4rem;padding:.5rem .6rem;border-radius:8px;background:var(--cd-tile)}
+.convo-diag-echo h4{margin:0}
+.convo-diag-ring{display:grid;grid-template-columns:repeat(60,1fr);gap:1px;height:12px;min-width:60px}
+.convo-diag-ring>i{display:block;border-radius:1px;background:var(--cd-track)}
+.convo-diag-ring>i.is-on{background:var(--cd-warn)}
+.convo-diag-turns{display:flex;flex-wrap:wrap;gap:.35rem}
+.convo-diag-turn{display:inline-flex;align-items:center;gap:.3rem;max-width:100%;min-height:34px;padding:.25rem .55rem;border:1px solid var(--color-border);border-radius:999px;background:transparent;color:inherit;font:inherit;font-size:.78rem;text-align:left;cursor:pointer}
+.convo-diag-turn[aria-pressed=true]{border-color:var(--color-text);background:var(--cd-tile);font-weight:600}
+.convo-diag-summary{margin:0;overflow-wrap:anywhere}
+.convo-diag-waterfall>li{display:grid;grid-template-columns:minmax(7rem,.9fr) minmax(60px,1.6fr) minmax(4.5rem,auto);align-items:center;gap:.25rem .5rem;padding:.2rem .3rem;border-radius:6px}
+.convo-diag-waterfall>li.is-slowest{outline:2px solid var(--color-text);outline-offset:-1px}
+.convo-diag-step{display:flex;align-items:baseline;gap:.35rem;min-width:0}
+.convo-diag-step small{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.convo-diag-track{position:relative;display:block;height:10px;border-radius:3px;background:var(--cd-track);min-width:60px}
+.convo-diag-track>i{position:absolute;top:0;bottom:0;border-radius:3px;background:var(--cd-accent)}
+.convo-diag-waterfall>li>.convo-diag-issue{grid-column:1/-1;font-size:.78rem}
+.convo-diag-axis{display:flex;justify-content:space-between;margin:-.2rem 0 0 calc(min(9rem,30%));color:var(--cd-muted);font-size:.72rem}
+.convo-diag [data-severity=error]{color:var(--cd-err)}.convo-diag [data-severity=warning]{color:var(--cd-warn)}.convo-diag [data-severity=ok]{color:var(--cd-ok)}.convo-diag [data-severity=info]{color:var(--cd-info)}
+.convo-diag .convo-diag-turn[data-severity]{color:inherit}.convo-diag-turn[data-severity=error]>.material-symbols-outlined{color:var(--cd-err)}.convo-diag-turn[data-severity=warning]>.material-symbols-outlined{color:var(--cd-warn)}
+.convo-diag-chip{padding:.25rem .5rem;border:1px solid var(--color-border);border-radius:8px;font-size:.8rem}
+.convo-diag-chip[data-state=used]>.material-symbols-outlined{color:var(--cd-ok)}.convo-diag-chip[data-state=discarded]>.material-symbols-outlined{color:var(--cd-warn)}
+.convo-diag-history{position:relative;display:flex;align-items:flex-end;gap:2px;height:48px;padding:2px;border-radius:6px;background:var(--cd-tile)}
+.convo-diag-history>i{flex:1 1 0;min-width:3px;background:var(--cd-accent);border-radius:2px 2px 0 0}
+.convo-diag-history>i.is-over{background:var(--cd-err)}
+.convo-diag-history>b{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--color-text)}
+/* Tune: the same controls as Settings, laid out for a narrower column. */
+.convo-diag-tune .convo-stack{display:flex;flex-direction:column;gap:.8rem;min-width:0}
+.convo-diag-tune x-component{display:contents}
+.convo-diag-tune label{display:flex;flex-direction:column;gap:.35rem;min-width:0;font-size:.84rem}
+.convo-diag-tune input:not([type=checkbox]),.convo-diag-tune select,.convo-diag-tune textarea{width:100%;min-width:0;min-height:38px;padding:.45rem .6rem;border:1px solid var(--color-border);border-radius:8px;background:var(--color-input,var(--color-background));color:var(--color-text);font:inherit}
+.convo-diag-tune .convo-check{flex-direction:row;align-items:flex-start;gap:.55rem}
+.convo-diag-tune .convo-check input{margin-top:.25rem}
+.convo-diag-tune .convo-hint{margin:.1rem 0;color:var(--cd-muted);font-size:.78rem;line-height:1.45;overflow-wrap:anywhere}
+.convo-diag-tune .convo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.7rem}
+.convo-diag-tune .convo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+.convo-diag-tune .convo-card{display:flex;flex-direction:column;gap:.7rem;min-width:0;margin:0;padding:.75rem;border:1px solid var(--color-border);border-radius:10px;background:var(--color-panel)}
+.convo-diag-tune .convo-card>h4{margin:0}.convo-diag-tune .convo-card>legend{padding:0 .35rem;font-weight:600}
+.convo-diag-tune details{border-top:1px solid var(--color-border);padding-top:.2rem}
+.convo-diag-tune summary{cursor:pointer;padding:.45rem 0;font-weight:600}
+.convo-diag-tune .convo-banner{display:flex;flex-direction:column;gap:.5rem;padding:.65rem .8rem;border:1px solid var(--color-border);border-left:3px solid var(--cd-warn);border-radius:10px;background:var(--color-panel)}
+.convo-diag-tune .convo-conflict{display:flex;flex-direction:column;gap:.3rem;padding:.4rem 0;border-top:1px solid var(--color-border)}
+.convo-diag-tune .convo-conflict code,.convo-diag-tune .convo-conflict small,.convo-diag-tune .convo-check small{overflow-wrap:anywhere}
+.convo-diag-tune .convo-error{color:var(--cd-err);overflow-wrap:anywhere;margin:0}
+.convo-diag-save{position:sticky;bottom:0;padding:.5rem 0;background:var(--color-panel);border-top:1px solid var(--color-border)}
+.convo-diag-save small{color:var(--cd-muted)}
+.convo-diag-primary:not(:disabled){border-color:var(--color-text);font-weight:650}
+.convo-diag :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+@media (max-width:600px){.convo-diag{padding:.6rem}.convo-diag .button,.convo-diag-toggle,.convo-diag-turn{min-height:44px}.convo-diag-row,.convo-diag-bars>li,.convo-diag-waterfall>li{grid-template-columns:1fr minmax(4.5rem,auto)}.convo-diag-row>.convo-diag-bar,.convo-diag-bars>li>.convo-diag-bar,.convo-diag-bars>li>.convo-diag-track,.convo-diag-waterfall>li>.convo-diag-track{grid-column:1/-1;grid-row:2}.convo-diag-axis{margin-left:0}}
+@media (prefers-reduced-motion:reduce){.convo-diag *{transition:none!important;animation:none!important}}
+</style></body></html>

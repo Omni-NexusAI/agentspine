@@ -83,7 +83,9 @@ def _read_config(path: Path) -> dict:
         return {}
 
 
-def _whisper_config() -> dict:
+def _whisper_config() -> tuple[dict, str]:
+    """The host's Whisper values (message_mode send|draft) and Convo's drafting flag (single|continuous)."""
+    helper = _config_helper()
     root = _runtime_root() / "usr" / "plugins"
     enhanced = _read_config(root / "_convo" / "config.json")
     stt = enhanced.get("stt") if isinstance(enhanced.get("stt"), dict) else {}
@@ -91,7 +93,7 @@ def _whisper_config() -> dict:
     provider = _read_config(root / WHISPER_PLUGIN / "config.json")
     merged = dict(enhanced_whisper)
     merged.update(provider)
-    return _config_helper().normalize_whisper_config(merged)
+    return helper.normalize_whisper_config(merged), helper.stored_voice_message_draft(enhanced)
 
 
 def _with_device_metadata(config: dict) -> dict:
@@ -113,8 +115,11 @@ class SttStatus(ApiHandler):
         return ["GET", "POST"]
 
     async def process(self, input: dict, request: Request) -> dict:
+        config, voice_message_draft = _whisper_config()
+        # The host store copies `config`, so it keeps the host's own values; Convo's flag sits beside it.
         return {
             "success": True,
             "enabled": _whisper_is_enabled(),
-            "config": _with_device_metadata(_whisper_config()),
+            "config": _with_device_metadata(config),
+            "voice_message_draft": voice_message_draft,
         }

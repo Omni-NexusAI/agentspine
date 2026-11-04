@@ -44,7 +44,8 @@ def _lifecycle():
 
 
 @_lifecycle().owned_patch('whisper', [('plugins._whisper_stt.helpers.runtime', (
-    'normalize_config', 'whisper.load_model', '_agentspine_convo_whisper_patched'))])
+    'normalize_config', 'whisper.load_model', '_agentspine_convo_whisper_patched',
+    '_agentspine_enhanced_speech_whisper_patched'))])
 def patch_runtime() -> bool:
     """Make Whisper placement explicit without changing the host plugin."""
     try:
@@ -77,4 +78,5 @@ def patch_runtime() -> bool:
     runtime.normalize_config = normalize_config
     runtime.whisper.load_model = load_model
     runtime._agentspine_convo_whisper_patched = True
+    runtime._agentspine_enhanced_speech_whisper_patched = True
     return True

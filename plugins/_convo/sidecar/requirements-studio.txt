@@ -1,0 +1,3 @@
+# Optional; explicit user approval required. Install only in the owned gateway.
+-r requirements.txt
+gradio==6.0.1

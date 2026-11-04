@@ -55,11 +55,10 @@ class Lifecycle:
 
     def install(self, key, operation, targets):
         with self.lock:
-            if self.disabling or not enabled():
+            if self.disabling or self.blocked or not enabled():
                 return False
             if key in self.keys:
                 return True
-            self.blocked = False
             before = [(obj, attr, getattr(obj, attr, MISSING)) for obj, attr in targets]
             try:
                 result = operation()
@@ -122,6 +121,9 @@ def state():
     try:
         if not hasattr(runtime, '_convo_lifecycle'):
             runtime._convo_lifecycle = Lifecycle()
+        # Cached readers and independently loaded adapters have different local
+        # class identities. A lookup must never downgrade or mutate the shared
+        # owner; only the fresh native ON boundary may upgrade released ownership.
         return runtime._convo_lifecycle
     finally:
         _imp.release_lock()

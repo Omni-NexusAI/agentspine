@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -28,6 +30,7 @@ DEVICE_ALIASES = {
     "remote_worker": "remote",
 }
 CUDA_DEVICE_RE = re.compile(r"^cuda:\d+$")
+VOICE_ID_RE = re.compile(r"^[a-z]{2}_[a-z0-9_]+$")
 
 DEFAULTS: dict[str, Any] = {
     "tts": {
@@ -78,13 +81,18 @@ WHISPER_KEYS = (
     "waiting_timeout",
 )
 
+# Agent Zero's Whisper stores only send|draft (its browser store turns anything else into send). "Draft in composer
+# (continuous)" is therefore the host's draft plus Convo's own `voice_message_draft` flag (convo_contract): `single` leaves
+# one phrase in the composer as the host does, `continuous` keeps adding phrases until the user sends or stops.
+VOICE_MESSAGE_DRAFT = ("single", "continuous")
+
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any] | None) -> dict[str, Any]:
     result = copy.deepcopy(base)
     if not isinstance(overlay, dict):
         return result
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
+        if key != "voice_weights" and isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge(result[key], value)
         else:
             result[key] = value
@@ -175,7 +183,7 @@ def normalize_kokoro_config(raw: dict[str, Any] | None = None) -> dict[str, Any]
     # panel only sends ``voice``; do not let the default alias hide it.
     if "voice" in source:
         cfg["primary_voice"] = source.get("voice")
-    if "tts_kokoro_voice" in cfg:
+    if "tts_kokoro_voice" in cfg and "voice" not in source and "voice_weights" not in source:
         cfg["primary_voice"] = cfg.get("tts_kokoro_voice")
     if "tts_kokoro_voice_secondary" in cfg:
         cfg["secondary_voice"] = cfg.get("tts_kokoro_voice_secondary")
@@ -209,7 +217,8 @@ def normalize_kokoro_config(raw: dict[str, Any] | None = None) -> dict[str, Any]
         device = "auto"
     remote_url = str(remote.get("url") or DEFAULT_REMOTE_URL).strip().rstrip("/")
 
-    return {
+    result = {
+        **source,
         "voice": primary,
         "primary_voice": primary,
         "secondary_voice": secondary,
@@ -224,6 +233,38 @@ def normalize_kokoro_config(raw: dict[str, Any] | None = None) -> dict[str, Any]
         "remote_timeout": _as_float(remote.get("timeout"), 20.0, 1.0),
         "remote_url_candidates": list(REMOTE_URL_CANDIDATES),
     }
+    # Presence (including {}) is authoritative; removed weights stay removed.
+    weights = {}
+    if "voice_weights" in source:
+        entries = source.get("voice_weights")
+        for voice_id, raw_weight in entries.items() if isinstance(entries, dict) else ():
+            voice_id = str(voice_id).strip()
+            try:
+                weight = float(raw_weight)
+            except (TypeError, ValueError):
+                continue
+            if VOICE_ID_RE.fullmatch(voice_id) and math.isfinite(weight) and weight > 0:
+                weights[voice_id] = weight
+    elif secondary and "," not in primary:
+        ratio = result["voice_blend"] / 10.0
+        if VOICE_ID_RE.fullmatch(primary) and VOICE_ID_RE.fullmatch(secondary):
+            weights[primary] = ratio
+            weights[secondary] = weights.get(secondary, 0) + 10.0 - ratio
+    result["voice_weights"] = weights
+    result["voice"] = ",".join(weights) if weights else primary
+    result["primary_voice"] = result["voice"].split(",")[0]
+    ids = [value.strip() for value in result["voice"].split(",") if value.strip()]
+    result["secondary_voice"] = ids[1] if len(ids) == 2 else ""
+    result["voice_blend"] = 100 * weights[ids[0]] / sum(weights.values()) if len(ids) == 2 and weights else 50
+    return result
+
+
+def voice_summary(cfg: dict[str, Any]) -> str:
+    weights = cfg.get("voice_weights") or {}
+    total = sum(weights.values())
+    if total > 0:
+        return " + ".join(f"{voice} ({weight / total:.0%})" for voice, weight in weights.items())
+    return str(cfg.get("voice") or "")
 
 
 def normalize_whisper_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -250,6 +291,35 @@ def normalize_whisper_config(raw: dict[str, Any] | None = None) -> dict[str, Any
         "silence_duration": _as_int(cfg.get("silence_duration"), 1000, 100),
         "waiting_timeout": _as_int(cfg.get("waiting_timeout"), 2000, 100),
     }
+
+
+def split_message_mode(value: Any) -> tuple[str, str]:
+    """A requested voice-message mode as (host message_mode, Convo voice_message_draft). The host value is never 'continuous'."""
+    mode = str(value or "").strip().lower()
+    if mode == "continuous":
+        return "draft", "continuous"
+    return ("draft" if mode == "draft" else "send"), "single"
+
+
+def stored_voice_message_draft(enhanced: dict[str, Any] | None) -> str:
+    """Convo's drafting flag as its own settings node stores it ('single' when absent or unknown)."""
+    node = enhanced.get("convo") if isinstance(enhanced, dict) else None
+    value = node.get("voice_message_draft") if isinstance(node, dict) else None
+    return value if value in VOICE_MESSAGE_DRAFT else "single"
+
+
+def with_voice_message_draft(enhanced: dict[str, Any], flag: str) -> dict[str, Any]:
+    """The whole Convo plugin file with its drafting flag set, for the same single write as the Whisper values. The Convo node
+    is stored normalized, as every settings writer stores it, and the shared write epoch advances so open Convo editors notice.
+    Unchanged when the flag already holds. Raises (before anything is written) when the stored Convo settings are invalid."""
+    if flag not in VOICE_MESSAGE_DRAFT:
+        raise ValueError("Voice message drafting must be single or continuous")
+    if stored_voice_message_draft(enhanced) == flag:
+        return enhanced
+    node = dict(enhanced.get("convo")) if isinstance(enhanced.get("convo"), dict) else {}
+    node["voice_message_draft"] = flag
+    return {**enhanced, "convo": _transactions().normalize(node),
+            "_convo_write_epoch": int(enhanced.get("_convo_write_epoch", 0) or 0) + 1}
 
 
 def get_effective_config() -> dict[str, Any]:
@@ -282,6 +352,7 @@ def provider_kokoro_config(settings: dict[str, Any]) -> dict[str, Any]:
     cfg = normalize_kokoro_config(settings)
     result = dict(settings or {})
     result["voice"] = cfg["voice"]
+    result["voice_weights"] = cfg["voice_weights"]
     result["speed"] = cfg["speed"]
     result["secondary_voice"] = cfg["secondary_voice"]
     result["voice_blend"] = cfg["voice_blend"]
@@ -301,14 +372,41 @@ def provider_whisper_config(settings: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _transactions():
+    parent = Path(__file__).resolve().parents[2].parent
+    prefix = 'usr.plugins' if parent.name == 'usr' else 'plugins'
+    return importlib.import_module(prefix + '._convo.helpers.setup_store')
+
+
 def sync_enhanced_from_provider(plugin_name: str, settings: dict[str, Any]) -> None:
+    with _transactions().lock():
+        _sync_enhanced_from_provider(plugin_name, settings)
+
+
+def _sync_enhanced_from_provider(plugin_name: str, settings: dict[str, Any]) -> None:
     current = _deep_merge(DEFAULTS, _plugin_config(PLUGIN_NAME))
     if plugin_name == KOKORO_PLUGIN:
-        current["tts"]["kokoro"] = _deep_merge(current["tts"]["kokoro"], normalize_kokoro_config(settings))
+        merged = _deep_merge(current["tts"]["kokoro"], settings)
+        if "voice_weights" not in settings and any(key in settings for key in ("voice", "primary_voice", "secondary_voice", "voice_blend")):
+            merged.pop("voice_weights", None)
+        current["tts"]["kokoro"] = normalize_kokoro_config(merged)
     elif plugin_name == WHISPER_PLUGIN:
+        settings = dict(settings or {})
+        flag = None
+        if "message_mode" in settings:
+            # A save through Agent Zero's generic route stores the modal's value as given, "continuous" included, which the
+            # host would read as "send". It is the host's draft plus Convo's flag here too, and the host file is put right.
+            settings["message_mode"], flag = split_message_mode(settings["message_mode"])
         current["stt"]["whisper"] = _deep_merge(current["stt"]["whisper"], normalize_whisper_config(settings))
+        if flag == "continuous":
+            provider = _plugin_config(WHISPER_PLUGIN)
+            if provider.get("message_mode") != "draft":       # first, so even a refused flag never leaves the host on "send"
+                _write_plugin_config(WHISPER_PLUGIN, {**provider, "message_mode": "draft"})
+        if flag is not None:
+            current = with_voice_message_draft(current, flag)
     elif plugin_name in {PLUGIN_NAME, LEGACY_PLUGIN_NAME}:
-        current = _deep_merge(DEFAULTS, settings)
+        # This bridge owns native speech only, never a stale Convo node.
+        current = _deep_merge(current, {key: settings[key] for key in ('tts', 'stt') if key in settings})
     else:
         return
     _write_plugin_config(PLUGIN_NAME, current)

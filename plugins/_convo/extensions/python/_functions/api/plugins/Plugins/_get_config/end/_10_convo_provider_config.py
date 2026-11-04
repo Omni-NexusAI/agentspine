@@ -26,6 +26,12 @@ class EnhancedSpeechGetConfig(Extension):
             return
         payload = args[1]
         plugin_name = payload.get("plugin_name", "")
+        if plugin_name == '_convo':
+            result = data.get('result')
+            if isinstance(result, dict) and result.get('ok') and isinstance(result.get('data'), dict):
+                helper = _load_config_helper()
+                result['data'] = helper._transactions().native_read(result['data'], payload.get('project_name'), payload.get('agent_profile'))
+            return
         # This hook runs *inside* Plugins.get_plugin_config(). Re-entering that
         # helper to assemble an aggregate Enhanced Speech config recursively
         # invokes this very hook, which can stall the Kokoro status request and

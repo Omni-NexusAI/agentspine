@@ -25,6 +25,8 @@ class LifecycleTests(unittest.TestCase):
         original = lambda: 'native'
         owner = types.SimpleNamespace(call=original)
         for _ in range(3):
+            # Only the completed native ON transaction grants this transition.
+            self.control.blocked = False
             replacement = lambda: 'convo'
             def install():
                 owner.call = replacement; owner.flag = True
@@ -33,6 +35,13 @@ class LifecycleTests(unittest.TestCase):
             self.control.disable(); self.control.disable()
             self.assertIs(owner.call, original)
             self.assertFalse(hasattr(owner,'flag'))
+
+    def test_adapter_install_cannot_resume_blocked_ownership(self):
+        self.control.disable()
+        owner = types.SimpleNamespace(call='native')
+        self.assertFalse(self.control.install('late', lambda: setattr(owner, 'call', 'late'), [(owner, 'call')]))
+        self.assertEqual(owner.call, 'native')
+        self.assertTrue(self.control.blocked)
 
     def test_failed_install_rolls_back_and_other_owners_are_preserved(self):
         owner = types.SimpleNamespace(call='native')

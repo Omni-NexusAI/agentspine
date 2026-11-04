@@ -102,7 +102,9 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clone_and_engine_identity_are_frozen(self):
         profile = {'profile_id':'voice','content_revision':1,'content_hash':'f'*64,'ref_audio':'encoded','ref_text':'Reference','reference_excerpts':[]}
-        async def control(operation, **kwargs):
+        tuning = {'id':'quality','revision':1,'max_reference_seconds':30,'first_block_frames':25,'steady_block_frames':25,'left_context_frames':25,'text_lookahead':128,'phrase_flush_ms':400,'temperature':0.8,'top_k':50,'top_p':1,'repetition_penalty':1.05,'seed':None}
+        async def control(operation, payload=None, **kwargs):
+            if operation == 'resolve_tuning': return {'profile':tuning}
             return {'loaded_models':[MODEL], 'engineEpoch':4, 'supervisorInstanceId':'instance'} if operation == 'models' else profile
         with patch.object(studio, 'control', side_effect=control):
             role = await studio.freeze({'model':MODEL,'voice':'clone:voice','instructions':'unsupported'})
@@ -111,6 +113,10 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(role['expected_engine_epoch'], 4)
         self.assertEqual(role['url'], 'http://convo-audio:8080/v1')
         self.assertEqual(role['instructions'], '')
+        tuning['temperature'] = 1.2
+        self.assertEqual(role['tuning']['effective']['temperature'], 0.8)
+        self.assertEqual(role['tuning']['effective']['seed'], role['tuning']['overrides']['seed'])
+        self.assertIsInstance(role['tuning']['effective']['seed'], int)
 
 
 if __name__ == '__main__': unittest.main()

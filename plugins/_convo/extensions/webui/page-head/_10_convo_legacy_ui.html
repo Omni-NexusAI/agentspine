@@ -170,6 +170,18 @@
       if (!settings || typeof settings !== "object") return settings;
       if (!modal) return;
 
+      const nativeBlend = !!modal.querySelector(".kokoro-blend-editor");
+      if (nativeBlend) {
+        const native = globalThis.Alpine?.$data?.(fieldPage(modal))?.config;
+        if (native) {
+          settings.voice = native.voice;
+          settings.voice_weights = { ...(native.voice_weights || {}) };
+        }
+      } else {
+        // A legacy modal edits a new pair, not the previously migrated weights.
+        delete settings.voice_weights;
+      }
+
       const primary = modal.querySelector(".enhanced-speech-primary-voice");
       const secondary = modal.querySelector(".enhanced-speech-kokoro-fields .enhanced-speech-voice-select");
       const blend = modal.querySelector(".enhanced-speech-kokoro-fields input[type='range']");
@@ -184,12 +196,12 @@
       // speed cannot accidentally overwrite ``remote_timeout``.
       const remoteTimeout = modal.querySelector(".enhanced-speech-remote-timeout");
 
-      if (primary) {
+      if (primary && !nativeBlend) {
         settings.voice = primary.value;
         settings.primary_voice = primary.value;
       }
-      if (secondary) settings.secondary_voice = secondary.value;
-      if (blend) settings.voice_blend = clampBlend(blend.value);
+      if (secondary && !nativeBlend) settings.secondary_voice = secondary.value;
+      if (blend && !nativeBlend) settings.voice_blend = clampBlend(blend.value);
       if (speed) settings.speed = Math.max(0.1, Number(speed.value) || 1.1);
       if (device) {
         settings.device = device.value;
@@ -249,6 +261,9 @@
 
     async function persistKokoroModal(modal = getKokoroSettingsModal()) {
       if (!modal || modal.__agentspineSpeechPersisting) return;
+      // The native save carries its reactive weights; a parallel legacy write
+      // could overwrite that transaction with a stale pair.
+      if (modal.querySelector(".kokoro-blend-editor")) return;
       const page = fieldPage(modal);
       if (!page?.querySelector(".enhanced-speech-kokoro-fields")) return;
       modal.__agentspineSpeechPersisting = true;
@@ -491,7 +506,7 @@
 
       const select = document.createElement("select");
       select.className = "enhanced-speech-primary-voice enhanced-speech-voice-select";
-      fillVoiceSelect(select, await loadVoices(context.settings), context.settings.voice || context.settings.primary_voice || "am_michael");
+      fillVoiceSelect(select, await loadVoices(context.settings), context.settings.primary_voice || context.settings.voice || "am_michael");
       select.addEventListener("change", () => {
         context.settings.voice = select.value;
         context.settings.primary_voice = select.value;
@@ -635,10 +650,13 @@
           guardContextSave(modal.__pluginSettingsContext);
           ensureDefaults(context.settings, kokoroDefaults);
           context.settings.remote_enabled = context.settings.device === "remote";
-          await enhancePrimaryVoiceField(page, context);
+          const nativeBlend = !!page.querySelector(".kokoro-blend-editor");
+          if (nativeBlend) await extendNativeVoiceCatalog(page, context);
+          else await enhancePrimaryVoiceField(page, context);
           const group = document.createElement("div");
           group.className = "enhanced-speech-kokoro-fields";
 
+        if (!nativeBlend) {
         const secondary = await makeVoiceSelect(context, "secondary_voice", true);
         group.append(field("Secondary voice", "Optional Kokoro voice blended with the primary voice.", secondary));
 
@@ -658,6 +676,7 @@
         updateBlend();
         blendWrap.append(blend, blendValue);
         group.append(field("Primary voice blend", "Percentage of the primary voice used when a secondary voice is set.", blendWrap));
+        }
 
         const device = document.createElement("select");
         const deviceOptions = [["auto", "Auto"], ["cpu", "CPU"]];
@@ -764,9 +783,48 @@
 
     function voiceSummary(config) {
       const primary = config?.voice || config?.primary_voice || "";
+      if (config && "voice_weights" in config) {
+        const weights = Object.entries(config.voice_weights || {})
+          .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0);
+        const total = weights.reduce((sum, [, weight]) => sum + Number(weight), 0);
+        return total > 0 ? weights.map(([id, weight]) => `${id} (${Math.round(Number(weight) / total * 100)}%)`).join(" + ") : primary;
+      }
       const secondary = config?.secondary_voice || "";
       if (!secondary) return primary;
       return `${primary} + ${secondary}`;
+    }
+
+    async function extendNativeVoiceCatalog(page, context) {
+      const native = globalThis.Alpine?.$data?.(page);
+      if (!Array.isArray(native?.catalog) || typeof native.availableVoices !== "function") return;
+      const selected = typeof native.voiceIds === "function" ? native.voiceIds() :
+        String(native.config?.voice || "").split(",").map(id => id.trim()).filter(Boolean);
+      const options = [...await loadVoices(context.settings),
+        ...selected.map(id => ({ value: id, label: id }))];
+      const known = new Set(native.catalog.map(item => item.id));
+      for (const item of options) {
+        // Catalog entries are individual IDs, never a comma-separated blend.
+        if (!item?.value || item.value.includes(",") || known.has(item.value)) continue;
+        const groups = { af: "American Female", am: "American Male", bf: "British Female", bm: "British Male" };
+        native.catalog.push({ id: item.value, label: item.value, group: groups[item.value.slice(0, 2)] || "Custom voice" });
+        known.add(item.value);
+      }
+      const select = page.querySelector(".kokoro-blend-editor select");
+      if (!select) return;
+      for (const name of new Set(native.catalog.map(item => item.group))) {
+        if (Array.from(select.querySelectorAll("optgroup")).some(group => group.label === name)) continue;
+        const group = document.createElement("optgroup");
+        group.label = name;
+        const template = document.createElement("template");
+        template.setAttribute("x-for", `voice in availableVoices(${JSON.stringify(name)})`);
+        template.setAttribute(":key", "voice.id");
+        const option = document.createElement("option");
+        option.setAttribute(":value", "voice.id");
+        option.setAttribute("x-text", "voice.label + ' (' + voice.id + ')'");
+        template.content.append(option);
+        group.append(template);
+        globalThis.Alpine.mutateDom(() => { select.append(group); globalThis.Alpine.initTree(group); });
+      }
     }
 
     function applyKokoroCompatibilityState(store, result) {

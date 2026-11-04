@@ -11,6 +11,11 @@ from fastapi.responses import JSONResponse
 import supervisor
 from downloads import Downloads, PRESETS
 
+# Convo never inherits a standalone bypass or relaxed custom admission policy.
+# In-memory only: leave persisted profiles and the vendored source untouched.
+supervisor.gpu_guard_settings.clear()
+supervisor.gpu_guard_settings.update(supervisor._default_gpu_guard_settings(), mode='enforced')
+
 # The reused supervisor configures logging globally. Signed download redirect
 # URLs and unrelated provider requests must not appear in informational logs.
 logging.getLogger('httpx').setLevel(logging.WARNING)

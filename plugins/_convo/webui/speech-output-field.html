@@ -1,0 +1,139 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<!-- The speech output card in Convo → Connections. Agent Zero's model-field structure and classes, sharing the .convo-model-card
+     styles of the conversation card (conversation-model-field.html, composed by the same shell), so the three Connections cards
+     read alike; methods live in speech-setup.js. -->
+<fieldset class="convo-card convo-model-card convo-speech" x-data="{ role: 'tts' }" x-id="['speech-provider', 'speech-connection', 'speech-runtime', 'speech-url', 'speech-key', 'speech-remote', 'speech-models', 'speech-voices', 'speech-declare', 'speech-delivery', 'speech-advanced', 'speech-apibase', 'speech-env']" x-init="$store.convoSetup.speechRefreshRegistry()">
+  <legend x-text="$store.convoSetup.label(role)"></legend>
+  <div class="convo-model-fields">
+  <p class="convo-model-note"><x-icon name="record_voice_over" aria-hidden="true"></x-icon><span>The voice Convo’s replies are spoken with. It is not an Agent Zero model type: these are Convo’s own settings, used from the next response.</span></p>
+  <div class="field">
+    <div class="field-label"><div class="field-title" :id="$id('speech-provider')">Provider</div><div class="field-description">Who turns Convo’s replies into speech, grouped like Agent Zero’s providers.</div></div>
+    <div class="field-control"><select :aria-labelledby="$id('speech-provider')" :value="$store.convoSetup.config.roles.tts.provider || $store.convoSetup.speechDerived($store.convoSetup.config.roles.tts.backend)" @change="$event.target.value = $store.convoSetup.setSpeechProvider($event.target.value)"><template x-for="group in $store.convoSetup.speechGroups()" :key="group.id"><optgroup :label="group.label"><template x-for="item in group.items" :key="item.id"><option :value="item.id" :disabled="item.disabled" :selected="item.id === $store.convoSetup.speechProvider()" x-text="item.label"></option></template></optgroup></template></select></div>
+  </div>
+  <p class="field-description convo-model-alert convo-reason" role="note" x-show="$store.convoSetup.speechReason()" x-text="$store.convoSetup.speechReason()"></p>
+  <div class="convo-banner" x-show="$store.convoSetup.speechOffer()">
+    <strong>This looks like your audio.cpp server</strong>
+    <p class="field-description" x-text="$store.convoSetup.speechOffer() + ' answers on the port of your audio.cpp container. Use the audio.cpp provider (External server) for it? Its address, model and voice are kept; nothing changes until you choose.'"></p>
+    <div class="convo-model-actions"><button type="button" class="button" @click="$store.convoSetup.speechAcceptOffer()">Use audio.cpp (External server)</button><button type="button" class="button" @click="$store.convoSetup.speechDeclineOffer()">Keep it as an OpenAI-compatible endpoint</button></div>
+  </div>
+  <p class="field-description" x-show="$store.convoSetup.show('tts', 'native')">Kokoro needs no connection settings here. Its voice, blend and speed are managed in Agent Zero’s speech settings (see Voice &amp; Audio).</p>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'connection')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-connection')">Connection</div><div class="field-description">An audio.cpp server you run yourself, or the audio.cpp runtime Convo manages with its Voice Studio.</div></div>
+    <div class="field-control"><select :aria-labelledby="$id('speech-connection')" :value="$store.convoSetup.config.roles.tts.connection || $store.convoSetup.speechConnection()" @change="$event.target.value = $store.convoSetup.setSpeechConnection($event.target.value)"><option value="external" :selected="$store.convoSetup.speechConnection() === 'external'">External server</option><option value="managed" :selected="$store.convoSetup.speechConnection() === 'managed'">Managed by Convo</option></select></div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'runtime')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-runtime')">Manage runtime</div><div class="field-description">Start Convo’s audio.cpp runtime with the plugin: the same setting as “Manage Convo runtime automatically” in the tuning controls. One-time dependency setup is required; switching it on never downloads or loads a model. Save to apply.</div></div>
+    <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="speech-runtime" :aria-labelledby="$id('speech-runtime')" x-model="$store.convoSetup.config.sidecar.managed"><span class="toggler"></span></label></div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'url')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-url')">Server URL</div><div class="field-description" x-text="$store.convoSetup.speechUrlHint()"></div></div>
+    <div class="field-control"><input type="url" :aria-labelledby="$id('speech-url')" x-model="$store.convoSetup.config.roles.tts.url" :placeholder="$store.convoSetup.speechUrlPlaceholder()" autocomplete="off" spellcheck="false"></div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'key')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-key')">API key</div><div class="field-description" x-text="$store.convoSetup.speechKeyHint()"></div></div>
+    <div class="field-control convo-model-stack">
+      <select x-show="$store.convoSetup.show('tts', 'keysource')" :aria-labelledby="$id('speech-key')" x-model="$store.convoSetup.config.roles.tts.key_source"><option value="provider">Agent Zero’s key for this provider</option><option value="convo">A separate key for Convo only</option></select>
+      <p class="field-description" x-show="$store.convoSetup.speechKeyText()" x-text="$store.convoSetup.speechKeyText()"></p>
+      <div class="convo-model-actions" x-show="$store.convoSetup.show('tts', 'keysource') && !$store.convoSetup.speechUsesConvoKey() && $store.convoSetup.speechCanOpenKeys()"><button type="button" class="button" @click="$store.convoSetup.speechOpenKeys()">Open Agent Zero API keys</button></div>
+      <div class="convo-model-stack convo-speech-own-key" x-show="$store.convoSetup.speechUsesConvoKey()">
+        <input type="password" :aria-labelledby="$id('speech-key')" :value="$store.convoSetup.keys.tts || ''" @input="$store.convoSetup.setKey('tts', $event.target.value)" autocomplete="new-password" :placeholder="$store.convoSetup.credentials.tts ? 'Key saved securely' : 'Optional key'">
+        <button type="button" class="button" x-show="$store.convoSetup.credentials.tts" @click="$store.convoSetup.clearKey('tts')">Clear saved key on next save</button>
+        <p class="field-description" x-show="$store.convoSetup.keys.tts === ''">Saved key will be cleared when you save.</p>
+      </div>
+    </div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'remote')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-remote')">Allow remote processing</div><div class="field-description" x-text="$store.convoSetup.speechRemoteLabel()"></div></div>
+    <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="speech-remote" :aria-labelledby="$id('speech-remote')" x-model="$store.convoSetup.config.roles.tts.remote"><span class="toggler"></span></label></div>
+  </div>
+  <div class="convo-model-checks" x-show="$store.convoSetup.show('tts', 'test')">
+    <div class="convo-model-actions">
+      <button type="button" class="button" x-show="$store.convoSetup.show('tts', 'discover')" :disabled="$store.convoSetup.isDiscovering('tts') || $store.convoSetup.speechBlocked() !== ''" @click="$store.convoSetup.discover('tts')">Find models &amp; voices</button>
+      <button type="button" class="button" :disabled="$store.convoSetup.isDiscovering('tts') || $store.convoSetup.speechBlocked() !== ''" @click="$store.convoSetup.discover('tts', true)">Test connection</button>
+      <span class="convo-chip" :data-state="$store.convoSetup.speechStatus().state" x-show="$store.convoSetup.speechStatus().label" x-text="$store.convoSetup.speechStatus().label"></span>
+    </div>
+    <p class="field-description convo-model-alert" role="note" x-show="$store.convoSetup.speechBlocked()" x-text="$store.convoSetup.speechBlocked()"></p>
+    <p class="field-description" role="status" x-text="$store.convoSetup.speechStatus().message"></p>
+    <ul class="convo-checks" aria-label="What the server answered" x-show="$store.convoSetup.speechChecks().length"><template x-for="line in $store.convoSetup.speechChecks()" :key="line"><li x-text="line"></li></template></ul>
+    <template x-for="warning in ($store.convoSetup.choices.tts?.warnings || [])"><p class="field-description" x-text="warning"></p></template>
+    <p class="field-description" x-show="$store.convoSetup.show('tts', 'key')">Save a new API key before testing. Checks read only this configured server and never generate speech.</p>
+  </div>
+  <div class="convo-model-checks" x-show="$store.convoSetup.show('tts', 'server') && $store.convoSetup.speechServer()">
+    <dl class="convo-facts"><dt>Server’s model</dt><dd x-text="$store.convoSetup.speechServerModel()"></dd><dt>Server’s tuning</dt><dd x-text="$store.convoSetup.speechServer()?.tuning?.label || 'Not reported'"></dd></dl>
+    <div class="convo-model-actions" x-show="$store.convoSetup.speechServer()?.model && $store.convoSetup.speechServer()?.model !== $store.convoSetup.config.roles.tts.model"><button type="button" class="button" @click="$store.convoSetup.speechUseServerModel()">Use the server’s model</button></div>
+    <p class="field-description">Shown as your server reports them. Convo never switches, loads or unloads models on your server: change them in its own Voice Studio.</p>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'model')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-models')">Model</div><div class="field-description" x-text="$store.convoSetup.speechFixed() ? 'The speech models this provider offers.' : 'Type the model id, or search what the server lists.'"></div></div>
+    <div class="field-control convo-model-stack">
+      <select x-show="$store.convoSetup.speechFixed()" :aria-labelledby="$id('speech-models')" :value="$store.convoSetup.config.roles.tts.model" @change="$store.convoSetup.speechComboPick('models', $event.target.value)"><template x-for="option in $store.convoSetup.speechOptions('models')" :key="option.id"><option :value="option.id" :selected="option.id === $store.convoSetup.config.roles.tts.model" x-text="option.label"></option></template></select>
+      <div class="convo-combo" x-show="!$store.convoSetup.speechFixed()" @focusout="$el.contains($event.relatedTarget) || $store.convoSetup.speechComboClose()">
+        <input type="text" role="combobox" :aria-expanded="$store.convoSetup.speechComboIsOpen('models')" aria-autocomplete="list" :aria-controls="$id('speech-models', 'list')" :aria-labelledby="$id('speech-models')" :aria-activedescendant="$store.convoSetup.speechComboActive('models') === -1 ? null : $id('speech-models', 'option-' + $store.convoSetup.speechComboActive('models'))" x-model="$store.convoSetup.config.roles.tts.model" @input="$store.convoSetup.speechComboOpen('models')" @change="$store.convoSetup.speechUpdate({})" @keydown="$store.convoSetup.speechComboKey('models', $event)" autocomplete="off" spellcheck="false">
+        <button type="button" class="convo-combo-button" aria-label="Show the models the server lists" :aria-expanded="$store.convoSetup.speechComboIsOpen('models')" @click="$store.convoSetup.speechComboToggle('models')"><span aria-hidden="true">▾</span></button>
+        <ul class="convo-combo-list" role="listbox" :id="$id('speech-models', 'list')" :aria-labelledby="$id('speech-models')" x-show="$store.convoSetup.speechComboIsOpen('models')">
+          <template x-for="(option, index) in $store.convoSetup.speechComboItems('models')" :key="option.id"><li role="option" :id="$id('speech-models', 'option-' + index)" :aria-selected="index === $store.convoSetup.speechComboActive('models')" @mousedown.prevent="$store.convoSetup.speechComboPick('models', option.id)" x-text="option.label && option.label !== option.id ? option.label + ' — ' + option.id : option.id"></li></template>
+          <li class="convo-combo-empty" aria-disabled="true" x-show="!$store.convoSetup.speechComboItems('models').length" x-text="$store.convoSetup.speechComboEmpty('models')"></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'voice')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-voices')">Voice</div><div class="field-description" x-text="$store.convoSetup.speechFixed() ? 'Each model offers its own voices.' : ($store.convoSetup.speechVoiceLabel() || 'Type the voice id, or search what the server lists (clone voices included).')"></div></div>
+    <div class="field-control convo-model-stack">
+      <select x-show="$store.convoSetup.speechFixed()" :aria-labelledby="$id('speech-voices')" :value="$store.convoSetup.config.roles.tts.voice" @change="$store.convoSetup.speechComboPick('voices', $event.target.value)"><option value="">Choose a voice</option><template x-for="option in $store.convoSetup.speechOptions('voices')" :key="option.id"><option :value="option.id" :selected="option.id === $store.convoSetup.config.roles.tts.voice" x-text="option.label"></option></template></select>
+      <div class="convo-combo" x-show="!$store.convoSetup.speechFixed()" @focusout="$el.contains($event.relatedTarget) || $store.convoSetup.speechComboClose()">
+        <input type="text" role="combobox" :aria-expanded="$store.convoSetup.speechComboIsOpen('voices')" aria-autocomplete="list" :aria-controls="$id('speech-voices', 'list')" :aria-labelledby="$id('speech-voices')" :aria-activedescendant="$store.convoSetup.speechComboActive('voices') === -1 ? null : $id('speech-voices', 'option-' + $store.convoSetup.speechComboActive('voices'))" x-model="$store.convoSetup.config.roles.tts.voice" @input="$store.convoSetup.speechComboOpen('voices')" @change="$store.convoSetup.speechUpdate({})" @keydown="$store.convoSetup.speechComboKey('voices', $event)" autocomplete="off" spellcheck="false">
+        <button type="button" class="convo-combo-button" aria-label="Show the voices the server lists" :aria-expanded="$store.convoSetup.speechComboIsOpen('voices')" @click="$store.convoSetup.speechComboToggle('voices')"><span aria-hidden="true">▾</span></button>
+        <ul class="convo-combo-list" role="listbox" :id="$id('speech-voices', 'list')" :aria-labelledby="$id('speech-voices')" x-show="$store.convoSetup.speechComboIsOpen('voices')">
+          <template x-for="(option, index) in $store.convoSetup.speechComboItems('voices')" :key="option.id"><li role="option" :id="$id('speech-voices', 'option-' + index)" :aria-selected="index === $store.convoSetup.speechComboActive('voices')" @mousedown.prevent="$store.convoSetup.speechComboPick('voices', option.id)" x-text="option.label && option.label !== option.id ? option.label + ' — ' + option.id : option.id"></li></template>
+          <li class="convo-combo-empty" aria-disabled="true" x-show="!$store.convoSetup.speechComboItems('voices').length" x-text="$store.convoSetup.speechComboEmpty('voices')"></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'declare')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-declare')">Accepts delivery instructions (declared)</div><div class="field-description">Turn on only if your server honours an <code>instructions</code> field with each phrase; Convo cannot check it. Base clone models and clone voices ignore delivery instructions either way.</div></div>
+    <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="speech-declare" :aria-labelledby="$id('speech-declare')" :checked="$store.convoSetup.config.roles.tts.accepts_instructions === true" @change="$store.convoSetup.speechSetDeclared($event.target.checked)"><span class="toggler"></span></label></div>
+  </div>
+  <div class="field field-full" x-show="$store.convoSetup.show('tts', 'instructions')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-delivery')">Voice delivery — how the voice should sound (tone, pace, emotion).</div><div class="field-description" :id="$id('speech-delivery', 'hint')">Sent with each phrase to the speech engine only; it doesn't change the words (that's Answer length and Personality).</div></div>
+    <div class="field-control"><textarea rows="2" maxlength="2000" :aria-labelledby="$id('speech-delivery')" :aria-describedby="$id('speech-delivery', 'hint')" x-model="$store.convoSetup.config.roles.tts.instructions" placeholder="For example: calm and unhurried, warm, a little playful"></textarea></div>
+  </div>
+  <p class="field-description" x-show="$store.convoSetup.speechInstructionsNote()" x-text="$store.convoSetup.speechInstructionsNote()"></p>
+  <div class="advanced-section convo-model-advanced" x-show="$store.convoSetup.show('tts', 'advanced')" x-data="{ advOpen: false }">
+    <button type="button" class="advanced-toggle" :aria-expanded="advOpen ? 'true' : 'false'" :aria-controls="$id('speech-advanced')" @click="advOpen = !advOpen"><x-icon class="advanced-toggle-icon" name="chevron_right" aria-hidden="true" :class="{ 'is-open': advOpen }"></x-icon><span>Advanced Settings</span></button>
+    <div class="advanced-body" :id="$id('speech-advanced')" x-show="advOpen">
+      <div class="field" x-show="$store.convoSetup.show('tts', 'apibase')">
+        <div class="field-label"><div class="field-title" :id="$id('speech-apibase')">API base URL</div><div class="field-description">Leave it at https://api.openai.com/v1 unless you route OpenAI through a proxy you trust: Agent Zero’s OpenAI key is sent to whatever address is set here.</div></div>
+        <div class="field-control"><input type="url" :aria-labelledby="$id('speech-apibase')" x-model="$store.convoSetup.config.roles.tts.url" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="field">
+        <div class="field-label"><div class="field-title" :id="$id('speech-env')">Credential environment reference</div><div class="field-description">When set, this environment variable is the only key used; Agent Zero’s key and Convo’s own key are not tried.</div></div>
+        <div class="field-control convo-model-stack"><input type="text" data-convo-field="speech-token-env" placeholder="e.g. MY_SPEECH_KEY" :aria-labelledby="$id('speech-env')" :aria-invalid="$store.convoSetup?.speechReferenceProblem?.() ? 'true' : 'false'" x-model="$store.convoSetup.config.roles.tts.token_env" autocomplete="off" spellcheck="false">
+          <p class="field-description convo-model-alert" role="note" data-convo-field="speech-token-env-problem" x-show="!!$store.convoSetup?.speechReferenceProblem?.()"><span x-text="$store.convoSetup?.speechReferenceProblem?.()"></span> <button type="button" class="button" data-convo-field="speech-token-env-clear" @click="$store.convoSetup.speechClearReference()">Clear</button></p></div>
+      </div>
+    </div>
+  </div>
+  </div>
+</fieldset>
+<style>
+/* Field, toggle, advanced and note styles are the conversation card's (.convo-model-card); only the speech-specific parts are here. */
+.convo-speech code{font-size:.8rem}
+.convo-speech .convo-chip{display:inline-flex;align-items:center;min-height:28px;padding:0 .6rem;border:1px solid var(--color-border);border-radius:999px;font-size:.78rem;font-weight:600}
+.convo-speech .convo-chip[data-state=ready]{border-color:var(--color-text)}
+.convo-speech .convo-chip[data-state=ready]::before{content:"✓";margin-right:.35rem}
+.convo-speech .convo-chip:is([data-state=unavailable],[data-state=error])::before{content:"!";margin-right:.35rem}
+.convo-speech .convo-model-actions{align-items:center}
+.convo-speech .convo-speech-own-key{display:flex;min-width:0}
+.convo-speech .convo-checks{margin:0;padding-left:1.1rem;font-size:.875rem;line-height:1.5;overflow-wrap:anywhere}
+.convo-speech .convo-combo{position:relative;min-width:0}
+.convo-speech .convo-combo input{padding-right:2.4rem}
+.convo-speech .convo-combo-button{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--color-text);cursor:pointer;font:inherit}
+.convo-speech .convo-combo-button:hover{background:var(--color-background-hover,rgba(127,127,127,.15))}
+.convo-speech .convo-combo-list{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:50;max-height:220px;overflow-y:auto;margin:0;padding:4px;list-style:none;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.convo-speech .convo-combo-list li{padding:5px 8px;border-radius:4px;font-size:.8rem;cursor:pointer;overflow-wrap:anywhere}
+.convo-speech .convo-combo-list li[aria-selected=true],.convo-speech .convo-combo-list li:hover{background:var(--color-background-hover,rgba(127,127,127,.2));outline:1px solid var(--color-border)}
+.convo-speech .convo-combo-list .convo-combo-empty{cursor:default;font-style:italic}
+@media(max-width:640px){.convo-speech .convo-combo-button{width:40px;height:40px}}
+</style>
+</body></html>

@@ -134,6 +134,24 @@ class Store:
             self._event(session, turn, "assistant.generated", {"text": response})
             return True
 
+    def supersede(self, sid, owner, epoch, turn, by):
+        """A newer fragment took over this turn's reply before it was heard: the turn leaves model history and its queued work
+        is cancelled. Work that already started is left alone (it needs its own cancel). Returns the cancelled job IDs."""
+        with self.transaction():
+            session = self.session(sid, owner)
+            row = self.db.execute("SELECT * FROM turns WHERE id=? AND session=?", (turn, sid)).fetchone()
+            if session["epoch"] != epoch or not row:
+                return []
+            content = json.loads(row["content"])
+            content["superseded"] = by
+            self.db.execute("UPDATE turns SET content=?,settled=1,revision=revision+1 WHERE id=?", (encoded(content), turn))
+            self._event(session, turn, "turn.superseded", {"by": by})
+            cancelled = []
+            for job in self.db.execute("SELECT id FROM jobs WHERE session=? AND turn=? AND status='queued' ORDER BY rowid", (sid, turn)).fetchall():
+                if self.db.execute("UPDATE jobs SET status='cancelled',result='' WHERE id=? AND status='queued'", (job["id"],)).rowcount:
+                    self._event(session, turn, "job.cancelled", {"job_id": job["id"], "result": ""})
+                    cancelled.append(job["id"])
+            return cancelled
     def delivered(self, sid, owner, epoch, turn, phrase_id, text):
         with self.transaction():
             session = self.session(sid, owner)
@@ -181,6 +199,24 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT * FROM events WHERE target=? AND seq>? ORDER BY seq LIMIT ?", (target, after, min(500, max(1, limit)))).fetchall()
             return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+    def events_tail(self, target, limit=60, before=None):
+        """The newest `limit` events (oldest first), optionally only those older than `before`, plus whether earlier ones remain."""
+        limit = min(200, max(1, int(limit)))
+        sql, args = "SELECT * FROM events WHERE target=?", [target]
+        if before is not None:
+            sql += " AND seq<?"
+            args.append(int(before))
+        with self.lock:
+            rows = self.db.execute(sql + " ORDER BY seq DESC LIMIT ?", (*args, limit + 1)).fetchall()
+        more, rows = len(rows) > limit, rows[:limit][::-1]
+        return {"events": [{**dict(row), "payload": json.loads(row["payload"])} for row in rows], "more": more}
+
+    def history_page(self, target, *, after=0, tail=None, before=None):
+        """One read for the panel: events after a known sequence (polling), or the newest page (optionally older than one)."""
+        if tail is None and before is None:
+            return {"events": self.events(target, int(after)), "more": False}
+        return self.events_tail(target, 60 if tail is None else tail, before)
 
     def memory(self, target):
         with self.lock:

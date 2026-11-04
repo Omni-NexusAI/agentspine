@@ -1,0 +1,179 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<!-- The conversation model card, in Convo → Connections and as its own model type in Agent Zero's preset editor, where
+     model-type-mount.js wraps it in x-data="{ convoAutosave: true }": there every change saves by itself (conversation-setup.js).
+     Same structure and classes as Agent Zero's model fields; methods live in conversation-setup.js. -->
+<fieldset class="convo-card convo-model-card" x-data="{ role: 'conversation' }" x-init="$store.convoSetup.conversationInit()">
+  <legend x-text="$store.convoSetup.label(role)"></legend>
+  <template x-if="$store.convoSetup.config"><div class="convo-model-fields" x-data="{ get autosave() { return typeof convoAutosave !== 'undefined' && !!convoAutosave; } }">
+    <p class="convo-model-note"><x-icon name="graphic_eq" aria-hidden="true"></x-icon><span>Convo sends your speech as audio — choose a model that accepts audio input (omni / multimodal audio model).</span></p>
+    <template x-if="autosave"><div class="convo-model-autosave">
+      <p class="field-description convo-model-status" role="status" data-convo-field="autosave-status" x-text="$store.convoSetup.conversationStatusText()"></p>
+      <template x-for="item in $store.convoSetup.conversationConflicts()" :key="item.path"><div class="convo-model-conflict" role="group" :aria-label="item.label + ' changed elsewhere'">
+        <span><strong x-text="item.label"></strong> changed elsewhere to <code x-text="$store.convoSetup.display(item.theirs)"></code>; yours is <code x-text="$store.convoSetup.display(item.mine)"></code>.</span>
+        <span class="convo-model-actions"><button type="button" class="button" @click="$store.convoSetup.conversationKeepMine(item.path)">Keep mine</button><button type="button" class="button" @click="$store.convoSetup.conversationTakeSaved(item.path)">Use theirs</button></span>
+      </div></template>
+      <p class="field-description" x-show="$store.convoSetup.stale">Convo’s settings were changed elsewhere. <button type="button" class="text-button" @click="$store.convoSetup.mergeLatest()">Bring them in</button></p>
+    </div></template>
+
+    <div class="field" x-id="['convo-provider']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-provider', 'title')">Provider</div><div class="field-description" :id="$id('convo-provider', 'hint')">Where Convo sends your speech. Only providers Convo can send audio to can be chosen; the others are listed with the reason.</div></div>
+      <div class="field-control"><select data-convo-field="provider" :aria-labelledby="$id('convo-provider', 'title')" :aria-describedby="$id('convo-provider', 'hint')"
+          :value="$store.convoSetup.config.roles.conversation.provider"
+          @change="$event.target.value = $store.convoSetup.conversationSetProvider($event.target.value, autosave)">
+        <template x-for="option in $store.convoSetup.conversationProviderOptions()" :key="option.id"><option :value="option.id" :disabled="option.disabled" :selected="option.id === ($store.convoSetup.config.roles.conversation.provider || '')" x-text="option.label"></option></template>
+      </select></div>
+    </div>
+    <p class="field-description convo-model-alert" role="note" x-show="!$store.convoSetup.conversationProviderInfo().selectable" x-text="$store.convoSetup.conversationProviderInfo().label + ' cannot be used: ' + $store.convoSetup.conversationProviderInfo().reason + ' Choose one of the first providers.'"></p>
+    <p class="field-description" role="note" data-convo-field="provider-note" x-show="$store.convoSetup.conversationProviderInfo().compatible" x-text="$store.convoSetup.conversationProviderInfo().note"></p>
+    <details class="convo-model-why"><summary>Why some providers cannot be chosen</summary><ul><template x-for="option in $store.convoSetup.conversationProviderOptions().filter(item => item.disabled)" :key="option.id"><li><strong x-text="option.name"></strong> — <span x-text="option.reason"></span></li></template></ul></details>
+
+    <template x-if="$store.convoSetup.config.roles.conversation.provider === 'other' || $store.convoSetup.conversationLocalServer()"><div class="field" x-id="['convo-base']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-base', 'title')">API base URL</div><div class="field-description" x-text="($store.convoSetup.config.roles.conversation.provider === 'other' ? 'Your OpenAI-compatible server, for example a llama.cpp server at http://host.docker.internal:8080/v1. Convo calls its /chat/completions. ' : '') + $store.convoSetup.conversationServerHint()"></div></div>
+      <div class="field-control"><input type="text" inputmode="url" data-convo-field="api-base" autocomplete="off" spellcheck="false" :placeholder="$store.convoSetup.conversationProviderInfo().base || 'http://host.docker.internal:8080/v1'" :aria-labelledby="$id('convo-base', 'title')"
+          x-model="$store.convoSetup.config.roles.conversation.api_base" @input="$store.convoSetup.conversationEdited('roles.conversation.api_base', autosave)"></div>
+    </div></template>
+    <template x-if="!$store.convoSetup.config.roles.conversation.provider"><div class="field" x-id="['convo-url']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-url', 'title')">Server URL</div><div class="field-description">The endpoint exactly as entered before providers existed. Choosing Other keeps this address and the key saved for it.</div></div>
+      <div class="field-control"><input type="text" inputmode="url" data-convo-field="url" autocomplete="off" spellcheck="false" placeholder="http://host.docker.internal:8080/v1" :aria-labelledby="$id('convo-url', 'title')"
+          x-model="$store.convoSetup.config.roles.conversation.url" @input="$store.convoSetup.conversationEdited('roles.conversation.url', autosave)"></div>
+    </div></template>
+
+    <div class="field" x-id="['convo-model']" @click.outside="close()" x-data="{ results: [], open: false, busy: false, index: -1, note: '',
+        async search() { if (this.busy) return; this.busy = true; this.note = '';
+          try { this.results = await $store.convoSetup.conversationSearch($store.convoSetup.config.roles.conversation.model); this.note = this.results.length ? '' : 'No models found'; }
+          catch { this.results = []; this.note = 'Model search is unavailable'; }
+          finally { this.busy = false; this.open = true; this.index = -1; } },
+        get items() { const groups = $store.convoSetup.conversationGroup(this.results, $store.convoSetup.config.roles.conversation.model); return [...groups.matched, ...groups.rest]; },
+        move(step) { if (!this.open) { this.search(); return; } const count = this.items.length; if (count) this.index = (this.index + step + count) % count; },
+        choose(id) { $store.convoSetup.conversationChooseModel(id, autosave); this.close(); this.$refs.model.focus(); },
+        close() { this.open = false; this.index = -1; } }">
+      <div class="field-label"><div class="field-title" :id="$id('convo-model', 'title')">Model name</div><div class="field-description">Model identifier. Click the field or the search button to browse available models; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
+      <div class="field-control convo-model-search">
+        <input type="text" x-ref="model" data-convo-field="model" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
+               :aria-labelledby="$id('convo-model', 'title')" :aria-controls="$id('convo-model', 'list')" :aria-expanded="open ? 'true' : 'false'"
+               :aria-activedescendant="open && index >= 0 ? $id('convo-model', 'option-' + index) : null"
+               x-model="$store.convoSetup.config.roles.conversation.model" @input="$store.convoSetup.conversationEdited('roles.conversation.model', autosave)"
+               @click="open || search()" @keydown.arrow-down.prevent="move(1)" @keydown.arrow-up.prevent="move(-1)"
+               @keydown.enter.prevent="open && index >= 0 ? choose(items[index]) : search()" @keydown.escape="if (open) { $event.stopPropagation(); close(); }">
+        <button type="button" class="model-search-btn" aria-label="Search available models" :aria-busy="busy ? 'true' : 'false'" :disabled="busy" @click="search()"><x-icon name="search" aria-hidden="true" x-show="!busy"></x-icon><x-icon class="model-search-spinner" name="progress_activity" aria-hidden="true" x-show="busy"></x-icon></button>
+        <div class="model-search-results" role="listbox" :id="$id('convo-model', 'list')" :aria-labelledby="$id('convo-model', 'title')" x-show="open">
+          <template x-for="(id, i) in items" :key="id"><div class="model-search-item" role="option" :id="$id('convo-model', 'option-' + i)" :aria-selected="i === index ? 'true' : 'false'" :class="{ 'is-active': i === index }" @mousedown.prevent @click="choose(id)" x-text="id"></div></template>
+          <div class="model-search-item disabled" role="presentation" x-show="note" x-text="note"></div>
+        </div>
+      </div>
+    </div>
+
+    <template x-if="$store.convoSetup.conversationUsesHostKey()"><div class="field" x-id="['convo-host-key']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-host-key', 'title')">API key</div><div class="field-description" x-text="'Agent Zero’s ' + $store.convoSetup.conversationProviderInfo().label + ' key, shared with every Agent Zero model using it. Saved to Agent Zero when you leave the field; never shown here.'"></div></div>
+      <div class="field-control convo-model-stack">
+        <input type="text" class="masked-text-input" data-convo-field="host-key" autocomplete="off" spellcheck="false" :aria-labelledby="$id('convo-host-key', 'title')"
+               :placeholder="$store.convoSetup.conversationHasHostKey() ? '••••••••••••' : 'No key yet'" :value="$store.convoSetup.conversationHostKeyValue()"
+               @input="$store.convoSetup.conversationHostKeyInput($event.target.value)" @change="$store.convoSetup.conversationSaveHostKey()">
+        <p class="field-description" role="status" x-show="$store.convoSetup?.ui?.conversation?.hostKeyNote" x-text="$store.convoSetup?.ui?.conversation?.hostKeyNote"></p>
+        <p class="field-description" x-show="$store.convoSetup.config.roles.conversation.token_env">The credential environment reference in Advanced is used instead of this key.</p>
+        <button type="button" class="button" data-convo-field="copy-key" x-show="$store.convoSetup.conversationCanCopyKey()" :disabled="$store.convoSetup?.ui?.conversation?.keyCopy?.busy === true" @click="$store.convoSetup.conversationCopyKey()">Copy my Convo key to Agent Zero</button>
+        <p class="field-description" x-show="$store.convoSetup.conversationCanCopyKey()">Copies the key Convo saved for this address into Agent Zero’s empty key. It never replaces a key and never shows it; Convo keeps its own copy.</p>
+        <p class="field-description" role="status" x-show="$store.convoSetup?.ui?.conversation?.keyCopy?.message" x-text="$store.convoSetup?.ui?.conversation?.keyCopy?.message"></p>
+      </div>
+    </div></template>
+    <template x-if="$store.convoSetup.conversationUsesConvoKey()"><div class="field" x-id="['convo-own-key']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-own-key', 'title')">API key</div><div class="field-description" x-text="$store.convoSetup.conversationConvoKeyHint(autosave)"></div></div>
+      <div class="field-control convo-model-stack">
+        <input type="password" data-convo-field="convo-key" autocomplete="new-password" :aria-labelledby="$id('convo-own-key', 'title')"
+               :placeholder="$store.convoSetup.credentials[role] ? 'Key saved securely' : 'Optional key'" :value="$store.convoSetup.keys[role] || ''"
+               @input="$store.convoSetup.setKey(role, $event.target.value)" @change="autosave && $store.convoSetup.conversationSaveConvoKey()">
+        <button type="button" class="button" x-show="$store.convoSetup.credentials[role]" @click="$store.convoSetup.clearKey(role); autosave && $store.convoSetup.conversationSaveConvoKey()">Remove the saved key</button>
+        <p class="field-description" x-show="!autosave && $store.convoSetup.keys[role] === ''">The saved key will be removed when you save.</p>
+        <p class="field-description" role="status" x-show="$store.convoSetup?.ui?.conversation?.keyNote" x-text="$store.convoSetup?.ui?.conversation?.keyNote"></p>
+      </div>
+    </div></template>
+
+    <div class="field" x-id="['convo-context']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-context', 'title')">Context window (tokens)</div><div class="field-description">Convo keeps the conversation inside this window; the same value as the tuning controls’ context tokens. Applies to the next conversation.</div></div>
+      <div class="field-control"><input type="number" min="4096" step="1" data-convo-field="context" :aria-labelledby="$id('convo-context', 'title')" x-model.number="$store.convoSetup.config.compaction.context_tokens" @input="$store.convoSetup.conversationEdited('compaction.context_tokens', autosave)"></div>
+    </div>
+    <div class="field" x-id="['convo-audio']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-audio', 'title')">Accepts audio input</div><div class="field-description">On: your speech goes to the model as audio. Off: Convo sends Agent Zero’s speech-to-text transcript instead. A model list does not prove audio support; Test audio input does.</div></div>
+      <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="audio" :aria-labelledby="$id('convo-audio', 'title')" x-model="$store.convoSetup.config.roles.conversation.capabilities.audio_input" @change="$store.convoSetup.conversationEdited('roles.conversation.capabilities.audio_input', autosave)"><span class="toggler"></span></label></div>
+    </div>
+    <div class="field" x-id="['convo-remote']">
+      <div class="field-label"><div class="field-title" :id="$id('convo-remote', 'title')">Allow remote processing</div><div class="field-description" x-text="$store.convoSetup.conversationRemoteText()"></div></div>
+      <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="remote" :aria-labelledby="$id('convo-remote', 'title')" x-model="$store.convoSetup.config.roles.conversation.remote" @change="$store.convoSetup.conversationEdited('roles.conversation.remote', autosave)"><span class="toggler"></span></label></div>
+    </div>
+    <template x-for="row in $store.convoSetup.conversationRows()" :key="row.id"><p class="field-description convo-model-row" :data-state="row.state"><x-icon :name="row.state === 'ready' ? 'check_circle' : (row.state === 'warning' ? 'warning' : 'error')" aria-hidden="true"></x-icon><strong x-text="row.label + ': '"></strong><span x-text="row.detail"></span></p></template>
+
+    <div class="advanced-section convo-model-advanced" x-data="{ advOpen: false }" x-id="['convo-advanced']">
+      <button type="button" class="advanced-toggle" :aria-expanded="advOpen ? 'true' : 'false'" :aria-controls="$id('convo-advanced', 'body')" @click="advOpen = !advOpen"><x-icon class="advanced-toggle-icon" name="chevron_right" aria-hidden="true" :class="{ 'is-open': advOpen }"></x-icon><span>Advanced Settings</span></button>
+      <div class="advanced-body" :id="$id('convo-advanced', 'body')" x-show="advOpen">
+        <template x-if="$store.convoSetup.conversationHostKey()"><div>
+          <template x-if="!$store.convoSetup.conversationLocalServer()"><div class="field" x-id="['convo-override']">
+            <div class="field-label"><div class="field-title" :id="$id('convo-override', 'title')">API base URL</div><div class="field-description" x-text="'Custom endpoint URL. Leave empty to use ' + $store.convoSetup.conversationProviderInfo().label + '’s own address (' + $store.convoSetup.conversationProviderInfo().base + ').'"></div></div>
+            <div class="field-control"><input type="text" inputmode="url" data-convo-field="api-base-override" autocomplete="off" spellcheck="false" :aria-labelledby="$id('convo-override', 'title')"
+                x-model="$store.convoSetup.config.roles.conversation.api_base" @input="$store.convoSetup.conversationEdited('roles.conversation.api_base', autosave)"></div>
+          </div></template>
+          <p class="field-description convo-model-alert" role="note" x-show="$store.convoSetup.conversationRouteWarning()" x-text="$store.convoSetup.conversationRouteWarning()"></p>
+          <div class="field" x-id="['convo-key-source']">
+            <div class="field-label"><div class="field-title" :id="$id('convo-key-source', 'title')">Key source</div><div class="field-description">Agent Zero’s key for this provider, or Convo’s own key kept for this address only.</div></div>
+            <div class="field-control"><select data-convo-field="key-source" :aria-labelledby="$id('convo-key-source', 'title')" x-model="$store.convoSetup.config.roles.conversation.key_source" @change="$store.convoSetup.conversationEdited('roles.conversation.key_source', autosave)">
+              <option value="provider" :selected="$store.convoSetup.config.roles.conversation.key_source !== 'convo'" x-text="'Agent Zero’s ' + $store.convoSetup.conversationProviderInfo().label + ' key'"></option>
+              <option value="convo" :selected="$store.convoSetup.config.roles.conversation.key_source === 'convo'">Convo’s own key</option>
+            </select></div>
+          </div>
+        </div></template>
+        <div class="field" x-id="['convo-env']">
+          <div class="field-label"><div class="field-title" :id="$id('convo-env', 'title')">Credential environment reference</div><div class="field-description">The name of an environment variable. When set it is the only key used, even when it is empty.</div></div>
+          <div class="field-control convo-model-stack"><input type="text" data-convo-field="token-env" autocomplete="off" spellcheck="false" placeholder="e.g. MY_LLAMA_KEY" :aria-labelledby="$id('convo-env', 'title')"
+              :aria-invalid="$store.convoSetup?.conversationReferenceProblem?.() ? 'true' : 'false'" x-model="$store.convoSetup.config.roles.conversation.token_env" @input="$store.convoSetup.conversationEdited('roles.conversation.token_env', autosave)">
+            <p class="field-description convo-model-alert" role="note" data-convo-field="token-env-problem" x-show="!!$store.convoSetup?.conversationReferenceProblem?.()"><span x-text="$store.convoSetup?.conversationReferenceProblem?.()"></span> <button type="button" class="button" data-convo-field="token-env-clear" @click="$store.convoSetup.conversationClearReference(autosave)">Clear</button></p></div>
+        </div>
+        <div class="field" x-id="['convo-cancel']">
+          <div class="field-label"><div class="field-title" :id="$id('convo-cancel', 'title')">Supports cancellation (declared)</div><div class="field-description">You declare it; Convo cannot verify it.</div></div>
+          <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="cancellation" :aria-labelledby="$id('convo-cancel', 'title')" x-model="$store.convoSetup.config.roles.conversation.capabilities.cancellation" @change="$store.convoSetup.conversationEdited('roles.conversation.capabilities.cancellation', autosave)"><span class="toggler"></span></label></div>
+        </div>
+        <div class="field" x-id="['convo-tools']">
+          <div class="field-label"><div class="field-title" :id="$id('convo-tools', 'title')">Supports tool calls (declared)</div><div class="field-description">You declare it; Convo cannot verify it. Tools still need an explicit request.</div></div>
+          <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="tool-calls" :aria-labelledby="$id('convo-tools', 'title')" x-model="$store.convoSetup.config.roles.conversation.capabilities.tool_calls" @change="$store.convoSetup.conversationEdited('roles.conversation.capabilities.tool_calls', autosave)"><span class="toggler"></span></label></div>
+        </div>
+        <div class="convo-model-checks">
+          <div class="convo-model-actions"><button type="button" class="button" data-convo-field="connection-test" :disabled="$store.convoSetup.isDiscovering(role)" @click="$store.convoSetup.discover(role, true)">Test connection</button><button type="button" class="button" data-convo-field="audio-probe" :disabled="$store.convoSetup?.ui?.conversation?.probe?.busy === true" @click="$store.convoSetup.conversationProbe()">Test audio input</button></div>
+          <p class="field-description">Test connection lists the models at this address with the key in use; it does not test audio. Test audio input sends one short synthetic clip to the saved model, only when you click it.</p>
+          <p class="field-description" role="status" x-text="$store.convoSetup.choices[role]?.busy ? 'Checking the configured server…' : ($store.convoSetup.choices[role]?.verification?.message || 'Connection not checked in this view.')"></p>
+          <p class="field-description convo-model-probe" role="status" data-convo-field="probe-result" x-show="$store.convoSetup?.ui?.conversation?.probe?.message" :data-state="$store.convoSetup?.ui?.conversation?.probe?.state"><x-icon :name="$store.convoSetup?.ui?.conversation?.probe?.state === 'pass' ? 'check_circle' : ($store.convoSetup?.ui?.conversation?.probe?.state === 'busy' ? 'progress_activity' : 'error')" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup?.ui?.conversation?.probe?.state === 'pass' ? 'Passed: ' : ($store.convoSetup?.ui?.conversation?.probe?.state === 'busy' ? 'Testing: ' : 'Failed: ')"></strong><span x-text="$store.convoSetup?.ui?.conversation?.probe?.message"></span><span x-show="$store.convoSetup?.ui?.conversation?.probe?.reply" x-text="' Reply: “' + ($store.convoSetup?.ui?.conversation?.probe?.reply || '') + '”'"></span></p>
+        </div>
+      </div>
+    </div>
+  </div></template>
+</fieldset>
+<style>
+/* The model-card styles of the Connections cards: the classifier and speech output cards carry .convo-model-card too and use these
+   rules (the shell composes this card with them), so all three read alike. Text colours and sizes are the host's own field classes. */
+.convo-model-fields{container:convo-model/inline-size;display:flex;flex-direction:column;gap:.25rem;min-width:0}
+.convo-model-card .convo-model-note{display:flex;gap:.5rem;align-items:flex-start;margin:0 0 .25rem;padding:.6rem .75rem;border:1px solid var(--color-border);border-radius:8px;font-size:.85rem;line-height:1.45;color:var(--color-text)}
+.convo-model-card .field{margin-block:.6rem}
+.convo-model-card .field-control{position:relative;min-width:0}
+.convo-model-card .convo-model-stack{flex-direction:column;align-items:stretch;gap:.4rem}
+.convo-model-card .convo-model-search input[type=text]{padding-right:36px}
+/* The Convo modal lays every label out as a column; the host switch stays a switch. */
+.convo-model-card label.toggle{display:inline-block;flex:none}
+.convo-model-card .toggle input:focus-visible+.toggler,.convo-model-card :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+.convo-model-card .model-search-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:24px;height:24px;padding:0;display:grid;place-items:center;border:0;background:transparent;color:var(--color-text);cursor:pointer;opacity:.8}
+.convo-model-card .model-search-btn:hover,.convo-model-card .model-search-btn:focus-visible{opacity:1}
+.convo-model-card .model-search-btn>*{grid-area:1/1;font-size:18px}
+.convo-model-card .model-search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:220px;overflow-y:auto;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.3);z-index:50;padding:4px}
+.convo-model-card .model-search-item{padding:5px 8px;font-size:.8rem;border-radius:4px;cursor:pointer;word-break:break-all}
+.convo-model-card .model-search-item:hover,.convo-model-card .model-search-item.is-active{background:var(--color-background-hover,rgba(127,127,127,.2));outline:1px solid var(--color-border)}
+.convo-model-card .model-search-item.disabled{cursor:default;font-style:italic;outline:0;background:none}
+.convo-model-card .advanced-toggle{display:flex;align-items:center;gap:4px;margin-top:.25rem;padding:4px 0;border:0;background:none;color:var(--color-text);font:inherit;font-size:.8rem;cursor:pointer}
+.convo-model-card .advanced-toggle-icon{transition:transform .15s ease}.convo-model-card .advanced-toggle-icon.is-open{transform:rotate(90deg)}
+.convo-model-card .convo-model-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+.convo-model-card .convo-model-conflict{display:flex;flex-direction:column;gap:.4rem;padding:.5rem 0;border-top:1px solid var(--color-border);font-size:.85rem}
+.convo-model-card .convo-model-conflict code{overflow-wrap:anywhere}
+.convo-model-card .convo-model-row,.convo-model-card .convo-model-probe,.convo-model-card .convo-model-alert{display:flex;flex-wrap:wrap;gap:.3rem;align-items:baseline;overflow-wrap:anywhere}
+.convo-model-card .convo-model-why{font-size:.82rem;margin:.1rem 0 .4rem}.convo-model-card .convo-model-why summary{cursor:pointer}.convo-model-card .convo-model-why ul{margin:.4rem 0;padding-left:1.1rem;line-height:1.5}
+@container convo-model (max-width:560px){.convo-model-card .field{display:block}.convo-model-card .field-label{padding-right:0}.convo-model-card .field-control{margin-top:.35rem}}
+@media (prefers-reduced-motion:reduce){.convo-model-card .advanced-toggle-icon{transition:none}}
+/* As its own model type in the preset editor the section is the frame and the title: no second border or legend. */
+.convo-model-type .convo-model-card{border:0;padding:0;margin:0;background:none;min-width:0}
+.convo-model-type .convo-model-card>legend{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+</style>
+</body></html>

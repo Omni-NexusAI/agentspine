@@ -3,7 +3,9 @@
 The host Whisper modal has changed across compatible Agent Zero releases. This
 route owns only Enhanced Speech's mirrored provider settings so a selected
 processing device survives a native modal save without touching host-core
-configuration.
+configuration. A requested ``message_mode`` of ``continuous`` ("Draft in
+composer (continuous)") is stored as the host's ``draft`` plus Convo's
+``voice_message_draft`` flag, in one Convo settings transaction.
 """
 
 from __future__ import annotations
@@ -133,23 +135,36 @@ def _with_device_metadata(config: dict) -> dict:
     return result
 
 
-def _save_runtime_config(helper, requested: dict) -> dict:
-    normalized = helper.normalize_whisper_config({**_runtime_config(helper), **requested})
+def _save_runtime_config(helper, requested: dict) -> tuple[dict, str, str]:
+    with helper._transactions().lock():
+        return _save_runtime_config_locked(helper, requested)
 
+
+def _save_runtime_config_locked(helper, requested: dict) -> tuple[dict, str, str]:
+    """Returns (Whisper values, Convo's drafting flag, Convo's settings revision) as saved."""
+    flag = None
+    if "message_mode" in requested:
+        # Agent Zero's Whisper keeps only send|draft: "continuous" is its draft plus Convo's own flag, never a host value.
+        host_mode, flag = helper.split_message_mode(requested["message_mode"])
+        requested = {**requested, "message_mode": host_mode}
+    normalized = helper.normalize_whisper_config({**_runtime_config(helper), **requested})
+    transactions = helper._transactions()
+    enhanced_path = _plugin_config_path("_convo")
+
+    def update(enhanced: dict) -> dict:
+        stt = enhanced.get("stt") if isinstance(enhanced.get("stt"), dict) else {}
+        enhanced = {**enhanced, "stt": {**stt, "provider": "whisper", "whisper": helper._deep_merge(stt.get("whisper", {}), normalized)}}
+        return helper.with_voice_message_draft(enhanced, flag) if flag else enhanced
+
+    # Convo's settings are checked before anything is written: invalid ones refuse the change and both files stay as they were.
+    update(transactions.read(enhanced_path))
     provider_path = _plugin_config_path(WHISPER_PLUGIN)
     provider = _read_config(provider_path)
     provider.update(helper.provider_whisper_config(normalized))
     _write_config_atomically(provider_path, provider)
-
-    enhanced_path = _plugin_config_path("_convo")
-    enhanced = _read_config(enhanced_path)
-    stt = enhanced.setdefault("stt", {})
-    if not isinstance(stt, dict):
-        stt = enhanced["stt"] = {}
-    stt["provider"] = "whisper"
-    stt["whisper"] = helper._deep_merge(stt.get("whisper", {}), normalized)
-    _write_config_atomically(enhanced_path, enhanced)
-    return normalized
+    # One settings transaction for the Whisper values and the flag; a changed flag advances Convo's revision.
+    saved = transactions.transaction(enhanced_path, update)
+    return normalized, helper.stored_voice_message_draft(saved), transactions.settings_revision(saved)
 
 
 def _notify_saved_config(config: dict) -> None:
@@ -186,13 +201,18 @@ class SttConfig(ApiHandler):
                 "success": True,
                 "enabled": _whisper_enabled(),
                 "config": _with_device_metadata(_runtime_config(helper)),
+                "voice_message_draft": helper.stored_voice_message_draft(_read_config(_plugin_config_path("_convo"))),
             }
 
         requested = {key: input[key] for key in WHISPER_SETTING_KEYS if key in input}
-        config = _with_device_metadata(_save_runtime_config(helper, requested))
+        saved, flag, revision = _save_runtime_config(helper, requested)
+        config = _with_device_metadata(saved)
         _notify_saved_config(config)
+        # `config.message_mode` stays the host's send|draft (the host store copies it); the flag and revision sit beside it.
         return {
             "success": True,
             "enabled": _whisper_enabled(),
             "config": config,
+            "voice_message_draft": flag,
+            "convo_revision": revision,
         }

@@ -1,60 +1,8 @@
-<html><head><title>Convo settings</title></head><body>
-<script type="module">
-import { fillDefaults } from '/plugins/_convo/webui/defaults.js';
+<html><head><title>Convo settings</title><script type="module">
 import { store, install } from '/plugins/_convo/webui/convo-store.js';
-globalThis.convoFillDefaults = fillDefaults; install();
-</script>
-<div x-data x-init="const defaults = await import('/plugins/_convo/webui/defaults.js'); config.convo ||= {}; defaults.fillDefaults(config.convo);">
-<template x-if="config?.convo?.roles">
-<div>
-  <div class="section-title">Convo</div>
-  <p class="section-description">Development preview. Providers must already be available. Model weights are not installed with this plugin. Conversation and classifier selection apply at the next session; speech selection is frozen for each response.</p>
-  <div class="field"><label><input type="checkbox" x-model="config.convo.enabled"> Enable composer conversation control</label></div>
-  <div class="field"><label><input type="checkbox" x-model="config.convo.ambient_enabled"> Allow ambient/name listening</label></div>
-  <div class="field"><label><input type="checkbox" x-model="config.convo.remote_ambient_consent"> Separately allow continuous ambient processing outside local providers</label></div>
-  <p class="field-description">Ambient speech is not retained unless admitted to this conversation. No automatic provider fallback. Classification quality requires listening acceptance before unattended use.</p>
-  <div class="field"><label><input type="checkbox" x-model="config.convo.transcription_enabled"> Parallel Whisper transcript for active conversation</label></div>
-  <p class="field-description">Audio-capable models do not wait for Whisper. Text-only mode uses Whisper to feed both model slots. Ambient mode does not request optional background transcription.</p>
-  <div class="field"><label>Focused-app shortcut <input type="text" x-model="config.convo.hotkey" placeholder="Ctrl+Shift+Space"></label></div>
-  <div class="field"><label>Activation names (one per line)<textarea :value="config.convo.activation_names.join('\n')" @change="config.convo.activation_names = $event.target.value.split('\n').map(s => s.trim()).filter(Boolean)"></textarea></label></div>
-  <div class="field"><label>Voice personality/style overlay<textarea x-model="config.convo.style" maxlength="1600" rows="4"></textarea></label></div>
-  <p class="field-description">Identity and tone are inherited from the selected agent. This overlay shapes expression, not tool permissions or lifecycle policy.</p>
-  <div class="field"><label>Sidecar URL<input type="url" x-model="config.convo.sidecar.url"></label></div>
-  <div class="field"><label>Sidecar credential environment variable<input type="text" x-model="config.convo.sidecar.token_env"></label></div>
-  <label><input type="checkbox" x-model="config.convo.sidecar.remote"> Remote sidecar (HTTPS required)</label>
-  <p class="field-description">Configure the same fresh token in the host and sidecar environments. Never paste credentials into URL or model fields.</p>
-  <template x-for="name in ['conversation','classifier','tts']" :key="name">
-    <fieldset style="margin:1rem 0;padding:1rem;border:1px solid var(--color-border)">
-      <legend x-text="name"></legend>
-      <template x-if="name === 'tts'"><label>Adapter<select x-model="config.convo.roles[name].backend"><option value="managed_audio">Convo-managed audio.cpp Base cloning</option><option value="openai">External audio.cpp / FasterQwen compatible API</option><option value="host_kokoro">Host Kokoro (newer provider contract required)</option></select></label></template>
-      <div class="field"><label>Provider URL<input type="url" x-model="config.convo.roles[name].url"></label></div>
-      <div class="field"><label>Exact model ID<input type="text" x-model="config.convo.roles[name].model"></label></div>
-      <div class="field"><label>Credential environment variable<input type="text" x-model="config.convo.roles[name].token_env"></label></div>
-      <label><input type="checkbox" x-model="config.convo.roles[name].remote"> Explicit remote provider</label>
-      <template x-if="name !== 'tts'"><div>
-        <label><input type="checkbox" x-model="config.convo.roles[name].capabilities.audio_input"> Audio input supported (otherwise use Whisper text)</label>
-        <label x-show="name === 'conversation'"><input type="checkbox" x-model="config.convo.roles[name].capabilities.tool_calls"> Tool proposals supported</label>
-      </div></template>
-      <template x-if="name === 'tts'"><div>
-        <div class="field"><label>Voice/profile ID<input type="text" x-model="config.convo.roles.tts.voice" placeholder="clone:profile-id"></label></div>
-        <p class="field-description">Select a profile belonging to this backend. Base cloning, VoiceDesign and CustomVoice are distinct capabilities. This preview uses buffered WAV; native incremental playback is not yet exposed.</p>
-        <label>Delivery instructions<textarea x-model="config.convo.roles.tts.instructions" :disabled="!config.convo.roles.tts.capabilities.instruction_control"></textarea></label>
-        <p x-show="!config.convo.roles.tts.capabilities.instruction_control">Disabled: loaded variant has not been verified for instruction control.</p>
-      </div></template>
-    </fieldset>
-  </template>
-  <details><summary>Context budget and developer diagnostics</summary>
-    <label><input type="checkbox" x-model="config.convo.developer_mode"> Developer event details</label>
-    <div class="field"><label>Effective model context tokens<input type="number" x-model.number="config.convo.compaction.context_tokens" min="4096"></label></div>
-    <div class="field"><label>Response reserve<input type="number" x-model.number="config.convo.compaction.output_reserve" min="512"></label></div>
-    <div class="field"><label>Measured audio-token reserve<input type="number" x-model.number="config.convo.audio_token_reserve" min="1"></label></div>
-    <div class="field"><label>Maximum audio segment seconds<input type="number" x-model.number="config.convo.max_audio_seconds" min="1" max="45"></label></div>
-    <p>Audio tokenization is model-specific. The initial reserve is a conservative configuration placeholder, not a measured capacity guarantee. Trigger 70%, target 50%, at least six recent settled exchanges. Visible history is never compacted away.</p>
-  </details>
-  <p>Native Kokoro voice/blending and Whisper dictation settings remain in the host's speech controls.</p>
-  <button class="btn" @click="$store.convo.migrateSettings()">Migrate legacy settings</button>
-  <button class="btn" @click="$store.convo.show()">Open Convo panel</button>
-  <button class="btn" @click="$store.convo.openStudio()">Voice Studio / model downloads</button>
-</div>
-</template>
-</div></body></html>
+import { store as setup } from '/plugins/_convo/webui/setup-store.js';
+install();
+</script></head><body><div x-data><template x-if="$store.convoSetup"><div class="convo-native-settings" x-init="$store.convoSetup.bindNative(context)" x-destroy="$store.convoSetup.keys = {}">
+<p class="section-description">Configure Convo here or in the sidebar. Both use the same settings. Native dictation and Kokoro blending remain in Agent Zero’s speech settings.</p>
+<x-component path="/plugins/_convo/webui/settings-controls.html"></x-component>
+</div></template></div><style>.convo-native-settings .convo-settings>footer{display:none}</style></body></html>

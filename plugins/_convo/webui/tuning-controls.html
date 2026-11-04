@@ -1,0 +1,45 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<!-- The tunables: the diagnostics panel's Tune section (and Settings → Advanced until that tab is removed). Both edit the shared
+     convoSetup draft and save through its revision-aware save. -->
+<fieldset class="convo-card"><legend>Runtime</legend>
+<label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.sidecar.managed">Manage Convo runtime automatically when the plugin is on</label>
+<p class="convo-hint">One-time dependency setup is required. Activation never downloads or loads models.</p>
+<div x-show="!$store.convoSetup.config.sidecar.managed" class="convo-stack"><label>External gateway URL<input type="url" x-model="$store.convoSetup.config.sidecar.url"></label><label>Gateway credential environment reference<input x-model="$store.convoSetup.config.sidecar.token_env"></label><label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.sidecar.remote">Remote gateway (HTTPS required)</label></div>
+<div class="convo-actions"><button class="button" @click="$store.convoSetup.runtime('runtime_start')">Start owned runtime</button><button class="button" @click="$store.convoSetup.runtime('runtime_stop')">Stop owned runtime</button></div>
+</fieldset>
+<fieldset class="convo-card"><legend>Decision backends</legend>
+<label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.system_one.enabled">Use System One for conversational decisions</label>
+<label x-show="$store.convoSetup.config.system_one.enabled">Registered decision backend<select x-model="$store.convoSetup.config.system_one.backend"><option value="">Select a provisioned backend</option><template x-for="option in $store.convoSetup.decisionOptions()" :key="option.id"><option :value="option.id" :selected="option.id === $store.convoSetup.config.system_one.backend" x-text="option.label"></option></template></select></label>
+<details x-show="$store.convoSetup.config.system_one.enabled"><summary>Manual decision registration override</summary><input aria-label="Manual decision registration" x-model="$store.convoSetup.config.system_one.backend" autocomplete="off"></details>
+<p class="convo-hint" x-show="$store.convoSetup.config.system_one.enabled">Requires System One enabled, its Convo consumer opted in, and a provisioned compatible backend. No model is downloaded or loaded here; no automatic classifier fallback. Main, Utility and Embedding routes are unchanged.</p>
+<p class="convo-hint">The classifier itself (provider, model, address, key, or System One’s decider) is set in Settings → Connections → Classifier; this picker is for a backend another provisioner registered.</p>
+</fieldset>
+<details><summary>Speech gate: when to answer, interrupt or stay quiet</summary><div class="convo-stack">
+  <p class="convo-hint">With a System One decision backend, Convo answers from the classifier's probabilities instead of a fixed confidence cut-off. Every value is a probability from 0 to 1. The defaults were measured for one decision model on synthetic speech; measure them again for another model or for real voices (tests/calibrate_gate.py). A classifier that returns only a self-reported confidence cannot be calibrated: it keeps fixed thresholds and the readiness list says it is unsupported. Work with side effects always needs an explicit request at 0.9 or more, whatever is set here.</p>
+  <div class="convo-grid">
+    <label>Answer at (active listening)<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.respond_min"></label>
+    <label>Answer at (ambient listening)<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.ambient_respond_min"></label>
+    <label>Stop the assistant at<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.interrupt_min"></label>
+    <label>Wave speech away at<input type="number" min="0.5" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.ignore_min"></label>
+    <label>Counts as called by name at<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.name_min"></label>
+    <label>Ask which was meant at (unclear)<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.clarify_min"></label>
+    <label>Never ask when others are above<input type="number" min="0.05" max="1" step="0.05" x-model.number="$store.convoSetup.config.policy_gate.clarify_elsewhere_max"></label>
+  </div>
+</div></details>
+<details><summary>Turn engine: speed and recovery (experimental)</summary><div class="convo-stack">
+  <p class="convo-hint">These change how a reply is produced, not what is allowed. Safety rules (who may speak, tools needing an explicit request, the two-second stop) are unchanged. Nothing here is measured on real voices yet.</p>
+  <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.speculative_reply">Start the reply while the classifier decides (held until admitted)</label>
+  <p class="convo-hint">Faster, but every completed utterance in active listening also goes to the conversation model, even speech the classifier would then ignore. Nothing is shown, spoken or run unless the turn is admitted. Never used in ambient or name listening.</p>
+  <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.main_listen_decision">Let the conversation model stay quiet when the audio was not for it</label>
+  <p class="convo-hint">The model may answer exactly [LISTEN]. That only suppresses a reply; it can never make Convo answer something the classifier declined.</p>
+  <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.first_clause_speech">Speak the first clause early and prepare the next phrase while it plays</label>
+  <div class="convo-grid">
+    <label>Join a continued thought within (seconds, 0 = off)<input type="number" min="0" max="15" step="1" x-model.number="$store.convoSetup.config.continuation_seconds"></label>
+    <label>Remember ignored remarks for (seconds, 0 = off)<input type="number" min="0" max="60" step="5" x-model.number="$store.convoSetup.config.recent_remarks_seconds"></label>
+  </div>
+  <p class="convo-hint">Joining keeps the audio of an unfinished or still-unanswered utterance in memory only (never saved) so the next fragment is answered with it. Remembered remarks keep recently ignored speech in memory for that long and send it to the conversation model only with a later admitted turn, labelled as overheard.</p>
+</div></details>
+<details><summary>Context and audio budgets</summary><div class="convo-grid"><label>Context tokens<input type="number" min="4096" x-model.number="$store.convoSetup.config.compaction.context_tokens"></label><label>Response reserve<input type="number" min="512" x-model.number="$store.convoSetup.config.compaction.output_reserve"></label><label>Audio-token reserve<input type="number" min="1" x-model.number="$store.convoSetup.config.audio_token_reserve"></label><label>Maximum turn seconds<input type="number" min="1" max="45" x-model.number="$store.convoSetup.config.max_audio_seconds"></label></div></details>
+<label>Import standalone settings (JSON)<input type="file" accept="application/json,.json" @change="$store.convoSetup.previewImport($event.target.files[0]); $event.target.value = ''"></label>
+<template x-if="$store.convoSetup.importPreview"><section class="convo-card"><h4>Review import</h4><p class="convo-hint">Nothing changes until you select fields and apply.</p><template x-for="warning in $store.convoSetup.importPreview.warnings"><p x-text="warning"></p></template><template x-for="change in $store.convoSetup.importPreview.changes" :key="change.path"><label class="convo-check"><input type="checkbox" :value="change.path" x-model="$store.convoSetup.importPaths"><span><strong x-text="change.path"></strong><small x-text="JSON.stringify(change.before) + ' → ' + JSON.stringify(change.after)"></small><small x-text="change.warning"></small></span></label></template><button class="button" :disabled="!$store.convoSetup.importPaths.length" @click="$store.convoSetup.applyImport()">Apply selected changes</button></section></template>
+</body></html>

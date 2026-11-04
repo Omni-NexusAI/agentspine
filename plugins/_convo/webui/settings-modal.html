@@ -1,0 +1,33 @@
+<html><head><title>Convo settings</title><script type="module">
+import { store as convo } from '/plugins/_convo/webui/convo-store.js';
+import { store as setup } from '/plugins/_convo/webui/setup-store.js';
+</script></head><body>
+<div x-data="{release: null}" class="convo-modal" x-init="$store.convoSetup.load(); $store.convo.refresh(); release = $store.convo.trapFocus($el); $nextTick(() => $el.querySelector('[data-initial-focus]')?.focus())" x-destroy="release && release(); $store.convoSetup.keys = {}">
+  <p class="convo-hint convo-lead" tabindex="-1" data-initial-focus>These are the same settings as Plugins → Convo → Config. Model changes apply to the next conversation; voice changes apply to the next response. Native Kokoro blending and dictation devices stay in Agent Zero’s speech settings.</p>
+  <details class="convo-status" x-show="$store.convoSetup?.config"><summary>Connection status <small x-text="'Gateway: ' + ($store.convo.runtime?.label || ($store.convo.runtime?.mode === 'external' ? 'external, not managed by Convo' : $store.convo.runtime?.state) || 'checking')"></small></summary>
+    <template x-for="item in ($store.convoSetup?.readiness || [])" :key="item.id"><div class="convo-status-row"><strong x-text="item.label"></strong><span x-text="item.state"></span><p class="convo-hint" x-text="item.detail"></p></div></template>
+    <p class="convo-hint">A running gateway does not mean a model connection has been verified.</p>
+  </details>
+  <x-component path="/plugins/_convo/webui/settings-controls.html"></x-component>
+  <p class="convo-hint" x-show="!$store.convoSetup?.config" role="status">Loading Convo settings…</p>
+</div>
+<div class="modal-footer convo-modal-footer" data-modal-footer x-data>
+  <!-- The host moves this footer out of the body; bind `hidden` (not x-show), which keeps reacting after the move. -->
+  <small class="convo-unsaved" :hidden="!$store.convoSetup?.dirty" role="status">Unsaved changes</small>
+  <button type="button" class="button" @click="$store.convoSetup.load(true)" :disabled="!$store.convoSetup?.config">Reload saved</button>
+  <button type="button" class="button convo-primary" :disabled="!$store.convoSetup?.dirty || $store.convoSetup?.busy" @click="$store.convoSetup.save()" x-text="$store.convoSetup?.busy ? 'Saving…' : 'Save changes'"></button>
+  <button type="button" class="button" @click="window.closeModal?.()">Close</button>
+</div>
+<style>
+.convo-modal{display:flex;flex-direction:column;gap:1rem;min-width:0;color:var(--color-text);font:inherit}
+.convo-modal .convo-lead{margin:0}.convo-modal .convo-lead:focus{outline:none}
+.convo-modal .convo-settings>footer{display:none}
+.convo-modal .convo-status{border:1px solid var(--color-border);border-radius:10px;padding:.5rem .75rem;font-size:.85rem}
+.convo-modal .convo-status summary{cursor:pointer}.convo-modal .convo-status small{opacity:.7;margin-left:.4rem}
+.convo-modal .convo-status-row{padding:.4rem 0}.convo-modal .convo-status-row>span{float:right;font-size:.75rem}
+.convo-modal-footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:.5rem;padding:.75rem 1rem;border-top:1px solid var(--color-border)}
+.convo-modal-footer .convo-unsaved{margin-right:auto;opacity:.8}
+.convo-modal-footer .button{min-height:40px}.convo-modal-footer .convo-primary{background:var(--color-highlight,var(--color-panel));border-color:var(--color-text);color:#fff}
+.convo-modal-footer .convo-primary:disabled{background:transparent;border-color:var(--color-border);color:var(--color-text);opacity:.5;cursor:not-allowed}
+.convo-modal :focus-visible,.convo-modal-footer :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+</style></body></html>

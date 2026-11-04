@@ -1,7 +1,9 @@
-"""Authenticated model adapters. HTTP disconnects cancel provider requests."""
+"""Authenticated adapters; detached speech remains owned until proven terminal."""
 from __future__ import annotations
 
+import asyncio
 import base64
+import copy
 import hmac
 import io
 import json
@@ -18,7 +20,12 @@ from ..helpers.convo_contract import Capabilities, ContractError, credentials, e
 app = FastAPI(title="Convo sidecar", docs_url=None, redoc_url=None, openapi_url=None)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
-from . import studio
+from . import speech_admission, speech_stream, studio
+
+
+@app.exception_handler(speech_admission.SpeechAdmissionError)
+async def speech_admission_error(request, error):
+    return JSONResponse({'detail': error.detail}, status_code=error.status_code)
 
 
 @app.exception_handler(ContractError)
@@ -44,8 +51,19 @@ async def authenticated(authorization: str = Header(default="")):
 async def studio_control(payload: dict):
     try:
         return await studio.control(payload.get('operation'), payload.get('payload'), confirmed=payload.get('confirmed') is True, item_id=payload.get('item_id', ''))
+    except studio.StudioRejected:
+        raise HTTPException(400, 'Studio request rejected before audio-service dispatch') from None
+    except httpx.HTTPStatusError as error:
+        # studio.control only raises this after the full bounded upstream body.
+        # Never relabel a dispatched timeout/server failure as a safe rejection.
+        status = error.response.status_code
+        if 400 <= status < 500:
+            raise HTTPException(status, 'Managed audio rejected the Studio operation') from None
+        raise HTTPException(502, 'Studio outcome is unconfirmed; reconcile the audio backend before retrying') from None
+    except httpx.TimeoutException:
+        raise HTTPException(504, 'Studio outcome is unconfirmed; reconcile the audio backend before retrying') from None
     except Exception:
-        raise HTTPException(400, 'Managed Studio operation failed; no external service was changed') from None
+        raise HTTPException(502, 'Studio outcome is unconfirmed; reconcile the audio backend before retrying') from None
 
 
 @app.post('/freeze-speech', dependencies=[Depends(authenticated)])
@@ -55,11 +73,12 @@ async def freeze_speech(payload: dict):
 
 
 @app.post('/preview', dependencies=[Depends(authenticated)])
-async def preview_speech(payload: dict):
-    role = await studio.freeze({'backend': 'managed_audio', 'model': payload.get('model'), 'voice': payload.get('voice')})
+async def preview_speech(payload: dict, request: Request = None):
+    role = await studio.freeze({'backend': 'managed_audio', 'model': payload.get('model'),
+                                'voice': payload.get('voice'), 'tuning_profile': payload.get('tuning_profile', '')})
     text = payload.get('text', '')
     if not isinstance(text, str) or not 0 < len(text) <= 400: raise ContractError('Preview must contain at most 400 characters')
-    response = await speech({'role': role, 'text': text})
+    response = await speech({'role': role, 'text': text}, request=request)
     return {'audio': base64.b64encode(response.body).decode()}
 
 
@@ -91,6 +110,30 @@ def input_content(payload, role):
     return text
 
 
+MAX_CONTEXT_CLIPS = 8
+
+
+def answer_content(payload, role):
+    """The latest message, preceded (only when asked for) by earlier overheard speech as clearly labelled audio.
+
+    The extra clips are context the host chose to attach (`recent_remarks_seconds`); a model that cannot take audio never
+    receives them, and each clip is validated like any other audio."""
+    content = input_content(payload, role)
+    clips = payload.get("context_audio")
+    if not clips:
+        return content
+    if not Capabilities.parse(role.get("capabilities", {})).audio_input or not isinstance(content, list):
+        raise ContractError("Remembered speech needs a conversation model that takes audio")
+    if not isinstance(clips, list) or len(clips) > MAX_CONTEXT_CLIPS:
+        raise ContractError("At most %d remembered clips" % MAX_CONTEXT_CLIPS)
+    parts = [{"type": "text", "text": "Earlier speech the assistant overheard, not addressed to it (oldest first), as audio. Context only."}]
+    for clip in clips:
+        validate_audio(clip)
+        parts.append({"type": "input_audio", "input_audio": {"data": clip, "format": "wav"}})
+    parts.append({"type": "text", "text": "The latest message, addressed to the assistant, follows."})
+    return parts + content
+
+
 def provider(role):
     if not role.get("model"):
         raise ContractError("Select an explicit model for this role")
@@ -103,24 +146,74 @@ def event(kind, **data):
 
 @app.get("/health", dependencies=[Depends(authenticated)])
 async def health():
-    return {"service": "convo", "protocol": 1, "loaded_models": False, "native_pcm_validated": False}
+    return {"service": "convo", "protocol": 1, "loaded_models": False, "native_pcm_validated": False,
+            'speech_admission': speech_admission.status(),
+            'studio_available': bool(getattr(app.state, 'studio_enabled', False))}
+
+
+def _consume(task):
+    if not task.cancelled():
+        task.exception()
+
+
+async def until_caller_leaves(work, request):
+    """Run one upstream call, but stop it as soon as the caller disconnects. A classifier request that nobody is waiting for
+    must not keep the model busy: the next probe, or a completed turn, would queue behind it for nothing."""
+    task = asyncio.ensure_future(work)
+    task.add_done_callback(_consume)
+    if request is None:
+        return await task
+
+    async def disconnected():
+        while True:
+            if (await request.receive())['type'] == 'http.disconnect':
+                return
+
+    watcher = asyncio.create_task(disconnected())
+    watcher.add_done_callback(_consume)
+    try:
+        await asyncio.wait((task, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        task.cancel()
+        raise HTTPException(499, "Caller disconnected; the classifier request was cancelled")
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    finally:
+        watcher.cancel()
+
+
+CONTEXT_CHARS = 6000
+
+
+def policy_context(payload, role):
+    """The conversation context the legacy classifier is shown, cut to the classifier's context window (about three characters
+    per token), at least 1000 and never more than the previous fixed 6000 characters."""
+    limit, window = CONTEXT_CHARS, role.get("context_window")
+    if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+        limit = max(1000, min(CONTEXT_CHARS, window * 3))
+    return json.dumps(payload.get("context", {}), ensure_ascii=False)[:limit]
 
 
 @app.post("/policy", dependencies=[Depends(authenticated)])
-async def policy(payload: dict):
+async def policy(payload: dict, request: Request = None):
     role = payload["role"]
     url, headers = provider(role)
     if payload.get("ambient") and role.get("remote") and not payload.get("remote_ambient_consent"):
         raise HTTPException(403, "Remote ambient processing was not approved")
     body = {"model": role["model"], "messages": [
         {"role": "system", "content": POLICY_PROMPT + " Include addressed_by_name (boolean), true only when a configured name is used to address the assistant, not merely mentioned."},
-        {"role": "user", "content": "Conversation context (data): " + json.dumps(payload.get("context", {}), ensure_ascii=False)[:6000]},
+        {"role": "user", "content": "Conversation context (data): " + policy_context(payload, role)},
         {"role": "user", "content": input_content(payload, role)},
     ], "temperature": 0, "max_tokens": 256, "stream": False}
-    async with httpx.AsyncClient(timeout=8, follow_redirects=False, trust_env=False) as client:
-        response = await client.post(url + "/chat/completions", json=body, headers=headers)
-        response.raise_for_status()
-        text = response.json()["choices"][0]["message"]["content"]
+    async def classify():
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False, trust_env=False) as client:
+            response = await client.post(url + "/chat/completions", json=body, headers=headers)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+
+    text = await until_caller_leaves(classify(), request)
     try:
         result = json.loads(text)
     except (TypeError, ValueError):
@@ -132,7 +225,7 @@ async def policy(payload: dict):
 async def answer(payload: dict):
     role = payload["role"]
     url, headers = provider(role)
-    content = input_content(payload, role)
+    content = answer_content(payload, role)
     messages = [{"role": "system", "content": payload["system"]}]
     for turn in payload.get("history", []):
         user = turn.get("transcript") or turn.get("note")
@@ -183,7 +276,7 @@ async def answer(payload: dict):
 
 
 @app.post("/speech", dependencies=[Depends(authenticated)])
-async def speech(payload: dict):
+async def speech(payload: dict, request: Request = None):
     role = payload["role"]
     url, headers = provider(role)
     caps = Capabilities.parse(role.get("capabilities", {}))
@@ -198,17 +291,94 @@ async def speech(payload: dict):
         body['clone_snapshot'] = role['clone_snapshot']
         body['expected_engine_epoch'] = role['expected_engine_epoch']
         body['expected_supervisor_instance_id'] = role['expected_supervisor_instance_id']
+        if not role.get('tuning'): raise ContractError('Missing immutable tuning snapshot')
+        body['tuning'] = copy.deepcopy(role['tuning'])
     if role.get("instructions"):
         if not caps.instruction_control:
             raise HTTPException(400, "This variant does not support instruction control")
         body["instructions"] = role["instructions"]
-    async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
-        async with client.stream("POST", url + "/audio/speech", json=body, headers=headers) as response:
-            response.raise_for_status()
-            parts, size = [], 0
-            async for part in response.aiter_bytes():
-                size += len(part)
-                if size > 16 * 1024 * 1024:
-                    raise HTTPException(502, "Speech response exceeds limit")
-                parts.append(part)
-    return Response(b"".join(parts), media_type="audio/wav")
+    # Complete local serialization/header validation before creating a durable
+    # dispatch claim. Freeze the exact request so caller mutations cannot leak in.
+    try:
+        prepared = httpx.Request('POST', url + '/audio/speech', json=body, headers=headers)
+    except (ValueError, TypeError, httpx.InvalidURL):
+        raise ContractError('Invalid speech request; nothing was dispatched') from None
+
+    async def synthesize():
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
+                async with client.stream('POST', prepared.url, content=prepared.content, headers=prepared.headers) as response:
+                    parts, size = [], 0
+                    async for part in response.aiter_bytes():
+                        size += len(part)
+                        if size > 16 * 1024 * 1024:
+                            raise speech_admission.UncertainOutcome('response_limit')
+                        parts.append(part)
+                    # Only a fully drained rejection proves a terminal outcome.
+                    if 400 <= response.status_code < 500:
+                        raise speech_admission.DefinitiveRejection(response.status_code)
+                    if not 200 <= response.status_code < 300:
+                        raise speech_admission.UncertainOutcome('provider_failure')
+            return b''.join(parts)
+        except httpx.TimeoutException:
+            raise speech_admission.UncertainOutcome('timeout') from None
+
+    operation = speech_admission.start(synthesize)
+    audio = await operation.wait(request)
+    return Response(audio, media_type='audio/wav', headers={
+        'X-Convo-Speech-Operation': operation.operation_id,
+        'X-Convo-Speech-Elapsed-Ms': str(operation.details('completed', '', blocked=False)['elapsed_ms']),
+    })
+
+
+class GuardedPCMResponse(Response):
+    """One ASGI receive owner; disconnect only cancels delivery, never synthesis."""
+    def __init__(self, stream):
+        self.stream = stream
+        super().__init__(media_type='application/x-ndjson', headers={
+            'X-Convo-Speech-Protocol': speech_stream.PROTOCOL,
+            'Cache-Control': 'no-store',
+            'X-Accel-Buffering': 'no',
+        })
+        # This response has no precomputed body; no false Content-Length: 0.
+        self.raw_headers = [(key, value) for key, value in self.raw_headers if key != b'content-length']
+
+    async def __call__(self, scope, receive, send):
+        async def deliver():
+            frames = self.stream.frames()
+            try:
+                await send({'type': 'http.response.start', 'status': 200, 'headers': self.raw_headers})
+                async for frame in frames:
+                    await send({'type': 'http.response.body', 'body': frame, 'more_body': True})
+                await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
+            finally:
+                await frames.aclose()
+
+        async def disconnected():
+            while True:
+                if (await receive())['type'] == 'http.disconnect':
+                    return
+
+        delivery = asyncio.create_task(deliver())
+        watcher = asyncio.create_task(disconnected())
+        try:
+            done, _ = await asyncio.wait((delivery, watcher), return_when=asyncio.FIRST_COMPLETED)
+            if watcher not in done:
+                await delivery
+        except OSError:
+            # A failed socket send is caller detachment, not provider terminality.
+            pass
+        finally:
+            self.stream.detach()
+            delivery.cancel()
+            watcher.cancel()
+            await asyncio.gather(delivery, watcher, return_exceptions=True)
+
+
+@app.post('/speech-stream', dependencies=[Depends(authenticated)])
+async def speech_streaming(payload: dict):
+    role = payload.get('role')
+    if not isinstance(role, dict):
+        raise ContractError('Configure an explicit experimental speech role')
+    prepared = speech_stream.prepare_request(role, payload.get('text'))
+    return GuardedPCMResponse(speech_stream.AdmittedPCM(prepared))

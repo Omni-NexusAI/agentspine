@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from .convo_contract import merge
+from .setup_store import lock, _check_development_mode
 
 
 def atomic_json(path, value):
@@ -36,6 +37,11 @@ def read_config(path):
 
 
 def migrate(user_plugin_root, apply=False):
+    with lock():
+        return _migrate(user_plugin_root, apply)
+
+
+def _migrate(user_plugin_root, apply=False):
     root = Path(user_plugin_root)
     source = root / "_enhanced_speech" / "config.json"
     target = root / "_convo" / "config.json"
@@ -53,12 +59,14 @@ def migrate(user_plugin_root, apply=False):
         original = json.loads(record["before"]) if record["before"] is not None else {}
         if before != original and current_hash != record["after_hash"]:
             raise ValueError("Settings changed during interrupted migration")
+        _check_development_mode(before, record["after"])
         atomic_json(target, record["after"])
         atomic_json(journal, {**record, "complete": True})
         return {"changed": True, "recovered": True}
     # Retain exact prior bytes; unknown settings and secret values never reach an API response.
     old = target.read_text(encoding="utf-8") if target.exists() else None
     record = {"before": old, "after": combined, "after_hash": hashlib.sha256(json.dumps(combined, sort_keys=True).encode()).hexdigest(), "complete": False}
+    _check_development_mode(before, combined)
     atomic_json(journal, record)
     atomic_json(target, combined)
     atomic_json(journal, {**record, "complete": True})
@@ -66,6 +74,11 @@ def migrate(user_plugin_root, apply=False):
 
 
 def rollback(user_plugin_root):
+    with lock():
+        return _rollback(user_plugin_root)
+
+
+def _rollback(user_plugin_root):
     root = Path(user_plugin_root) / "_convo"
     target, journal = root / "config.json", root / "data" / "migration.json"
     record = read_config(journal)
@@ -74,8 +87,10 @@ def rollback(user_plugin_root):
     if hashlib.sha256(json.dumps(read_config(target), sort_keys=True).encode()).hexdigest() != record["after_hash"]:
         raise ValueError("Convo settings changed after migration; refusing to overwrite them")
     if record["before"] is None:
+        _check_development_mode(read_config(target), {})
         target.unlink(missing_ok=True)
     else:
+        _check_development_mode(read_config(target), json.loads(record["before"]))
         atomic_json(target, json.loads(record["before"]))
     journal.rename(root / "data" / ("migration-rolled-back-" + uuid.uuid4().hex + ".json"))
     return {"changed": True}

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from helpers.api import ApiHandler, Request, Response
 
-try:
-    from plugins._convo.helpers import remote_worker
-except Exception:
-    from usr.plugins._convo.helpers import remote_worker
+import importlib
+from pathlib import Path
 
 
 class Worker(ApiHandler):
@@ -14,6 +12,9 @@ class Worker(ApiHandler):
         return ["GET", "POST"]
 
     async def process(self, input: dict, request: Request) -> dict | Response:
+        root = Path(__file__).resolve().parent.parent
+        prefix = 'usr.plugins' if root.parent.parent.name == 'usr' else 'plugins'
+        remote_worker = importlib.import_module(prefix + '._convo.helpers.remote_worker')
         timeout = input.get("remote_timeout", input.get("timeout", 3))
         try:
             timeout_value = float(timeout)

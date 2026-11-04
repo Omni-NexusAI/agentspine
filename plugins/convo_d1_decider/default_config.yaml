@@ -1,0 +1,5 @@
+# Where the decision model is served (a /v1/systemone server such as llama-server) while Convo's classifier has no decision
+# choice yet, or Convo is off. Otherwise Convo's classifier decides, call by call: its own decision server (provider and API base),
+# or System One's decider only when it takes audio. A config.json "base_url" overrides this default. It must be local (this machine
+# or a private network): there is no classifier consent outside Convo, so a public address is refused; see helpers/provisioner.py.
+base_url: http://host.docker.internal:9931

@@ -26,6 +26,13 @@ class ContractTests(unittest.TestCase):
     def test_unknown_false_and_empty_config_survive(self):
         self.assertEqual(merge({"a": {"x": True, "y": "old"}}, {"a": {"x": False, "y": "", "future": 4}}), {"a": {"x": False, "y": "", "future": 4}})
 
+    def test_tuning_profile_is_a_bounded_string(self):
+        for value in (None, 42, [], 'x' * 2001):
+            with self.assertRaises(ContractError):
+                validate_settings({'roles':{'tts':{'tuning_profile':value}}})
+        for value in ('', 'voice-fast'):
+            self.assertEqual(validate_settings({'roles':{'tts':{'tuning_profile':value}}})['roles']['tts']['tuning_profile'],value)
+
 
 class PolicyTests(unittest.TestCase):
     def test_invalid_nan_and_stale_fail_silent(self):
