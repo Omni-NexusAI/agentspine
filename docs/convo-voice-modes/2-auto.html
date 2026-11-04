@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2 · Auto — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html" aria-current="page">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>2 · Auto: what it picked, why, and how to override it</h1>
+  <p>While Auto is chosen, its answer is always on screen: the mode it picked, one sentence of why, and the full reasoning one click away. Overriding is one button that switches to the mode Auto picked, or any radio.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Example data: model names and dates are illustrations, not test results</span>
+  </div>
+</header>
+
+<h2 class="mock-step">A · Auto picks Hybrid (build step 2)</h2>
+<template data-screen data-title="Auto picks Hybrid" data-where="Convo settings → Connections → Voice agent mode">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto" checked>
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Picks Hybrid</span>
+        <span class="convo-mode-plain">Convo picks the mode that fits your conversation model, and shows you why.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+        <span class="convo-mode-plain">Your model hears each thing you say once you finish. A classifier decides whether to answer. Replies are spoken in the voice you choose.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" disabled aria-describedby="a-native-why">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-reason" id="a-native-why">A later Convo update adds it.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="tuned" disabled aria-describedby="a-tuned-why">
+        <span class="convo-mode-name">Tuned <small>· a model trained to take turns</small></span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-reason" id="a-tuned-why">A later Convo update adds it.</span>
+      </label>
+    </fieldset>
+
+    <div class="convo-mode-auto" role="status">
+      <p><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg> <strong>Auto picks Hybrid</strong> for gemma-4-E4B-it.</p>
+      <p>Convo’s list prefers Hybrid for Gemma 4 models (vendor says), and Hybrid works here: the audio input test passed on 2 Nov 2026.</p>
+      <div class="convo-model-actions"><button type="button" class="button">Always use Hybrid</button></div>
+      <details open><summary>How Auto decided</summary>
+        <ol>
+          <li>Your choice: Auto. You let Convo choose.</li>
+          <li>Modes you chose for this model before: none.</li>
+          <li data-used="true">Convo’s list: “gemma-4-*” prefers Hybrid (vendor says, read 4 Nov 2026). Used.</li>
+          <li>Possible on this machine: Hybrid yes (audio input passed). Native and Tuned are not in this version.</li>
+          <li>Default (Hybrid): not needed.</li>
+        </ol>
+        <p class="field-description">A claim can make Auto prefer a mode; only a check on this machine lets Auto pick it. Auto never changes your models, only the mode. The pick is made when a conversation starts and stays for that conversation.</p>
+      </details>
+    </div>
+
+    <p class="convo-mode-flow-title" id="a-flow">Who does what with these settings</p>
+    <dl class="convo-mode-flow" aria-labelledby="a-flow">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>Conversation model · llama.cpp · gemma-4-E4B-it<small>Each finished sentence, sent as audio.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>Classifier · llama.cpp · d1-omni-600M</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>Speech output · audio.cpp · clone:jarvis</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Classifier<small>Delegated work runs only when you clearly ask (0.9 or more).</small></dd></div>
+    </dl>
+
+    <details class="convo-model-why" open><summary>What Convo knows about gemma-4-E4B-it</summary>
+      <table class="convo-mode-facts">
+        <thead><tr><th scope="col">Can it…</th><th scope="col">Answer</th><th scope="col">How Convo knows</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">hear audio?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="checked"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Checked here</span><span class="convo-mode-source">Test audio input passed, 2 Nov 2026 (route and audio only, not understanding)</span></td></tr>
+          <tr><th scope="row">speak with its own voice?</th><td>No (text out)</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span><span class="convo-mode-source">Gemma 4 model card, read 4 Nov 2026</span></td></tr>
+          <tr><th scope="row">listen while it talks?</th><td>No</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span></td></tr>
+          <tr><th scope="row">talk over a realtime connection?</th><td>Not checked</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span></td></tr>
+          <tr><th scope="row">answer well in a conversation?</th><td>Not measured</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span><span class="convo-mode-source">Only a live listening test can say</span></td></tr>
+        </tbody>
+      </table>
+      <div class="convo-model-actions"><button type="button" class="button">Check what it can do</button></div>
+    </details>
+    <details class="convo-model-why"><summary>What the labels mean</summary><ul>
+      <li><strong>Checked here</strong>: a check you ran on this machine passed (date shown). It proves the route, not the quality.</li>
+      <li><strong>Tested by Convo</strong>: the Convo maintainers ran it live on a test host and recorded the result.</li>
+      <li><strong>You said</strong>: you declared or confirmed it. Convo uses it but cannot verify it.</li>
+      <li><strong>Vendor says</strong>: the model’s own documentation says so (source and date shown). Not verified.</li>
+      <li><strong>Draft, not used</strong>: Agent Zero drafted it from web pages. Ignored until you confirm it.</li>
+    </ul></details>
+  </fieldset>
+</template>
+
+<h2 class="mock-step">B · Auto’s pick changed since last time (after Native exists, build step 6)</h2>
+<template data-screen data-title="Auto pick changed" data-where="Convo settings → Connections → Voice agent mode">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <div class="convo-banner" role="alert">
+      <strong><svg class="icon" aria-hidden="true"><use href="#i-warning"/></svg> Auto now picks Native for gpt-realtime</strong>
+      <p class="field-description">It picked Hybrid last time. It changed because the realtime connection check passed today (4 Nov 2026). In Native mode everything you say while the microphone is open goes to the model, not only what is meant for it. Convo will not start in Native until you choose.</p>
+      <div class="convo-model-actions"><button type="button" class="button confirm">Use Native</button><button type="button" class="button">Keep Hybrid for this model</button></div>
+    </div>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto" checked>
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="setup"><svg class="icon" aria-hidden="true"><use href="#i-warning"/></svg>Picks Native: confirm</span>
+        <span class="convo-mode-plain">Convo picks the mode that fits your conversation model, and shows you why.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="tuned">
+        <span class="convo-mode-name">Tuned <small>· a model trained to take turns</small></span>
+        <span class="convo-mode-badge" data-state="model"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not with this model</span>
+      </label>
+    </fieldset>
+    <p class="field-description">“Keep Hybrid for this model” is remembered on this machine as <em>You said</em>; Auto then picks Hybrid for gpt-realtime until you change it. Nothing is learned without a click like this one.</p>
+  </fieldset>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>The answer is never hidden.</strong> With Auto chosen, the picked mode is in the Auto option’s badge and in a status box, and “Who does what” describes the picked mode.</li>
+    <li><strong>Reasoning as five numbered steps</strong>, the one that decided in bold and marked “Used”. The steps are the same every time, so a person learns to read them once.</li>
+    <li><strong>Override in one click.</strong> “Always use Hybrid” selects the Hybrid radio (an ordinary change, saved with Save). Choosing any radio is also an override.</li>
+    <li><strong>No silent change (B).</strong> When Auto’s pick for the same model differs from last time, the card says so with the reason and Convo refuses to start until the person chooses. The panel shows the same refusal (page 5, C).</li>
+    <li><strong>Learning only by a click.</strong> “Keep Hybrid for this model” is how Convo remembers a per-model choice; nothing is learned silently from use.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

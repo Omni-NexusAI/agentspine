@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7 · Narrow canvas and elsewhere — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html" aria-current="page">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>7 · Narrow canvas, the conversation panel, the preset editor and diagnostics</h1>
+  <p>The mode is edited in one place, the Voice agent mode card. Everywhere else it is a short read-only line that says which mode is active and why.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <span class="mock-example">Example data: model names and dates are illustrations, not test results</span>
+  </div>
+</header>
+
+<h2 class="mock-step">A · Settings at phone width (the canvas gear opens this modal)</h2>
+<template data-screen data-title="Settings at 390 px" data-where="Gear modal · 390 px" data-width="phone">
+  <nav class="convo-tabs" aria-label="Convo settings sections"><button type="button" class="button" aria-pressed="true">Connections</button><button type="button" class="button" aria-pressed="false">Conversation</button><button type="button" class="button" aria-pressed="false">Voice &amp; Audio</button></nav>
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto" checked>
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Picks Hybrid</span>
+        <span class="convo-mode-plain">Convo picks the mode that fits your conversation model, and shows you why.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+        <span class="convo-mode-plain">Your model hears each thing you say once you finish. A classifier decides whether to answer.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" disabled aria-describedby="w-native-why">
+        <span class="convo-mode-name">Native</span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-reason" id="w-native-why">A later Convo update adds it.</span>
+      </label>
+    </fieldset>
+    <div class="convo-mode-auto" role="status">
+      <p><strong>Auto picks Hybrid</strong> for gemma-4-E4B-it: Convo’s list prefers it, and the audio input test passed here.</p>
+      <div class="convo-model-actions"><button type="button" class="button">Always use Hybrid</button></div>
+    </div>
+    <p class="convo-mode-flow-title" id="w-flow">Who does what</p>
+    <dl class="convo-mode-flow" aria-labelledby="w-flow">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>gemma-4-E4B-it<small>Each finished sentence, as audio.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>Classifier · d1-omni-600M</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>audio.cpp · clone:jarvis</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Classifier (0.9 or more)</dd></div>
+    </dl>
+  </fieldset>
+</template>
+
+<h2 class="mock-step">B · The conversation panel in a narrow canvas</h2>
+<template data-screen data-title="Canvas panel" data-where="Canvas → Convo panel · 360 px" data-width="phone">
+  <section class="convo-panel" aria-label="Convo">
+    <div class="convo-panel-head"><h2>Convo</h2><span class="convo-chip" role="status"><span class="convo-dot" aria-hidden="true"></span><span>Listening · Hybrid</span></span><button type="button" class="button" aria-label="Convo settings"><svg class="icon" aria-hidden="true"><use href="#i-tune"/></svg></button></div>
+    <p class="convo-hint">Chat: Project notes</p>
+    <p class="convo-hint">The chip names the mode this conversation started in (“Hybrid”, or “Auto · Hybrid” on wider panels). It never changes during a conversation; a new pick applies to the next one.</p>
+  </section>
+</template>
+
+<h2 class="mock-step">C · Agent Zero’s preset editor (Convo section)</h2>
+<template data-screen data-title="Preset editor" data-where="Agent settings → Models → preset editor">
+  <section class="convo-card convo-model-card">
+    <div class="convo-model-fields">
+      <p class="convo-elided">The conversation model card, as today (autosaves in the preset editor).</p>
+      <p class="field-description convo-model-row" role="status"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg><strong>Voice agent mode: </strong><span>Auto picks Hybrid with this model. If you change the model, this line says what Auto would pick instead.</span> <button type="button" class="text-button">Change in Convo settings</button></p>
+    </div>
+  </section>
+  <table class="mock-table" aria-label="Preset overview rows">
+    <tbody><tr><th scope="row">Convo — provider / model</th><td>llama.cpp / gemma-4-E4B-it · Hybrid (Auto)</td></tr></tbody>
+  </table>
+</template>
+
+<h2 class="mock-step">D · Developer diagnostics</h2>
+<template data-screen data-title="Diagnostics" data-where="Canvas → Convo diagnostics (developer mode)">
+  <section class="convo-card">
+    <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg><strong>Mode: </strong><span>Hybrid · picked by Auto · step 3, Convo’s list “gemma-4-*” (vendor says) · audio input checked here 2 Nov 2026</span></p>
+    <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><strong>Turn marks: </strong><span>as today in Hybrid. Native adds realtime marks (speech started, response started, first audio, interrupted, tool check); Tuned adds decision ticks (talk / wait / stop counts, tick latency, transcription delay).</span></p>
+  </section>
+  <section class="convo-card">
+    <h4>Tune · Speech gate</h4>
+    <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><strong>Applies in Hybrid only. </strong><span>Convo is in Native mode: the model decides when to talk. These values are kept for Hybrid and stay editable.</span></p>
+  </section>
+</template>
+
+<section class="mock-notes">
+  <h2>Narrow widths, keyboard, themes and motion</h2>
+  <ul>
+    <li><strong>Narrow (under 600 px, or a card under 560 px):</strong> each option stacks its badge under the name; “Who does what” becomes label-over-value; the facts table becomes one claim per block. Tabs keep 44 px touch targets. Nothing scrolls sideways.</li>
+    <li><strong>Settings never render in the canvas panel.</strong> The panel shows only the chip; the gear opens the same modal as today.</li>
+    <li><strong>Keyboard:</strong> native radios (Tab into the group, arrows between available modes), native <code>&lt;details&gt;</code>, buttons for everything else. Focus moves to the Hybrid radio after “Always use Hybrid”. No tooltip or <code>title</code> carries meaning (the host rewrites <code>title</code>).</li>
+    <li><strong>Themes:</strong> host tokens only (<code>--color-text</code>, <code>--color-border</code>, <code>--color-highlight</code>, <code>--color-error-text</code>, <code>--color-warning-text</code>); no new colours. Every state also has an icon and words, and trust levels differ by border style.</li>
+    <li><strong>Reduced motion:</strong> no transitions when a card folds or the mode changes; the research progress ring stops; the diagnostics already slow to 1 Hz.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>
