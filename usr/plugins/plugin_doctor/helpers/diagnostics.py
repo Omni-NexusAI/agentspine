@@ -19,13 +19,23 @@ def name(value):
 
 def locate(roots, target):
     target = name(target)
+    fallback = None
     for root in roots:
         root = Path(root).resolve()
         path = root / target
         if path.is_symlink() or (hasattr(path,'is_junction') and path.is_junction()):
             raise ValueError('Linked plugin directories require manual review')
         if path.is_dir() and path.resolve().parent == root:
-            return path
+            # User storage may exist for a built-in without owning its source.
+            # Match native manifest precedence, retaining a missing-manifest
+            # fallback so genuinely broken installations remain diagnosable.
+            manifest = path / 'plugin.yaml'
+            if manifest.exists() or manifest.is_symlink():
+                return path
+            if fallback is None:
+                fallback = path
+    if fallback is not None:
+        return fallback
     raise ValueError('Plugin directory not found')
 
 

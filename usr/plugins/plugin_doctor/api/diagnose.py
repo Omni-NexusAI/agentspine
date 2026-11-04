@@ -1,10 +1,14 @@
 from helpers.api import ApiHandler, Request
+from pathlib import Path
 
 
 class Diagnose(ApiHandler):
     async def process(self, input: dict, request: Request) -> dict:
-        from helpers import plugins
-        from usr.plugins.plugin_doctor.helpers import diagnostics
+        from helpers import plugins, modules
+        # Native toggles clear API caches, but do not necessarily purge Python
+        # helper namespaces. Load only Doctor's fixed, pure helper afresh so a
+        # repaired Doctor can recover in the same host process as well.
+        diagnostics = modules.import_module(str(Path(__file__).resolve().parents[1] / 'helpers' / 'diagnostics.py'))
         roots = plugins.get_plugin_roots()
         action = input.get('action','inspect')
         if action == 'list':

@@ -8,6 +8,18 @@ from usr.plugins.plugin_doctor.helpers.diagnostics import inspect, locate
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_builtin_source_is_not_shadowed_by_user_data_only_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [Path(tmp)/'user', Path(tmp)/'builtin']
+            for root in roots:
+                (root/'example').mkdir(parents=True)
+            (roots[0]/'example/config.json').write_text('{"secret":"not source"}')
+            (roots[1]/'example/plugin.yaml').write_text('name: example\ntitle: Example\n')
+            self.assertEqual(locate(roots, 'example'), roots[1]/'example')
+            self.assertTrue(inspect(roots, 'example')['passed'])
+            (roots[0]/'example/plugin.yaml').write_text('name: example\ntitle: Override\n')
+            self.assertEqual(locate(roots, 'example'), roots[0]/'example')
+
     def test_disabled_broken_code_is_diagnosed_without_execution_or_config_read(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); target=root/'broken'; target.mkdir()
