@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6 · Unknown model and research — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html" aria-current="page">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>6 · A model Convo doesn’t know, and “Research this model”</h1>
+  <p>For a model on no list, Convo says so plainly, shows what was checked on this machine, and offers to research it. The research is a <strong>draft</strong>: every claim starts unticked, and nothing counts until you tick it and press Keep.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Fictional model and web pages, for illustration only</span>
+  </div>
+</header>
+
+<h2 class="mock-step">A · No profile yet (build step 3)</h2>
+<template data-screen data-title="Unknown model" data-where="Convo settings → Connections → Voice agent mode">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto" checked>
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Picks Hybrid</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+    </fieldset>
+    <div class="convo-mode-auto" role="status">
+      <p><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg> <strong>Auto picks Hybrid</strong> for acme/voxa-omni-3b.</p>
+      <p>Convo has no profile for this model, so Auto uses the default, Hybrid. It works here: the audio input test passed on 4 Nov 2026.</p>
+    </div>
+    <details class="convo-model-why" open><summary>What Convo knows about acme/voxa-omni-3b</summary>
+      <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><strong>Not on Convo’s list. </strong><span>Convo knows only what was checked on this machine.</span></p>
+      <table class="convo-mode-facts">
+        <thead><tr><th scope="col">Can it…</th><th scope="col">Answer</th><th scope="col">How Convo knows</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">hear audio?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="checked"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Checked here</span><span class="convo-mode-source">Test audio input passed, 4 Nov 2026</span></td></tr>
+          <tr><th scope="row">speak with its own voice?</th><td>Not checked</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span></td></tr>
+          <tr><th scope="row">listen while it talks?</th><td>Not checked</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span></td></tr>
+          <tr><th scope="row">talk over a realtime connection?</th><td>Not checked</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span></td></tr>
+        </tbody>
+      </table>
+      <div class="convo-model-actions"><button type="button" class="button">Check what it can do</button><button type="button" class="button"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> Research this model</button></div>
+    </details>
+  </fieldset>
+</template>
+
+<h2 class="mock-step">B · Asked first, then running (build step 4)</h2>
+<template data-screen data-title="Research confirmation and progress" data-where="Convo settings → dialog over Connections">
+  <section class="mock-dialog" role="dialog" aria-modal="true" aria-labelledby="r-title" aria-describedby="r-what">
+    <h3 id="r-title">Research acme/voxa-omni-3b?</h3>
+    <div id="r-what">
+      <p class="field-description">Agent Zero’s main model (OpenRouter · your chat model) searches the web for this model’s documentation and drafts what it can do, with sources.</p>
+      <ul class="convo-mode-missing">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span><strong>Sent:</strong> the model name only, to your chat model and its web search. No audio, keys, addresses or settings.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span><strong>Takes</strong> about a minute. You can close settings meanwhile; the draft waits here.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span><strong>Nothing changes</strong> until you review the draft and tick what to keep.</span></li>
+      </ul>
+    </div>
+    <div class="convo-model-actions"><button type="button" class="button confirm">Research</button><button type="button" class="button">Cancel</button></div>
+  </section>
+  <p class="field-description convo-model-row" role="status"><span class="convo-mode-busy" aria-hidden="true"></span><strong>Researching acme/voxa-omni-3b </strong><span>· started 14:02 · Agent Zero is reading 3 pages.</span> <button type="button" class="text-button">Stop</button></p>
+</template>
+
+<h2 class="mock-step">C · Reviewing the draft</h2>
+<template data-screen data-title="Draft review" data-where="Convo settings → Connections → Voice agent mode">
+  <section class="convo-mode-draft" aria-labelledby="d-title">
+    <h4 id="d-title"><svg class="icon" aria-hidden="true"><use href="#i-draft"/></svg> Draft profile for acme/voxa-omni-3b · not used until you confirm</h4>
+    <p class="field-description">Drafted by Agent Zero on 4 Nov 2026 from 3 web pages. Web pages and model cards can be wrong or written to mislead: tick only what you agree with. Ticked claims are kept as <em>Vendor says · you confirmed</em>, never as tested.</p>
+    <table>
+      <thead><tr><th scope="col">Keep</th><th scope="col">Claim</th><th scope="col">Draft says</th><th scope="col">Source (as written there)</th></tr></thead>
+      <tbody>
+        <tr><td><input type="checkbox" id="d1" aria-describedby="d1-src"></td><th scope="row"><label for="d1">Hears audio</label></th><td>Yes, up to 30 s</td><td id="d1-src">example.org/voxa/model-card<blockquote>“accepts speech input of up to thirty seconds”</blockquote></td></tr>
+        <tr><td><input type="checkbox" id="d2" aria-describedby="d2-src"></td><th scope="row"><label for="d2">Speaks with its own voice</label></th><td>Yes, 24 kHz</td><td id="d2-src">example.org/voxa/model-card<blockquote>“generates speech and text, interleaved”</blockquote></td></tr>
+        <tr><td><input type="checkbox" id="d3" aria-describedby="d3-src"></td><th scope="row"><label for="d3">Listens while it talks</label></th><td>No</td><td id="d3-src">example.org/voxa/blog<blockquote>“turn-based: it answers after you stop”</blockquote></td></tr>
+        <tr><td><input type="checkbox" id="d4" disabled aria-describedby="d4-src"></td><th scope="row"><label for="d4">Realtime connection</label></th><td>Unknown</td><td id="d4-src">No source. A claim without a source can’t be kept as a vendor claim; check it here instead.</td></tr>
+        <tr><td><input type="checkbox" id="d5" aria-describedby="d5-src"></td><th scope="row"><label for="d5">Suggested mode</label></th><td>Hybrid, with its own voice</td><td id="d5-src">From the claims above</td></tr>
+      </tbody>
+    </table>
+    <div class="convo-model-actions"><button type="button" class="button" disabled>Keep ticked claims</button><button type="button" class="button">Discard draft</button></div>
+    <p class="field-description">A draft only describes this model. It can never change an address, a key or any setting, and Auto still checks on this machine before picking a mode.</p>
+  </section>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>Unknown is said, not guessed.</strong> “Not on Convo’s list” is a row of its own, and every unchecked claim reads “Unknown”.</li>
+    <li><strong>Research asks first</strong> and says exactly what leaves the machine (the model name), where it goes, how long it takes and that nothing changes yet.</li>
+    <li><strong>Per-claim confirmation, all unticked.</strong> “Keep ticked claims” stays disabled until something is ticked. A claim with no source can’t be kept as a vendor claim.</li>
+    <li><strong>Web text stays text.</strong> Quotes are shown as plain, clipped text with the page address written out, never as links or rendered markup.</li>
+    <li><strong>Reduced motion:</strong> the progress ring stops turning under <code>prefers-reduced-motion</code>; the words “started 14:02” carry the state.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

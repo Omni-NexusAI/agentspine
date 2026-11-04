@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5 · Unavailable modes — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html" aria-current="page">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>5 · An unavailable mode says why, and what would make it available</h1>
+  <p>There are three ways a mode can be unavailable, and each looks different: <strong>not in this version</strong> (can’t be chosen), <strong>not with this model</strong> (can be chosen; a check failed), and <strong>needs setup</strong> (can be chosen; something is missing, page 4). In all three, Convo refuses to start with the same words the card shows.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Example data: model names and dates are illustrations, not test results</span>
+  </div>
+</header>
+
+<h2 class="mock-step">A · Not in this version (build step 1, today’s reality)</h2>
+<template data-screen data-title="Not in this version" data-where="Convo settings → Connections → Voice agent mode">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid" checked>
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" disabled aria-describedby="u-native-why">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-reason" id="u-native-why">A later Convo update adds it; nothing to set up now.</span>
+      </label>
+    </fieldset>
+    <details class="convo-model-why" open><summary>Why some modes are not available</summary><ul>
+      <li><strong>Native</strong> is not built in this version of Convo. What makes it available: a Convo update that adds Native mode. Until then, models made for it (OpenAI’s realtime models, NVIDIA’s NemotronLabs VoiceChat) can’t be used this way.</li>
+      <li><strong>Tuned</strong> is not built in this version of Convo. What makes it available: a Convo update, plus a harness for your fine-tuned conversation model.</li>
+    </ul></details>
+  </fieldset>
+</template>
+
+<h2 class="mock-step">B · Not with this model (after build step 6): Native chosen, but the model can’t do it</h2>
+<template data-screen data-title="Not with this model" data-where="Convo settings → Connections → Voice agent mode">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" checked aria-describedby="b-why">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="model"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not with this model</span>
+      </label>
+    </fieldset>
+    <div class="convo-banner" id="b-why">
+      <strong><svg class="icon" aria-hidden="true"><use href="#i-error"/></svg> Native mode can’t run with gemma-4-E4B-it</strong>
+      <p class="field-description">Native needs a model that talks over a realtime connection. The server at host.docker.internal:8080 did not offer one when you checked (2 Nov 2026, 14:05).</p>
+      <p class="field-description"><strong>What would make it available:</strong> choose a conversation model that offers a realtime connection, then press Check what it can do. Or switch to Hybrid, which works with this model.</p>
+      <div class="convo-model-actions"><button type="button" class="button">Check again</button><button type="button" class="button">Use Hybrid</button></div>
+    </div>
+    <ul class="convo-mode-missing" aria-label="What Native needs">
+      <li data-state="missing"><svg class="icon" aria-hidden="true"><use href="#i-error"/></svg><span><strong>A realtime connection</strong>: not offered by this server (checked here, 2 Nov 2026).</span></li>
+      <li data-state="ready"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span><strong>A classifier to approve delegated work</strong>: llama.cpp · d1-omni-600M.</span></li>
+    </ul>
+    <p class="field-description">Your choice is saved as Native, so it is ready when you change the model. Convo will not start in Native until it can, and it never starts in another mode instead.</p>
+  </fieldset>
+</template>
+
+<h2 class="mock-step">C · The same refusal where the person presses Start (canvas panel)</h2>
+<template data-screen data-title="Start refused" data-where="Canvas → Convo panel" data-width="phone">
+  <section class="convo-panel" aria-label="Convo">
+    <div class="convo-panel-head"><h2>Convo</h2><span class="convo-chip" role="status"><span class="convo-dot" aria-hidden="true"></span><span>Not started · Native</span></span><button type="button" class="button" aria-label="Convo settings"><svg class="icon" aria-hidden="true"><use href="#i-tune"/></svg></button></div>
+    <div class="convo-panel-refusal" role="alert">
+      <strong><svg class="icon" aria-hidden="true"><use href="#i-error"/></svg> Convo did not start</strong>
+      <span>Native mode needs a model with a realtime connection. gemma-4-E4B-it at host.docker.internal:8080 does not offer one (checked 2 Nov 2026). Nothing was sent.</span>
+      <div class="convo-model-actions"><button type="button" class="button">Open settings</button></div>
+    </div>
+    <div class="convo-panel-refusal" role="alert">
+      <strong><svg class="icon" aria-hidden="true"><use href="#i-warning"/></svg> Convo did not start</strong>
+      <span>Auto now picks Native for gpt-realtime instead of Hybrid. Choose in settings before starting. Nothing was sent.</span>
+      <div class="convo-model-actions"><button type="button" class="button">Review in settings</button></div>
+    </div>
+    <p class="convo-hint">(Two examples stacked; the panel shows one at a time.)</p>
+  </section>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>Three badges, three border styles</strong>: dotted “Not in this version”, dashed “Not with this model”, dashed warning “Needs setup (n)”. Words and icon carry the meaning; the border is a second cue.</li>
+    <li><strong>Every unavailable state answers two questions</strong>: what failed (with the check and its date) and what would make it available (an action, not advice).</li>
+    <li><strong>The start refusal repeats the card’s words</strong> and ends with “Nothing was sent.” There is no automatic switch to another mode or model; the chip names the mode that was asked for.</li>
+    <li>Refusals come back from <code>convo.start</code> as data (<code>ok: false, refused: true, message</code>), so the host never masks them as “Internal server error”.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

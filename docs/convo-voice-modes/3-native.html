@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3 · Native — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html" aria-current="page">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>3 · Native chosen (after build step 6)</h1>
+  <p>The model listens and talks at once. The classifier and speech output cards fold to one dashed line each, keeping their values for the other modes. The classifier stays on one job: approving delegated work.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Example data: model names and dates are illustrations, not test results</span>
+  </div>
+</header>
+
+<template data-screen data-title="Native chosen" data-where="Convo settings → Connections">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto">
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Would pick Native</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="model"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not with this model</span>
+        <span class="convo-mode-reason">Test audio input failed for gpt-realtime (the server has no chat route for it), 4 Nov 2026.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" checked>
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+        <span class="convo-mode-plain">The model hears you the whole time and can be interrupted, like a phone call. It speaks with its own voice.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="tuned">
+        <span class="convo-mode-name">Tuned <small>· a model trained to take turns</small></span>
+        <span class="convo-mode-badge" data-state="model"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not with this model</span>
+      </label>
+    </fieldset>
+
+    <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>In Native mode the model receives <strong>everything you say while the microphone is open</strong>, not only what is meant for it. Ambient and name listening are not available in Native.</span></p>
+
+    <div class="field">
+      <div class="field-label"><div class="field-title" id="n-tools">Delegated work</div><div class="field-description" id="n-tools-hint">Who approves work the model asks Agent Zero to do.</div></div>
+      <div class="field-control"><select aria-labelledby="n-tools" aria-describedby="n-tools-hint"><option selected>Classifier approves (recommended)</option><option>Off: talk only</option></select></div>
+    </div>
+    <div class="field">
+      <div class="field-label"><div class="field-title" id="n-voice">Voice</div><div class="field-description" id="n-voice-hint">The model’s own voice keeps its timing. Your speech output makes the model answer in text first: slower, and it can no longer talk while you talk.</div></div>
+      <div class="field-control"><select aria-labelledby="n-voice" aria-describedby="n-voice-hint"><option selected>The model’s own voice</option><option>My speech output</option></select></div>
+    </div>
+
+    <p class="convo-mode-flow-title" id="n-flow">Who does what with these settings</p>
+    <dl class="convo-mode-flow" aria-labelledby="n-flow">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>Conversation model · OpenAI · gpt-realtime<small>Everything you say while the microphone is open, as you say it.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>The model itself<small>Its own turn detection. Convo’s speech gate is not used.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>The model’s own voice<small>You can talk over it; it stops and listens.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Classifier · llama.cpp · d1-omni-600M<small>Checks your request before delegated work runs (0.9 or more).</small></dd></div>
+    </dl>
+
+    <details class="convo-model-why"><summary>What Convo knows about gpt-realtime</summary>
+      <table class="convo-mode-facts">
+        <thead><tr><th scope="col">Can it…</th><th scope="col">Answer</th><th scope="col">How Convo knows</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">talk over a realtime connection?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="checked"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Checked here</span><span class="convo-mode-source">Opened and closed a session, sent no audio, 4 Nov 2026</span></td></tr>
+          <tr><th scope="row">listen while it talks?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span><span class="convo-mode-source">OpenAI Realtime guide</span></td></tr>
+          <tr><th scope="row">speak with its own voice?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span></td></tr>
+          <tr><th scope="row">call tools?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span><span class="convo-mode-source">Every tool call still needs the classifier’s approval</span></td></tr>
+        </tbody>
+      </table>
+    </details>
+  </fieldset>
+
+  <fieldset class="convo-card convo-model-card">
+    <legend>Conversation model</legend>
+    <div class="convo-model-fields">
+      <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg><span>In Native mode Convo streams your microphone to this model over a realtime connection, from Convo’s server. Your key never reaches the browser.</span></p>
+      <div class="field"><div class="field-label"><div class="field-title" id="nc-prov">Provider</div></div><div class="field-control"><select aria-labelledby="nc-prov"><option>OpenAI</option></select></div></div>
+      <div class="field"><div class="field-label"><div class="field-title" id="nc-model">Model name</div></div><div class="field-control"><input type="text" aria-labelledby="nc-model" value="gpt-realtime"></div></div>
+      <div class="field"><div class="field-label"><div class="field-title" id="nc-audio">Accepts audio input</div><div class="field-description">Always on in Native mode: the model hears you directly.</div></div><div class="field-control"><label class="toggle"><input type="checkbox" checked disabled aria-labelledby="nc-audio"><span class="toggler"></span></label></div></div>
+      <p class="convo-elided">API key, remote processing (on: api.openai.com is outside your network) and Advanced Settings: as today.</p>
+      <div class="convo-model-actions"><button type="button" class="button">Check realtime connection</button><button type="button" class="button">Test connection</button></div>
+      <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><strong>Realtime connection: </strong><span>a session opened at api.openai.com and was closed at once. No audio was sent. 4 Nov 2026, 14:02.</span></p>
+    </div>
+  </fieldset>
+
+  <fieldset class="convo-card convo-model-card convo-mode-unused">
+    <legend>Classifier</legend>
+    <p class="convo-mode-unused-line"><span class="convo-mode-tag" data-state="limited"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves delegated work only</span>llama.cpp · d1-omni-600M</p>
+    <p class="field-description">In Native mode the model decides when to talk. The classifier only checks your request before delegated work runs. Its other settings are kept for Hybrid.</p>
+    <button type="button" class="advanced-toggle" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg><span>Show the classifier settings</span></button>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card convo-mode-unused">
+    <legend>Speech output</legend>
+    <p class="convo-mode-unused-line"><span class="convo-mode-tag" data-state="unused"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not used in Native</span>audio.cpp · clone:jarvis</p>
+    <p class="field-description">The model speaks with its own voice. Your speech output is kept for Hybrid and Tuned, or choose it under Voice above.</p>
+    <button type="button" class="advanced-toggle" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg><span>Show the speech output settings</span></button>
+  </fieldset>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>Hidden means folded, never deleted.</strong> A card the mode does not use becomes one dashed line: what it is set to, why it is not used, and a button to open it anyway. Saved values stay and come back with Hybrid.</li>
+    <li><strong>“Approves delegated work only”</strong> is a limited role, shown with a dotted tag, not a hidden card. Work with side effects keeps the same rule in every mode: an explicit request at 0.9 or more.</li>
+    <li><strong>The privacy difference is stated up front.</strong> Hybrid sends finished sentences. Native sends everything while the microphone is open. The note says so before anyone starts.</li>
+    <li><strong>A setting a mode fixes is shown locked, with the reason</strong> (Accepts audio input: “Always on in Native mode”).</li>
+    <li><strong>Other places:</strong> Voice &amp; Audio → Echo protection warns that Strict stops you interrupting the model. Diagnostics → Tune shows “Applies in Hybrid only” above the speech gate and turn engine; their values stay editable.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

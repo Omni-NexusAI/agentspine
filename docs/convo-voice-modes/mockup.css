@@ -1,0 +1,228 @@
+/* Convo voice agent modes: static mockups. Design only; nothing here deploys with the plugin.
+
+   Three layers, in this order:
+   1. Host tokens and classes copied from Agent Zero (webui/index.css, webui/css/settings.css, webui/css/buttons.css) so the
+      mockups read like the real settings modal in both themes. `.light-mode` is the host's own light-theme class.
+   2. Convo's existing settings classes (settings-controls.html, conversation-model-field.html, classifier-model-field.html).
+   3. The proposed `convo-mode-*` classes. Like Convo's Connections cards they use host tokens only: no hex colours, and
+      every state carries an icon and words so nothing depends on colour. Trust levels also differ by border style.
+   The last block (`mock-*`) is the mockup frame, not part of the design. */
+
+/* ---- 1. Host tokens (Agent Zero, dark default) ---- */
+:root, .theme-dark {
+  --color-background: #131313; --color-text: #ffffff; --color-text-muted: #d4d4d4e4; --color-primary: #737a81;
+  --color-secondary: #656565; --color-accent: #cf6679; --color-highlight: #2b5ab9; --color-panel: #1a1a1a;
+  --color-border: #444444a8; --color-input: #131313; --color-chat-background: #212121;
+  --color-error-text: #e72323; --color-warning-text: #e79c23;
+  --color-background-hover: color-mix(in srgb, var(--color-border) 50%, transparent);
+  --spacing-xs: .3125rem; --spacing-sm: .625rem; --font-family-main: "Rubik", Arial, Helvetica, sans-serif;
+  color-scheme: dark;
+}
+.light-mode {
+  --color-background: #fafafa; --color-text: #333333; --color-text-muted: #333333e4; --color-primary: #384653;
+  --color-secondary: #e8eaf6; --color-accent: #b00020; --color-highlight: #2563eb; --color-panel: #f0f0f0;
+  --color-border: #bdbdbdcf; --color-input: #e4e4e4; --color-chat-background: #fafafa;
+  --color-error-text: #920000; --color-warning-text: #936214;
+  color-scheme: light;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-family-main); background: var(--color-background); color: var(--color-text); line-height: 1.4; }
+
+/* Host field, toggle, input and button classes (settings.css, buttons.css). */
+.field { display: grid; grid-template-columns: 60% 1fr; align-items: center; margin-block: .6rem; padding: var(--spacing-xs) 0; }
+.field-label { display: flex; flex-direction: column; padding-right: .5em; }
+.field-title { font-weight: bold; color: var(--color-primary); }
+.light-mode .field-title { color: var(--color-primary); }
+.field-description { color: var(--color-text); font-size: .875rem; opacity: .8; margin: .25rem 0 .5rem; }
+.field-control { width: 100%; display: flex; align-items: center; position: relative; min-width: 0; }
+input[type=text], input[type=number], select { width: 100%; padding: .5rem; border: 1px solid var(--color-border); border-radius: .25rem;
+  background-color: var(--color-background); color: var(--color-text); font: inherit; }
+.toggle { position: relative; display: inline-block; width: 60px; height: 34px; flex: none; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggler { position: absolute; inset: 0; background-color: #ccc; border-radius: 34px; cursor: pointer; }
+.toggler::before { content: ""; position: absolute; height: 26px; width: 26px; left: 4px; bottom: 4px; background: white; border-radius: 50%; }
+input:checked + .toggler { background-color: #2196f3; }
+input:checked + .toggler::before { transform: translateX(26px); }
+.toggle input:disabled + .toggler { opacity: .6; cursor: not-allowed; }
+.button { background: var(--color-panel); font: inherit; font-weight: 500; font-size: .875rem; padding: .5rem 1.1rem; border-radius: 6px;
+  cursor: pointer; border: 1px solid var(--color-border); color: var(--color-text); min-height: 40px; white-space: normal; }
+.button.confirm { background: var(--color-highlight); color: #fff; }
+.button[disabled] { opacity: .5; cursor: not-allowed; }
+.text-button { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--color-text); outline-offset: 2px; }
+
+/* ---- 2. Convo's existing settings classes ---- */
+.convo-settings, .convo-stack { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.convo-tabs, .convo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.convo-tabs .button[aria-pressed=true] { background: var(--color-highlight, var(--color-panel)); border-color: var(--color-text); }
+.light-mode .convo-tabs .button[aria-pressed=true] { color: #fff; }
+.convo-hint { font-size: .875rem; line-height: 1.4; opacity: .8; margin: .15rem 0; overflow-wrap: anywhere; }
+.convo-card { border: 1px solid var(--color-border); border-radius: 12px; padding: 1rem; min-width: 0; display: flex; flex-direction: column;
+  gap: .8rem; background: var(--color-panel); margin: 0; }
+.convo-card legend { padding: 0 .35rem; font-weight: 600; }
+.convo-card > h4, .convo-mode-draft h4 { margin: 0; }
+.convo-banner { border: 1px solid var(--color-border); border-left: 3px solid var(--color-warning-text); border-radius: 10px; padding: .7rem .9rem;
+  display: flex; flex-direction: column; gap: .5rem; background: var(--color-panel); }
+.convo-model-fields { container: convo-model / inline-size; display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+.convo-model-note { display: flex; gap: .5rem; align-items: flex-start; margin: 0 0 .25rem; padding: .6rem .75rem; border: 1px solid var(--color-border);
+  border-radius: 8px; font-size: .85rem; line-height: 1.45; }
+.convo-model-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.convo-model-row, .convo-model-alert { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; overflow-wrap: anywhere; }
+.convo-model-why { font-size: .82rem; margin: .1rem 0 .4rem; }
+.convo-model-why summary { cursor: pointer; }
+.convo-model-why ul { margin: .4rem 0; padding-left: 1.1rem; line-height: 1.5; }
+.advanced-toggle { display: flex; align-items: center; gap: 4px; padding: 4px 0; border: 0; background: none; color: var(--color-text); font: inherit; font-size: .8rem; cursor: pointer; }
+.convo-elided { font-size: .8rem; opacity: .7; font-style: italic; margin: 0; }
+@container convo-model (max-width: 560px) { .field { display: block; } .field-label { padding-right: 0; } .field-control { margin-top: .35rem; } }
+
+.icon { width: 1.1em; height: 1.1em; flex: none; fill: currentColor; vertical-align: -.18em; }
+
+/* ---- 3. Proposed: the Voice agent mode card and the states it gives the other cards ---- */
+.convo-mode-card { gap: .6rem; }
+.convo-mode-options { display: flex; flex-direction: column; gap: .5rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+.convo-mode-options > legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.convo-mode-option { display: grid; grid-template-columns: auto 1fr auto; gap: .15rem .7rem; align-items: start; padding: .65rem .8rem;
+  border: 1px solid var(--color-border); border-radius: 10px; cursor: pointer; background: var(--color-background); }
+.convo-mode-option input { margin: .2rem 0 0; width: 1.05rem; height: 1.05rem; accent-color: var(--color-highlight); grid-row: span 2; }
+.convo-mode-option:has(input:checked) { border: 2px solid var(--color-highlight); padding: calc(.65rem - 1px) calc(.8rem - 1px); }
+.convo-mode-option:has(input:disabled) { cursor: not-allowed; }
+.convo-mode-option:has(input:disabled) .convo-mode-name, .convo-mode-option:has(input:disabled) .convo-mode-plain { opacity: .65; }
+.convo-mode-option:has(input:focus-visible) { outline: 2px solid var(--color-text); outline-offset: 2px; }
+.convo-mode-name { font-weight: 600; }
+.convo-mode-name small { font-weight: 400; opacity: .8; }
+.convo-mode-plain { grid-column: 2 / 4; font-size: .85rem; opacity: .85; }
+.convo-mode-badge { display: inline-flex; gap: .3rem; align-items: center; font-size: .78rem; font-weight: 600; white-space: nowrap; padding: .1rem .5rem;
+  border: 1px solid var(--color-border); border-radius: 999px; }
+.convo-mode-badge[data-state=available] { border-color: var(--color-text); }
+.convo-mode-badge[data-state=setup] { border-style: dashed; border-color: var(--color-warning-text); }
+.convo-mode-badge[data-state=model] { border-style: dashed; }
+.convo-mode-badge[data-state=version] { border-style: dotted; }
+.convo-mode-badge[data-state=picked] { border-color: var(--color-highlight); }
+.convo-mode-reason { grid-column: 2 / 4; font-size: .82rem; margin: .1rem 0 0; display: flex; gap: .35rem; align-items: baseline; }
+
+/* "Who does what": the same four questions answered for every mode. */
+.convo-mode-flow { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0; border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; }
+.convo-mode-flow > div { display: contents; }
+.convo-mode-flow dt, .convo-mode-flow dd { padding: .5rem .75rem; border-top: 1px solid var(--color-border); margin: 0; }
+.convo-mode-flow > div:first-child dt, .convo-mode-flow > div:first-child dd { border-top: 0; }
+.convo-mode-flow dt { font-weight: 600; font-size: .85rem; display: flex; gap: .4rem; align-items: baseline; }
+.convo-mode-flow dd { font-size: .85rem; overflow-wrap: anywhere; }
+.convo-mode-flow dd small { display: block; opacity: .8; }
+.convo-mode-flow-title { font-size: .85rem; font-weight: 600; margin: .3rem 0 0; }
+
+/* Auto's answer, always visible while Auto is chosen. */
+.convo-mode-auto { border: 1px solid var(--color-border); border-left: 4px solid var(--color-highlight); border-radius: 8px; padding: .6rem .75rem;
+  display: flex; flex-direction: column; gap: .4rem; font-size: .88rem; }
+.convo-mode-auto p, .convo-banner p { margin: 0; }
+.convo-mode-auto ol { margin: .2rem 0 0; padding-left: 1.3rem; line-height: 1.55; }
+.convo-mode-auto li[data-used=true] { font-weight: 600; }
+
+/* Evidence: what Convo knows about a model, claim by claim. */
+.convo-mode-facts { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.convo-mode-facts caption { text-align: left; font-weight: 600; padding-bottom: .35rem; }
+.convo-mode-facts th, .convo-mode-facts td { text-align: left; vertical-align: top; padding: .4rem .5rem; border-top: 1px solid var(--color-border); }
+.convo-mode-facts thead th { border-top: 0; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.convo-mode-evidence { display: inline-flex; gap: .3rem; align-items: baseline; font-size: .78rem; padding: .05rem .45rem; border: 1px solid var(--color-border); border-radius: 6px; }
+.convo-mode-evidence[data-kind=checked] { border: 2px solid var(--color-text); }
+.convo-mode-evidence[data-kind=tested] { border: 2px solid var(--color-text); }
+.convo-mode-evidence[data-kind=user] { border: 3px double var(--color-text); }
+.convo-mode-evidence[data-kind=vendor] { border-style: dashed; }
+.convo-mode-evidence[data-kind=agent] { border-style: dotted; font-style: italic; }
+.convo-mode-evidence[data-kind=unknown] { opacity: .8; }
+.convo-mode-source { display: block; font-size: .78rem; opacity: .8; overflow-wrap: anywhere; }
+
+/* Unavailable and missing pieces: what is wrong and what fixes it, never colour alone. */
+.convo-mode-missing { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .35rem; font-size: .87rem; }
+.convo-mode-missing li { display: flex; gap: .2rem .45rem; align-items: baseline; flex-wrap: wrap; }
+.convo-mode-missing li > span { flex: 1 1 14rem; min-width: 0; }
+.convo-mode-missing li[data-state=missing] > .icon { color: var(--color-error-text); }
+.convo-mode-missing li[data-state=ready] > .icon { opacity: .9; }
+
+/* A card the chosen mode does not use: one line, values kept, still editable on request. */
+.convo-mode-unused { border-style: dashed; gap: .4rem; }
+.convo-mode-unused .convo-mode-unused-line { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .88rem; margin: 0; }
+.convo-mode-tag { display: inline-flex; gap: .3rem; align-items: center; font-size: .75rem; font-weight: 600; padding: .05rem .5rem; border-radius: 999px; border: 1px solid var(--color-border); }
+.convo-mode-tag[data-state=required] { border-color: var(--color-text); }
+.convo-mode-tag[data-state=unused] { border-style: dashed; }
+.convo-mode-tag[data-state=limited] { border-style: dotted; }
+
+/* The research draft review: every claim is unchecked until you tick it. */
+.convo-mode-draft { border: 1px dotted var(--color-text); border-radius: 10px; padding: .75rem; display: flex; flex-direction: column; gap: .6rem; }
+.convo-mode-draft table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.convo-mode-draft th, .convo-mode-draft td { text-align: left; vertical-align: top; padding: .45rem .4rem; border-top: 1px solid var(--color-border); }
+.convo-mode-draft thead th { border-top: 0; font-size: .74rem; text-transform: uppercase; opacity: .75; }
+.convo-mode-draft blockquote { margin: .25rem 0 0; padding-left: .5rem; border-left: 2px solid var(--color-border); font-size: .8rem; opacity: .85; overflow-wrap: anywhere; }
+.convo-mode-busy { display: inline-block; width: .9em; height: .9em; border: 2px solid var(--color-border); border-top-color: var(--color-text); border-radius: 50%;
+  animation: convo-mode-spin 1s linear infinite; vertical-align: -.1em; }
+@keyframes convo-mode-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .convo-mode-busy { animation: none; border-top-color: var(--color-border); } }
+
+@media (max-width: 600px) {
+  .convo-mode-option { grid-template-columns: auto 1fr; }
+  .convo-mode-option .convo-mode-badge { grid-column: 2; justify-self: start; }
+  .convo-mode-plain, .convo-mode-reason { grid-column: 2; }
+  .convo-tabs .button { flex: 1 1 40%; min-height: 44px; }
+}
+.convo-narrow .convo-mode-option { grid-template-columns: auto 1fr; }
+.convo-narrow .convo-mode-option .convo-mode-badge { grid-column: 2; justify-self: start; }
+.convo-narrow .convo-mode-plain, .convo-narrow .convo-mode-reason { grid-column: 2; }
+.convo-narrow .convo-mode-flow { grid-template-columns: 1fr; }
+.convo-narrow .convo-mode-flow dd { border-top: 0; padding-top: 0; }
+.convo-narrow .convo-tabs .button { flex: 1 1 40%; min-height: 44px; }
+.convo-narrow .field { display: block; }
+.convo-narrow .convo-mode-facts thead { display: none; }
+.convo-narrow .convo-mode-facts tr { display: grid; grid-template-columns: 1fr; border-top: 1px solid var(--color-border); padding: .3rem 0; }
+.convo-narrow .convo-mode-facts th, .convo-narrow .convo-mode-facts td { border-top: 0; padding: .1rem .3rem; }
+
+/* Canvas panel pieces (main.html's chip, diagnostics' live strip) as they would read with a mode. */
+.convo-chip { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .65rem; border-radius: 999px; border: 1px solid var(--color-border); font-size: .8rem; }
+.convo-dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--color-text); opacity: .6; }
+.convo-panel { width: 360px; max-width: 100%; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-chat-background); padding: .8rem;
+  display: flex; flex-direction: column; gap: .6rem; }
+.convo-panel-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.convo-panel-head h2 { font-size: 1.05rem; margin: 0 auto 0 0; }
+.convo-panel-refusal { border: 1px solid var(--color-border); border-left: 3px solid var(--color-error-text); border-radius: 8px; padding: .55rem .7rem; font-size: .85rem;
+  display: flex; flex-direction: column; gap: .4rem; }
+
+/* ---- Mockup frame (not part of the design) ---- */
+.mock-page { max-width: 1680px; margin: 0 auto; padding: 1.2rem 1rem 3rem; }
+.mock-page > header h1 { font-size: 1.35rem; margin: .2rem 0 .4rem; }
+.mock-page > header p { margin: .2rem 0; max-width: 78ch; }
+.mock-nav { display: flex; flex-wrap: wrap; gap: .35rem .9rem; font-size: .85rem; margin: .4rem 0 .8rem; }
+.mock-nav a { color: inherit; }
+.mock-nav a[aria-current=page] { font-weight: 700; text-decoration: none; }
+.mock-example { display: inline-block; font-size: .78rem; font-weight: 600; padding: .1rem .5rem; border: 1px dashed var(--color-text); border-radius: 6px; }
+.mock-controls { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; font-size: .85rem; margin: .6rem 0 1rem; }
+.mock-controls fieldset { border: 1px solid var(--color-border); border-radius: 8px; padding: .3rem .6rem; display: flex; gap: .7rem; margin: 0; }
+.mock-controls legend { font-size: .75rem; padding: 0 .3rem; }
+.mock-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); gap: 1.2rem; align-items: start; }
+.mock-pair[data-show=dark] [data-theme-pane=light], .mock-pair[data-show=light] [data-theme-pane=dark] { display: none; }
+.mock-frame { border: 1px solid #8888; border-radius: 12px; overflow: hidden; background: var(--color-background); color: var(--color-text); }
+.mock-frame-label { font-size: .75rem; font-weight: 600; letter-spacing: .03em; padding: .35rem .8rem; border-bottom: 1px solid var(--color-border);
+  background: var(--color-panel); display: flex; justify-content: space-between; gap: .5rem; }
+.mock-frame-body { padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+.mock-frame[data-width=phone] .mock-frame-body { max-width: 390px; }
+.mock-notes { font-size: .85rem; max-width: 90ch; }
+.mock-notes h2 { font-size: 1rem; margin: 1.4rem 0 .3rem; }
+.mock-notes li { margin: .2rem 0; }
+.mock-modal-lead { font-size: .85rem; opacity: .8; margin: 0; }
+.mock-step { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; opacity: .75; margin: 1.6rem 0 .5rem; }
+.mock-dialog { border: 1px solid var(--color-border); border-radius: 12px; padding: 1rem; background: var(--color-panel); display: flex; flex-direction: column; gap: .6rem; max-width: 520px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.mock-dialog h3 { margin: 0; font-size: 1rem; }
+.mock-table { border-collapse: collapse; font-size: .85rem; width: 100%; }
+.mock-table th, .mock-table td { border: 1px solid var(--color-border); padding: .4rem .55rem; text-align: left; vertical-align: top; }
+.mock-table thead th { background: var(--color-panel); }
+
+/* Narrow: the draft review becomes one claim per block (checkbox and claim first, then what it says and its source). */
+@media (max-width: 600px) {
+  .convo-mode-draft thead { display: none; }
+  .convo-mode-draft tr { display: grid; grid-template-columns: auto 1fr; gap: 0 .5rem; border-top: 1px solid var(--color-border); padding: .35rem 0; }
+  .convo-mode-draft td, .convo-mode-draft th { border-top: 0; padding: .1rem .2rem; }
+  .convo-mode-draft td:nth-child(n+3) { grid-column: 2; }
+  .mock-table { display: block; overflow-x: auto; }
+}
+.convo-narrow .convo-mode-draft thead { display: none; }
+.convo-narrow .convo-mode-draft tr { display: grid; grid-template-columns: auto 1fr; gap: 0 .5rem; border-top: 1px solid var(--color-border); padding: .35rem 0; }
+.convo-narrow .convo-mode-draft td, .convo-narrow .convo-mode-draft th { border-top: 0; padding: .1rem .2rem; }
+.convo-narrow .convo-mode-draft td:nth-child(n+3) { grid-column: 2; }

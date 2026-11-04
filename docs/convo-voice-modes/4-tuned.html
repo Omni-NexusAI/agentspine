@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4 · Tuned — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html" aria-current="page">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>4 · Tuned chosen (after build step 7), with one thing still missing</h1>
+  <p>A fine-tuned conversation model takes turns by itself inside a harness made for it. Tuned needs three things: a harness for this model, live speech input, and a speech output. One is missing here, so the mode card lists what to do.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Example data: harness and model names are illustrations, not test results</span>
+  </div>
+</header>
+
+<template data-screen data-title="Tuned chosen" data-where="Convo settings → Connections">
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto">
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Would pick Hybrid</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid">
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="model"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not with this model</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="tuned" checked aria-describedby="t-missing-title">
+        <span class="convo-mode-name">Tuned <small>· a model trained to take turns</small></span>
+        <span class="convo-mode-badge" data-state="setup"><svg class="icon" aria-hidden="true"><use href="#i-warning"/></svg>Needs setup (1)</span>
+        <span class="convo-mode-plain">A fine-tuned model decides many times a second whether to talk, wait or stop, inside a harness made for it. Needs a separate voice.</span>
+      </label>
+    </fieldset>
+
+    <p class="convo-mode-flow-title" id="t-missing-title">Tuned needs, before Convo can start</p>
+    <ul class="convo-mode-missing" aria-labelledby="t-missing-title">
+      <li data-state="ready"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span><strong>A harness for this model</strong>: example-harness 0.1, made for gemma-4-12B-it with your LoRA.</span></li>
+      <li data-state="missing"><svg class="icon" aria-hidden="true"><use href="#i-error"/></svg><span><strong>Live speech input</strong>: not set up. The tuned model reads your words as you speak them.</span> <a href="#t-stt" class="text-button">Go to Speech input</a></li>
+      <li data-state="ready"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span><strong>A speech output</strong>: audio.cpp · clone:jarvis.</span></li>
+    </ul>
+
+    <div class="field">
+      <div class="field-label"><div class="field-title" id="t-harness">Harness</div><div class="field-description" id="t-harness-hint">The rules the tuned model was trained with. Installed from a reviewed file; Convo never downloads one by itself.</div></div>
+      <div class="field-control"><select aria-labelledby="t-harness" aria-describedby="t-harness-hint"><option selected>example-harness 0.1 · for gemma-4-12B-it + LoRA</option><option>Install a harness file…</option></select></div>
+    </div>
+    <p class="field-description convo-model-row"><svg class="icon" aria-hidden="true"><use href="#i-person"/></svg><strong>Decision floors: </strong><span>measured for this model on 28 Oct 2026 (You said: entered from your calibration run). Re-measure after every new fine-tune.</span></p>
+
+    <p class="convo-mode-flow-title" id="t-flow">Who does what with these settings</p>
+    <dl class="convo-mode-flow" aria-labelledby="t-flow">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>Live speech input · not set up<small>Your words as text, while you speak.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>The tuned model, about every 80 ms<small>Talk, wait or stop, by the harness rules.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>Speech output · audio.cpp · clone:jarvis</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Classifier · llama.cpp · d1-omni-600M<small>Checks your request before delegated work runs (0.9 or more).</small></dd></div>
+    </dl>
+    <p class="field-description">A fine-tuned <em>decision</em> model, like your d1 fine-tunes, is still Hybrid: it goes in the Classifier card. Tuned is for a <em>conversation</em> model trained to take turns itself.</p>
+  </fieldset>
+
+  <fieldset class="convo-card convo-model-card">
+    <legend>Conversation model</legend>
+    <div class="convo-model-fields">
+      <div class="field"><div class="field-label"><div class="field-title" id="tc-model">Model name</div></div><div class="field-control"><input type="text" aria-labelledby="tc-model" value="gemma-4-12B-it-qat + my-turns-lora"></div></div>
+      <p class="convo-elided">Provider, address and key: as today.</p>
+    </div>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card" id="t-stt">
+    <legend>Speech input</legend>
+    <div class="convo-model-fields">
+      <p class="convo-mode-unused-line"><span class="convo-mode-tag" data-state="required"><svg class="icon" aria-hidden="true"><use href="#i-error"/></svg>Required in Tuned · not set up</span></p>
+      <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><span>Live transcription while you speak. Shown only in Tuned mode; Hybrid sends your finished sentence as audio instead.</span></p>
+      <div class="field"><div class="field-label"><div class="field-title" id="ts-prov">Provider</div></div><div class="field-control"><select aria-labelledby="ts-prov"><option>Choose a live transcription server</option></select></div></div>
+      <p class="convo-elided">Address, model, key and Check connection, in the same layout as the other Connections cards.</p>
+    </div>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card convo-mode-unused">
+    <legend>Classifier</legend>
+    <p class="convo-mode-unused-line"><span class="convo-mode-tag" data-state="limited"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves delegated work only</span>llama.cpp · d1-omni-600M</p>
+    <button type="button" class="advanced-toggle" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg><span>Show the classifier settings</span></button>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card">
+    <legend>Speech output</legend>
+    <div class="convo-model-fields">
+      <p class="convo-mode-unused-line"><span class="convo-mode-tag" data-state="required"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Required in Tuned · set</span>audio.cpp · clone:jarvis</p>
+      <p class="convo-elided">Provider, connection, model and voice: as today.</p>
+    </div>
+  </fieldset>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>“Needs setup (1)” instead of a refusal.</strong> A mode that is built but not ready can still be chosen. The card lists what it needs, each item with icon and words and a link to the card that fixes it. Start refuses with the same words until it is fixed.</li>
+    <li><strong>Required is a solid tag, limited is dotted, not used is dashed</strong>, always with words, so the tags read the same without colour.</li>
+    <li><strong>New card only where needed.</strong> Speech input appears in Connections only in Tuned mode; nothing about it shows in Hybrid or Native.</li>
+    <li><strong>Floors per model.</strong> Decision floors belong to one model and must be measured again after each fine-tune; the row says when and how they were measured.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>
