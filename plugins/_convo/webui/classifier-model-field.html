@@ -36,21 +36,22 @@
             x-model="$store.convoSetup.config.roles.classifier.url"></div>
       </div></template>
 
-      <div class="field" x-id="['convo-classifier-model']" @click.outside="close()" x-data="{ results: [], open: false, busy: false, index: -1, note: '',
+      <div class="field" x-id="['convo-classifier-model']" @click.outside="close()" x-data="{ results: [], open: false, busy: false, index: -1, note: '', timer: null,
           async search() { if (this.busy) return; this.busy = true; this.note = '';
-            try { this.results = await $store.convoSetup.classifierSearch($store.convoSetup.classifierView().model || ''); this.note = this.results.length ? '' : 'No models found'; }
+            try { this.results = await $store.convoSetup.classifierSearch($store.convoSetup.classifierView().model || ''); this.note = this.results.length ? '' : $store.convoSetup.classifierSearchNote(); }
             catch { this.results = []; this.note = 'Model search is unavailable'; }
             finally { this.busy = false; this.open = true; this.index = -1; } },
           get items() { const groups = $store.convoSetup.classifierGroup(this.results, $store.convoSetup.classifierView().model || ''); return [...groups.matched, ...groups.rest]; },
           move(step) { if (!this.open) { this.search(); return; } const count = this.items.length; if (count) this.index = (this.index + step + count) % count; },
           choose(id) { $store.convoSetup.classifierChooseModel(id); this.close(); this.$refs.model.focus(); },
+          typed() { clearTimeout(this.timer); this.timer = setTimeout(() => this.search(), 300); },
           close() { this.open = false; this.index = -1; } }">
-        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-model', 'title')">Model name</div><div class="field-description">Model identifier. Click the field or the search button to browse available models; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
+        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-model', 'title')">Model name</div><div class="field-description">Model identifier. The models your server serves are listed as you type or click; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
         <div class="field-control convo-model-search">
           <input type="text" x-ref="model" data-convo-field="classifier-model" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
                  :aria-labelledby="$id('convo-classifier-model', 'title')" :aria-controls="$id('convo-classifier-model', 'list')" :aria-expanded="open ? 'true' : 'false'"
                  :aria-activedescendant="open && index >= 0 ? $id('convo-classifier-model', 'option-' + index) : null"
-                 :value="$store.convoSetup.classifierMigration()?.model ?? $store.convoSetup.config.roles.classifier.model" @input="$store.convoSetup.classifierSet('model', $event.target.value)"
+                 :value="$store.convoSetup.classifierMigration()?.model ?? $store.convoSetup.config.roles.classifier.model" @input="$store.convoSetup.classifierSet('model', $event.target.value); typed()"
                  @click="open || search()" @keydown.arrow-down.prevent="move(1)" @keydown.arrow-up.prevent="move(-1)"
                  @keydown.enter.prevent="open && index >= 0 ? choose(items[index]) : search()" @keydown.escape="if (open) { $event.stopPropagation(); close(); }">
           <button type="button" class="model-search-btn" aria-label="Search available models" :aria-busy="busy ? 'true' : 'false'" :disabled="busy" @click="search()"><x-icon name="search" aria-hidden="true" x-show="!busy"></x-icon><x-icon class="model-search-spinner" name="progress_activity" aria-hidden="true" x-show="busy"></x-icon></button>
@@ -82,6 +83,16 @@
         </div>
       </div></template>
 
+      <div class="convo-model-connection" data-convo-field="classifier-connection">
+        <p class="field-description" data-convo-field="classifier-this-computer" x-show="$store.convoSetup.thisComputerText($store.convoSetup.classifierUrl())" x-text="$store.convoSetup.thisComputerText($store.convoSetup.classifierUrl())"></p>
+        <p class="field-description convo-model-alert" data-convo-field="classifier-key-move" x-show="$store.convoSetup.classifierKeyMoveOffer()"><span x-text="'Convo’s saved key is for ' + $store.convoSetup.classifierKeyMoveOffer() + '.'"></span> <button type="button" class="button" @click="$store.convoSetup.keyMove(role)">Use it for this address</button></p>
+        <div class="convo-model-actions"><button type="button" class="button" data-convo-field="classifier-check" :disabled="$store.convoSetup?.ui?.classifier?.checking === true" @click="$store.convoSetup.classifierCheck()">Check server</button><button type="button" class="button" data-convo-field="classifier-use-kind" x-show="$store.convoSetup.classifierCheckSuggests()" @click="$store.convoSetup.classifierUseCheckedKind()" x-text="$store.convoSetup.classifierCheckSuggests() === 'decision' ? 'Use it as a decision model' : 'Use it as a chat model'"></button></div>
+        <p class="field-description convo-model-probe" role="status" data-convo-field="classifier-check-result" :data-state="$store.convoSetup.classifierCheckView().state"><x-icon :name="$store.convoSetup.classifierCheckView().icon" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup.classifierCheckView().label"></strong><span x-text="$store.convoSetup.classifierCheckView().message"></span></p>
+        <template x-if="$store.convoSetup.connectionSuggestion(role)"><p class="field-description convo-model-alert" data-convo-field="classifier-connection-suggestion"><span x-text="$store.convoSetup.connectionSuggestion(role)?.message"></span> <button type="button" class="button" @click="(url => $store.convoSetup.classifierUseAddress(url))($store.convoSetup.connectionSuggestion(role)?.url)" x-text="$store.convoSetup.connectionSuggestion(role)?.label"></button></p></template>
+        <template x-if="$store.convoSetup.certificateChanged(role)"><p class="field-description convo-model-alert" data-convo-field="classifier-certificate-changed"><button type="button" class="button" data-convo-field="classifier-certificate-accept" @click="$store.convoSetup.certificateAccept(role, $store.convoSetup.certificateChanged(role)?.url)">Accept the new certificate</button></p></template>
+        <p class="field-description" data-convo-field="classifier-certificate-note" x-show="$store.convoSetup.certificateNote(role)"><span x-text="$store.convoSetup.certificateNote(role)"></span> <button type="button" class="text-button" data-convo-field="classifier-certificate-forget" @click="$store.convoSetup.certificateForget(role, $store.convoSetup.classifierUrl())">Forget</button></p>
+        <p class="field-description">Check server lists the models at this address and, for a decision server, sends one short text decision, only when you click it. It uses what is shown here (a key typed here included); nothing is saved and no audio is sent.</p>
+      </div>
       <div class="field" x-id="['convo-classifier-context']">
         <div class="field-label"><div class="field-title" :id="$id('convo-classifier-context', 'title')">Context window (tokens)</div><div class="field-description">How much the classifier model reads at once, from 1024 to 1000000 (System One’s decider uses 8192). Separate from the conversation’s context window.</div></div>
         <div class="field-control convo-model-stack"><input type="number" min="1024" max="1000000" step="1" data-convo-field="classifier-context" :aria-labelledby="$id('convo-classifier-context', 'title')"
@@ -130,11 +141,6 @@
             <div class="field-control convo-model-stack"><input type="text" data-convo-field="classifier-token-env" autocomplete="off" spellcheck="false" placeholder="e.g. MY_DECIDER_KEY" :aria-labelledby="$id('convo-classifier-env', 'title')"
                 :aria-invalid="$store.convoSetup?.classifierReferenceProblem?.() ? 'true' : 'false'" x-model="$store.convoSetup.config.roles.classifier.token_env">
               <p class="field-description convo-model-alert" role="note" data-convo-field="classifier-token-env-problem" x-show="!!$store.convoSetup?.classifierReferenceProblem?.()"><span x-text="$store.convoSetup?.classifierReferenceProblem?.()"></span> <button type="button" class="button" data-convo-field="classifier-token-env-clear" @click="$store.convoSetup.classifierClearReference()">Clear</button></p></div>
-          </div>
-          <div class="convo-model-checks">
-            <div class="convo-model-actions"><button type="button" class="button" data-convo-field="classifier-check" :disabled="$store.convoSetup?.ui?.classifier?.checking === true" @click="$store.convoSetup.classifierCheck()">Check server</button><button type="button" class="button" data-convo-field="classifier-use-kind" x-show="$store.convoSetup.classifierCheckSuggests()" @click="$store.convoSetup.classifierUseCheckedKind()" x-text="$store.convoSetup.classifierCheckSuggests() === 'decision' ? 'Use it as a decision model' : 'Use it as a chat model'"></button></div>
-            <p class="field-description">Check server lists the models at this address and, for a decision server, sends one short text decision, only when you click it. It uses what is shown here, nothing is saved and no audio is sent.</p>
-            <p class="field-description convo-model-probe" role="status" data-convo-field="classifier-check-result" :data-state="$store.convoSetup.classifierCheckView().state"><x-icon :name="$store.convoSetup.classifierCheckView().icon" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup.classifierCheckView().label"></strong><span x-text="$store.convoSetup.classifierCheckView().message"></span></p>
           </div>
         </div>
       </div>

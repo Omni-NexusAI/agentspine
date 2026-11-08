@@ -55,7 +55,7 @@ class SpeechAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(environment.stop)
         self.original_client = httpx.AsyncClient
         self.transport = httpx.MockTransport(self.provider)
-        clients = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: self.original_client(transport=self.transport, **kwargs))
+        clients = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: self.original_client(**{**kwargs, 'transport': self.transport}))
         clients.start()
         self.addCleanup(clients.stop)
 

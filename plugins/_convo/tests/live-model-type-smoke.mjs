@@ -150,7 +150,10 @@ try {
     check('a change in the section is saved by itself and says "Saved"', saved.model === LIVE_MODEL && await statusText(page) === 'Saved', JSON.stringify({ model: saved.model, patches: patches.length }));
     check('the autosave merged with an unsaved Convo edit: kept in the draft, never saved', saved.style === (original.style || '') && saved.draftStyle === unsavedStyle && saved.dirty === true, JSON.stringify(saved));
 
-    // Close, see the summary agree, reopen: still exactly one section showing the saved value.
+    // Close, see the summary agree, reopen: still exactly one section showing the saved value. The model list opens as you type,
+    // so the first Escape closes the list (a combobox's own Escape) and the next one the editor.
+    if (await page.eval(`!![...document.querySelectorAll(${JSON.stringify(SECTION + ' .model-search-results')})].find(e => e.offsetParent !== null)`))
+        await press(page, 'Escape');
     await press(page, 'Escape');
     await page.waitFor(`!document.querySelector(${JSON.stringify(EDITOR)})`, 15000);
     await sleep(800);

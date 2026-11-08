@@ -222,6 +222,8 @@ def _resolve(convo_on):
             if not root:
                 raise DeciderUnavailable('not_configured', "Convo's classifier has no decision server address", source)
             url = allowed_url(root, source, decider.get('remote') is True, decider.get('path') is True)
+            model = decider.get('model') if isinstance(decider.get('model'), str) else ''
+            return {'source': source, 'base_url': url, 'host': urllib.parse.urlsplit(url).netloc, 'model': model.strip()}
         elif source == 'system_one':
             consent = decider.get('remote') is True
             inherited = _convo('convo_system_one').inherited_decider(consent)
@@ -268,6 +270,38 @@ def describe():
         return {'source': '', 'base_url': '', 'host': '', 'refused': 'unavailable', 'detail': type(error).__name__}
 
 
+def _net():
+    """Convo's connection rules (`helpers/convo_net.py`: this computer from inside Docker, remembered private certificates), or
+    None without Convo: the address is then used exactly as given."""
+    try:
+        return _convo('convo_net')
+    except Exception:
+        return None
+
+
+def _open(url, data, headers, timeout):
+    """POST `data` to `url` under Convo's connection rules when Convo is installed. An https server on your own network whose
+    certificate is not trusted yet is remembered on the first call (as Convo's own clients do), then asked once more."""
+    net = _net() if convo_enabled_safely() else None
+    for attempt in (0, 1):
+        target, extra, context = net.for_urllib(url) if net else (url, {}, None)
+        request = urllib.request.Request(target, data=data, headers={**headers, **extra}, method='POST')
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, **({'context': context} if context is not None else {})) as response:
+                return json.loads(response.read())
+        except urllib.error.URLError as error:
+            if attempt or not net or isinstance(error, urllib.error.HTTPError) or not net.verify_failure(error)                     or net.pin_for(url) is not None or not net.may_remember(url):
+                raise
+            net.remember(url)
+
+
+def convo_enabled_safely():
+    try:
+        return convo_enabled()
+    except Exception:
+        return False
+
+
 def classifier_bearer():
     """The Authorization value for Convo's own decision classifier ('' when none resolves), from Convo in-process for this one
     call (`convo_setup.classifier_bearer` over Convo's settings accessor). Never stored, cached, logged or reported."""
@@ -303,13 +337,13 @@ class D1HttpModel:
             if authorization:
                 headers['Authorization'] = authorization
         body = {'state': state, 'questions': questions}
+        if where and where.get('model'):
+            body['model'] = where['model']          # a router serving several decision models answers with the one named
         if audio is not None:
             body['files'] = ['data:audio/wav;base64,' + base64.b64encode(_wav(audio)).decode()]
-        request = urllib.request.Request(base + '/v1/systemone', data=json.dumps(body).encode(), headers=headers, method='POST')
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                result = json.loads(response.read())
+            result = _open(base + '/v1/systemone', json.dumps(body).encode(), headers, self.timeout)
         except urllib.error.HTTPError as error:
             _state['last_error'] = 'HTTP %s from the decision server' % error.code
             raise

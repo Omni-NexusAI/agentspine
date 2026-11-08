@@ -113,13 +113,66 @@ class ConnectionMessageTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
         import httpx
         cases = ((self.setup.Answered(401), 'refused the key'), (self.setup.Answered(404), 'ends with the server’s /v1'),
                  (self.setup.Answered(500), 'HTTP 500'), (httpx.ConnectError('refused'), 'LAN or Tailscale'),
-                 (httpx.ReadTimeout('slow'), 'within 8 s'), (ValueError('Expecting value'), 'could not be read as a models list'))
+                 (httpx.ReadTimeout('slow'), 'within 8 s'), (ValueError('Expecting value'), 'could not be read as a models list'),
+                 (_caused(httpx.ConnectError('x'), ConnectionRefusedError(111, 'Connection refused')), 'Nothing is listening at 127.0.0.1:8080'),
+                 (_caused(httpx.ConnectError('x'), __import__('socket').gaierror(-2, 'Name or service not known')), 'could not be found from Agent Zero’s container'))
         for error, text in cases:
             self.http.side_effect = error
             message = (await self.setup.discover('conversation'))['verification']['message']
             self.assertIn(text, message, type(error).__name__)
             self.assertIn('no fallback was used', message)
             self.assertNotIn('Expecting value', message)                                   # no server or parser text is echoed
+
+
+class CardConnectionTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
+    """What a card's Test connection gets beyond the verdict: a key typed but not saved yet (that request only), the listed name
+    that differs only in letter case, the saved key's own address with "Use it for this address", and where Agent Zero runs."""
+    TYPED = 'typed-not-saved-key-0123456789'
+
+    def setUp(self):
+        super().setUp()
+        self.http.side_effect = None
+        self.http.return_value = {'data': [{'id': 'Local-Model'}]}
+
+    async def test_a_typed_key_is_used_for_that_test_only_and_never_kept(self):
+        result = await self.setup.discover('conversation', check=True, draft_key=self.TYPED)
+        url, headers = self.http.call_args.args
+        self.assertEqual((url, headers.get('Authorization')), ('http://127.0.0.1:8080/v1/models', 'Bearer ' + self.TYPED))
+        stored = self.secrets.read_secrets_raw() + self.path.read_text(encoding='utf-8') + (self.path.parent / 'data' / 'connections.json').read_text(encoding='utf-8')
+        self.assertNotIn(self.TYPED, stored + json.dumps(result))
+        with self.assertRaises(ValueError):
+            await self.setup.discover('conversation', draft_key='bad\nkey')
+
+    async def test_a_name_differing_only_in_case_is_offered_never_changed(self):
+        result = await self.setup.discover('conversation')
+        self.assertEqual((result['verification']['state'], result['close_match']), ('unverified', 'Local-Model'))
+        self.assertIn('must match exactly', result['verification']['message'])
+        self.assertEqual(self.setup.read()['config']['roles']['conversation']['model'], 'local-model')
+
+    def test_the_saved_key_follows_the_address_only_when_asked(self):
+        saved = self.setup.read()
+        self.setup.save(saved['config'], saved['revision'], {'conversation': 'saved-key-0123456789'})
+        self.assertEqual(self.setup.read()['key_bound'], {'conversation': 'http://127.0.0.1:8080/v1'})
+        moved = {'provider': '', 'url': 'http://desktop-i96ld4g:8098/v1'}
+        result = self.setup.key_rebind('conversation', moved)
+        self.assertEqual(result['key_bound'], {'conversation': 'http://desktop-i96ld4g:8098/v1'})
+        self.assertNotIn('saved-key-0123456789', json.dumps(result))
+        self.assertEqual(result['config']['roles']['conversation']['url'], 'http://127.0.0.1:8080/v1')   # no setting changed
+        with self.assertRaises(ValueError):
+            self.setup.key_rebind('classifier', None)                                    # no key saved for that card
+
+    def test_the_read_says_where_agent_zero_runs_and_tls_actions_take_https_only(self):
+        result = self.setup.read()
+        self.assertEqual(set(result['network']), {'in_docker', 'this_computer', 'translated'})
+        self.assertEqual(result['certificates'], {'conversation': None, 'classifier': None, 'tts': None})
+        for url in ('http://127.0.0.1:1/v1', '', None, 'https://' + 'x' * 2000):
+            with self.assertRaises(ValueError):
+                self.setup.tls_accept(url)
+
+
+def _caused(error, cause):
+    error.__cause__ = cause
+    return error
 
 
 if __name__ == '__main__':

@@ -62,6 +62,10 @@ const factory = modelRoleSetup('classifier', {
     providerPaths: ['roles.classifier.kind'],
     role: store => store.classifierView(),
     beforeEdit: store => store.classifierAdopt(),
+    useAddress: (store, url) => {
+        if (store.classifierView().provider) store.classifierSet('api_base', url);
+        else store.config.roles.classifier.url = url;
+    },
     // A type the new provider does not serve goes back to Auto (the provider's own first kind).
     afterProvider: (store, next) => {
         const draft = store.config.roles.classifier, kinds = store.classifierKinds(next);
@@ -209,8 +213,11 @@ export const classifierSetup = {
         Object.assign(ui, { checking: true, check: null });
         let check;
         try {
-            const result = await this.api('classifier_check', request);
-            check = { state: own(CHECK_STATES, result.state) ? result.state : 'unverified', message: result.message || '', models: result.models || [], host: result.host || '' };
+            const draft = this.keys?.classifier;          // a key typed but not saved yet, for this check only
+            const result = await this.api('classifier_check', { ...request, ...(draft ? { draft_key: draft } : {}) });
+            check = { state: own(CHECK_STATES, result.state) ? result.state : 'unverified', message: result.message || '', models: result.models || [], host: result.host || '',
+                      suggestion: result.suggestion || null, certificate_changed: result.certificate_changed || null, certificate: result.certificate ?? null };
+            if ('certificate' in result) this.certificates = { ...this.certificates, classifier: result.certificate };
         } catch (error) { check = { state: 'refused', message: error?.message || String(error) }; }
         const stale = JSON.stringify(this.classifierCheckRequest()) !== JSON.stringify(request) || this.classifierUsesSystemOne();
         Object.assign(this.ui.classifier, { checking: false, check: stale ? null : check });

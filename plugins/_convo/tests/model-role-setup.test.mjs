@@ -146,8 +146,8 @@ test('The conversation card offers an unknown OpenAI-compatible provider as "aud
     const role = f.store.config.roles.conversation;
     assert.deepEqual([role.api_base, f.store.conversationUrl(), f.store.conversationProviderInfo().compatible], ['http://192.168.1.50:4000/v1', 'http://192.168.1.50:4000/v1', true]);
     assert.deepEqual([f.store.conversationHostKey(), f.store.conversationUsesHostKey(), f.store.conversationSummary().provider], ['router_x', true, 'Custom endpoint']);
-    assert.deepEqual(plain(await f.store.conversationSearch('m')), ['m-1', 'm-2']);
-    assert.deepEqual(plain(f.host.searches), [['router_x', 'm', 'chat', 'http://192.168.1.50:4000/v1']]);
+    assert.deepEqual(plain(await f.store.conversationSearch('m')), ['own']);                         // on your LAN: the router's own list
+    assert.deepEqual(plain(f.host.searches), []);
     f.host.chatProviderDetails = [];                                                                 // Agent Zero no longer describes it
     assert.equal(f.store.conversationProviderInfo().selectable, false);
     assert.equal(conversationUrl({ provider: 'router_x' }, 'http://h/v1'), 'http://h/v1');

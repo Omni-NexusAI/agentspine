@@ -226,7 +226,8 @@ def _voice_active():
 async def _post(url, body, headers):
     """One bounded POST. Returns (status, parsed JSON or None). Raises on a transport failure."""
     import httpx
-    async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5), follow_redirects=False, trust_env=False) as client:
+    from . import convo_net
+    async with convo_net.client(httpx.Timeout(20, connect=5)) as client:
         async with client.stream('POST', url, json=body, headers=headers) as response:
             chunks, size = [], 0
             async for chunk in response.aiter_bytes():

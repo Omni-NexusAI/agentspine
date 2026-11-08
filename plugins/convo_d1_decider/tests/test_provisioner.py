@@ -204,7 +204,7 @@ class SourceTests(Base):
 
     def test_convo_source_uses_convos_own_address_and_its_default(self):
         self.decider('convo', 'http://localhost:9940')
-        self.assertEqual(provisioner.resolve_endpoint(), {'source': 'convo', 'base_url': 'http://localhost:9940', 'host': 'localhost:9940'})
+        self.assertEqual(provisioner.resolve_endpoint(), {'source': 'convo', 'base_url': 'http://localhost:9940', 'host': 'localhost:9940', 'model': ''})
         self.decider('convo', '')
         self.assertEqual(provisioner.resolve_endpoint()['base_url'], 'http://host.docker.internal:9931')
         self.write('convo_d1_decider', {'base_url': 'http://127.0.0.1:9935'})                       # this plugin's own address is not the source now
@@ -250,7 +250,7 @@ class SourceTests(Base):
     def test_convo_source_uses_the_root_its_classifier_catalog_derives_from_the_provider(self):
         local = {'provider': 'llama_cpp', 'kind': 'decision', 'api_base': 'http://192.168.1.5:9931/v1'}
         self.decider('convo', classifier=local)                         # decider.url stays '' (the previous rule could not hold it)
-        self.assertEqual(provisioner.resolve_endpoint(), {'source': 'convo', 'base_url': 'http://192.168.1.5:9931', 'host': '192.168.1.5:9931'})
+        self.assertEqual(provisioner.resolve_endpoint(), {'source': 'convo', 'base_url': 'http://192.168.1.5:9931', 'host': '192.168.1.5:9931', 'model': ''})
         self.decider('convo', classifier={'provider': 'other', 'kind': 'decision', 'api_base': 'http://localhost:7000/prefix/v1'})
         self.assertEqual(provisioner.resolve_endpoint()['base_url'], 'http://localhost:7000/prefix')     # a path prefix from an API base
         self.decider('convo', classifier={'provider': 'jev'})                                            # public, no consent
@@ -388,6 +388,21 @@ class BearerTests(Base):
                 model.system_one('s', {'attention': {}})
             provisioner.D1HttpModel('http://localhost:9944', bearer=bearer).system_one('s', {'attention': {}})     # a fixed address
         self.assertEqual((asked, seen['authorization']), ([], [None, None, None]))
+
+    def test_the_chosen_model_is_named_in_each_decision_and_nothing_else_changes_without_one(self):
+        bodies = []
+        def urlopen(request, timeout):
+            bodies.append(json.loads(request.data))
+            return Answer()
+        with patch('urllib.request.urlopen', urlopen):
+            for model in ('d1-omni-600m', ''):
+                where = {'source': 'convo', 'base_url': 'http://localhost:9944', 'host': 'localhost:9944', 'model': model}
+                provisioner.D1HttpModel(resolve=lambda: where, bearer=lambda: '').system_one('s', {'attention': {}})
+        self.assertEqual(bodies[0]['model'], 'd1-omni-600m')        # a router serving several decision models needs the name
+        self.assertNotIn('model', bodies[1])                       # the 9931 default without a name works as before
+        self.write('_convo', {'convo': {'enabled': True, 'system_one': {'enabled': True, 'backend': 'd1_llama_cpp'},
+                                        'decider': {'source': 'convo', 'kind': 'd1_llama_cpp', 'url': 'http://localhost:9940', 'model': 'd1-omni-600m'}}})
+        self.assertEqual(provisioner.resolve_endpoint()['model'], 'd1-omni-600m')
 
     def test_the_key_is_bound_to_the_derived_root_and_never_reaches_status_or_the_cache(self):
         self.keys.update(CONVO_CLASSIFIER_API_KEY=self.KEY, CONVO_CLASSIFIER_API_KEY_URL='https://api.typesafe.ai')

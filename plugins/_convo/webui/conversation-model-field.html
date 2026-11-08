@@ -38,21 +38,22 @@
           x-model="$store.convoSetup.config.roles.conversation.url" @input="$store.convoSetup.conversationEdited('roles.conversation.url', autosave)"></div>
     </div></template>
 
-    <div class="field" x-id="['convo-model']" @click.outside="close()" x-data="{ results: [], open: false, busy: false, index: -1, note: '',
+    <div class="field" x-id="['convo-model']" @click.outside="close()" x-data="{ results: [], open: false, busy: false, index: -1, note: '', timer: null,
         async search() { if (this.busy) return; this.busy = true; this.note = '';
-          try { this.results = await $store.convoSetup.conversationSearch($store.convoSetup.config.roles.conversation.model); this.note = this.results.length ? '' : 'No models found'; }
+          try { this.results = await $store.convoSetup.conversationSearch($store.convoSetup.config.roles.conversation.model); this.note = this.results.length ? '' : $store.convoSetup.conversationSearchNote(); }
           catch { this.results = []; this.note = 'Model search is unavailable'; }
           finally { this.busy = false; this.open = true; this.index = -1; } },
         get items() { const groups = $store.convoSetup.conversationGroup(this.results, $store.convoSetup.config.roles.conversation.model); return [...groups.matched, ...groups.rest]; },
         move(step) { if (!this.open) { this.search(); return; } const count = this.items.length; if (count) this.index = (this.index + step + count) % count; },
         choose(id) { $store.convoSetup.conversationChooseModel(id, autosave); this.close(); this.$refs.model.focus(); },
+        typed() { clearTimeout(this.timer); this.timer = setTimeout(() => this.search(), 300); },
         close() { this.open = false; this.index = -1; } }">
-      <div class="field-label"><div class="field-title" :id="$id('convo-model', 'title')">Model name</div><div class="field-description">Model identifier. Click the field or the search button to browse available models; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-model', 'title')">Model name</div><div class="field-description">Model identifier. The models your server serves are listed as you type or click; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
       <div class="field-control convo-model-search">
         <input type="text" x-ref="model" data-convo-field="model" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
                :aria-labelledby="$id('convo-model', 'title')" :aria-controls="$id('convo-model', 'list')" :aria-expanded="open ? 'true' : 'false'"
                :aria-activedescendant="open && index >= 0 ? $id('convo-model', 'option-' + index) : null"
-               x-model="$store.convoSetup.config.roles.conversation.model" @input="$store.convoSetup.conversationEdited('roles.conversation.model', autosave)"
+               x-model="$store.convoSetup.config.roles.conversation.model" @input="$store.convoSetup.conversationEdited('roles.conversation.model', autosave); typed()"
                @click="open || search()" @keydown.arrow-down.prevent="move(1)" @keydown.arrow-up.prevent="move(-1)"
                @keydown.enter.prevent="open && index >= 0 ? choose(items[index]) : search()" @keydown.escape="if (open) { $event.stopPropagation(); close(); }">
         <button type="button" class="model-search-btn" aria-label="Search available models" :aria-busy="busy ? 'true' : 'false'" :disabled="busy" @click="search()"><x-icon name="search" aria-hidden="true" x-show="!busy"></x-icon><x-icon class="model-search-spinner" name="progress_activity" aria-hidden="true" x-show="busy"></x-icon></button>
@@ -88,6 +89,16 @@
       </div>
     </div></template>
 
+    <div class="convo-model-connection" data-convo-field="connection">
+      <p class="field-description" data-convo-field="this-computer" x-show="$store.convoSetup.thisComputerText($store.convoSetup.conversationUrl())" x-text="$store.convoSetup.thisComputerText($store.convoSetup.conversationUrl())"></p>
+      <p class="field-description convo-model-alert" data-convo-field="key-move" x-show="$store.convoSetup.conversationKeyMoveOffer()"><span x-text="'Convo’s saved key is for ' + $store.convoSetup.conversationKeyMoveOffer() + '.'"></span> <button type="button" class="button" @click="$store.convoSetup.keyMove(role)">Use it for this address</button></p>
+      <div class="convo-model-actions"><button type="button" class="button" data-convo-field="connection-test" :disabled="$store.convoSetup.isDiscovering(role)" @click="$store.convoSetup.discover(role, true)">Test connection</button></div>
+      <p class="field-description convo-model-probe" role="status" data-convo-field="connection-result" :data-state="$store.convoSetup.conversationConnectionView().state"><x-icon :name="$store.convoSetup.conversationConnectionView().icon" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup.conversationConnectionView().label"></strong><span x-text="$store.convoSetup.conversationConnectionView().message"></span></p>
+      <template x-if="$store.convoSetup.connectionSuggestion(role)"><p class="field-description convo-model-alert" data-convo-field="connection-suggestion"><span x-text="$store.convoSetup.connectionSuggestion(role)?.message"></span> <button type="button" class="button" @click="(url => $store.convoSetup.conversationUseAddress(url, autosave))($store.convoSetup.connectionSuggestion(role)?.url)" x-text="$store.convoSetup.connectionSuggestion(role)?.label"></button></p></template>
+      <template x-if="$store.convoSetup.conversationCloseMatch()"><p class="field-description convo-model-alert" data-convo-field="close-match"><button type="button" class="button" @click="$store.convoSetup.conversationChooseModel($store.convoSetup.conversationCloseMatch(), autosave)" x-text="'Use “' + $store.convoSetup.conversationCloseMatch() + '”'"></button></p></template>
+      <template x-if="$store.convoSetup.certificateChanged(role)"><p class="field-description convo-model-alert" data-convo-field="certificate-changed"><button type="button" class="button" data-convo-field="certificate-accept" @click="$store.convoSetup.certificateAccept(role, $store.convoSetup.certificateChanged(role)?.url)">Accept the new certificate</button></p></template>
+      <p class="field-description" data-convo-field="certificate-note" x-show="$store.convoSetup.certificateNote(role)"><span x-text="$store.convoSetup.certificateNote(role)"></span> <button type="button" class="text-button" data-convo-field="certificate-forget" @click="$store.convoSetup.certificateForget(role, $store.convoSetup.conversationUrl())">Forget</button></p>
+    </div>
     <div class="field" x-id="['convo-context']">
       <div class="field-label"><div class="field-title" :id="$id('convo-context', 'title')">Context window (tokens)</div><div class="field-description">Convo keeps the conversation inside this window; the same value as the tuning controls’ context tokens. Applies to the next conversation.</div></div>
       <div class="field-control"><input type="number" min="4096" step="1" data-convo-field="context" :aria-labelledby="$id('convo-context', 'title')" x-model.number="$store.convoSetup.config.compaction.context_tokens" @input="$store.convoSetup.conversationEdited('compaction.context_tokens', autosave)"></div>
@@ -135,9 +146,8 @@
           <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="tool-calls" :aria-labelledby="$id('convo-tools', 'title')" x-model="$store.convoSetup.config.roles.conversation.capabilities.tool_calls" @change="$store.convoSetup.conversationEdited('roles.conversation.capabilities.tool_calls', autosave)"><span class="toggler"></span></label></div>
         </div>
         <div class="convo-model-checks">
-          <div class="convo-model-actions"><button type="button" class="button" data-convo-field="connection-test" :disabled="$store.convoSetup.isDiscovering(role)" @click="$store.convoSetup.discover(role, true)">Test connection</button><button type="button" class="button" data-convo-field="audio-probe" :disabled="$store.convoSetup?.ui?.conversation?.probe?.busy === true" @click="$store.convoSetup.conversationProbe()">Test audio input</button></div>
-          <p class="field-description">Test connection lists the models at this address with the key in use; it does not test audio. Test audio input sends one short synthetic clip to the saved model, only when you click it.</p>
-          <p class="field-description" role="status" x-text="$store.convoSetup.choices[role]?.busy ? 'Checking the configured server…' : ($store.convoSetup.choices[role]?.verification?.message || 'Connection not checked in this view.')"></p>
+          <div class="convo-model-actions"><button type="button" class="button" data-convo-field="audio-probe" :disabled="$store.convoSetup?.ui?.conversation?.probe?.busy === true" @click="$store.convoSetup.conversationProbe()">Test audio input</button></div>
+          <p class="field-description">Test audio input sends one short synthetic clip to the saved model, only when you click it. Test connection (above) lists the models; it does not test audio.</p>
           <p class="field-description convo-model-probe" role="status" data-convo-field="probe-result" x-show="$store.convoSetup?.ui?.conversation?.probe?.message" :data-state="$store.convoSetup?.ui?.conversation?.probe?.state"><x-icon :name="$store.convoSetup?.ui?.conversation?.probe?.state === 'pass' ? 'check_circle' : ($store.convoSetup?.ui?.conversation?.probe?.state === 'busy' ? 'progress_activity' : 'error')" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup?.ui?.conversation?.probe?.state === 'pass' ? 'Passed: ' : ($store.convoSetup?.ui?.conversation?.probe?.state === 'busy' ? 'Testing: ' : 'Failed: ')"></strong><span x-text="$store.convoSetup?.ui?.conversation?.probe?.message"></span><span x-show="$store.convoSetup?.ui?.conversation?.probe?.reply" x-text="' Reply: “' + ($store.convoSetup?.ui?.conversation?.probe?.reply || '') + '”'"></span></p>
         </div>
       </div>

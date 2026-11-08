@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from . import convo_net
 from . import setup_store as store
 from . import speech_discovery
 from .convo_contract import (DEFAULTS, ContractError, credential_reference_label, credential_reference_problems, credentials, endpoint,
@@ -93,14 +94,15 @@ def classifier_bearer(config):
     return credentials(attach_keys(config)['roles']['classifier']).get('Authorization', '')
 
 
-def classifier_headers(config, role, address):
+def classifier_headers(config, role, address, draft_key=None):
     """The Authorization header Check server sends to `address` for the card's provider choice `role` over the saved classifier
-    settings (`config`): the saved environment reference, Agent Zero's key for that provider, or Convo's key saved for exactly
-    that address. Server side only; never returned."""
+    settings (`config`): the saved environment reference, a key typed in the card but not saved yet (this request only), Agent
+    Zero's key for that provider, or Convo's key saved for exactly that address. Server side only; never returned."""
     merged = {**config['roles']['classifier'], **role}
     merged.pop('_convo_key', None)
     key = _role_key('classifier', merged, address, _secrets().load_secrets())
-    return credentials({**merged, '_convo_key': key} if key else merged)
+    _draft_key(merged, draft_key)
+    return credentials({**merged, '_convo_key': merged.get('_convo_key') or key} if (key or merged.get('_convo_key')) else merged)
 
 
 def _verification_path():
@@ -222,7 +224,8 @@ def read():
     speech = describe(config)
     return {'ok': True, 'config': config, 'revision': revision, 'credentials': key_states,
             'decision_backends': registered_backends(), 'providers': speech['providers'], 'native': speech['native'], 'decider_reference': decider_reference(config),
-            'classifier_catalog': convo_classifier_catalog.catalog(), 'readiness': checks, 'runtime': runtime, 'studio_admission': admission}
+            'classifier_catalog': convo_classifier_catalog.catalog(), 'readiness': checks, 'runtime': runtime, 'studio_admission': admission,
+            'network': convo_net.network(), 'certificates': _certificates(config), 'key_bound': _key_bound(config)}
 
 
 def save(config, revision, keys=None):
@@ -249,10 +252,7 @@ def save(config, revision, keys=None):
                 # An explicit empty value clears the plugin-owned key only.
                 values[_key_name(name)] = value
                 values[_key_name(name) + '_URL'] = _key_address(name, normalized)
-            secret_path = store.config_path().parent / 'data' / 'connections.env'
-            secret_path.parent.mkdir(parents=True, exist_ok=True)
-            secret_manager.save_secrets('\n'.join(k + '=' + json.dumps(v) for k, v in values.items()) + '\n')
-            os.chmod(secret_path, 0o600)
+            _save_secrets(secret_manager, values)
         try:
             store.transaction(store.config_path(), lambda latest: merge(latest, {
                 'convo': normalized,
@@ -370,15 +370,61 @@ def _connection_problem(error, url):
         if error.status == 404:
             return 'No models list at ' + url + '/models (HTTP 404). Check that the API base URL ends with the server’s /v1. Nothing else was tried'
         return 'The server answered HTTP ' + str(error.status) + ' to ' + url + '/models. Nothing else was tried'
-    if isinstance(error, httpx.TimeoutException):
-        return 'No answer from ' + url + ' within 8 s. Nothing else was tried'
     if isinstance(error, httpx.HTTPError):
-        return 'Could not connect to ' + url + '. Check that the server is running and listening on its network address (not only 127.0.0.1), and that Agent Zero’s container can reach it (LAN or Tailscale). Nothing else was tried'
+        return convo_net.describe(error, url)[1] + ' Nothing else was tried'
     return 'The answer could not be read as a models list. Nothing else was tried'
 
 
+def _draft_key(role, key):
+    """A key typed in the card but not saved yet, used for this one request only: never stored, logged or returned. An explicit
+    credential environment reference still wins."""
+    if key is None or key == '':
+        return
+    if not isinstance(key, str) or len(key) > 4096 or any(ord(c) < 32 for c in key):
+        raise ValueError('Invalid API key')
+    if not role.get('token_env'):
+        role['_convo_key'] = key
+
+
+def _close_match(model, models):
+    """The listed name that differs from `model` only in letter case, or ''."""
+    wanted = (model or '').lower()
+    return next((item['id'] for item in models if wanted and item['id'] != model and item['id'].lower() == wanted), '')
+
+
+def _defaults(name, role):
+    """The provider's own default address(es): where a refused connection on this computer is looked for instead."""
+    from . import convo_classifier_catalog, convo_model_catalog, speech_providers
+    if name == 'tts':
+        provider, _ = speech_providers.effective_provider(role)
+        return tuple(url for url in [speech_providers.PROVIDERS.get(provider, {}).get('default_url', '')] if url)
+    catalog = convo_classifier_catalog.PROVIDERS if name == 'classifier' else convo_model_catalog.PROVIDERS
+    base = (catalog.get(role.get('provider') or '') or {}).get('base', '')
+    extra = (convo_classifier_catalog.DEFAULT_DECIDER_URL,) if name == 'classifier' else ()
+    return tuple(url for url in (base,) + extra if url)
+
+
+async def _connection_extras(result, name, role, url, error):
+    """What the card shows beside a result: the certificate remembered for this address, a changed one, and after a refused
+    connection the address that answers instead (only the provider's default port on this computer, or this computer's private
+    address for a LAN or Tailscale address)."""
+    if not url:
+        return
+    pin = convo_net.pin_for(url)
+    result['certificate'] = convo_net.public_pin(pin)
+    if error is None or not isinstance(error, httpx.HTTPError):
+        return
+    code = convo_net.failure_code(error)
+    if code == 'certificate_changed':
+        result['certificate_changed'] = {'url': url, 'remembered': convo_net.public_pin(pin)}
+    elif code == 'refused':
+        hint = await convo_net.suggestion(url, _defaults(name, role))
+        if hint:
+            result['suggestion'] = hint
+
+
 async def _get(url, headers):
-    async with httpx.AsyncClient(timeout=8, follow_redirects=False, trust_env=False) as client:
+    async with convo_net.client(8) as client:
         async with client.stream('GET', url, headers=headers) as response:
             if response.status_code != 200:
                 raise Answered(response.status_code)
@@ -393,10 +439,9 @@ async def _get(url, headers):
 
 def _options(value, fields):
     if isinstance(value, dict):
-        for field in fields:
-            if isinstance(value.get(field), (list, dict)):
-                value = value[field]
-                break
+        # The first non-empty list (an empty `data` beside a full `models` list is not the answer).
+        present = [value[field] for field in fields if isinstance(value.get(field), (list, dict))]
+        value = next((item for item in present if item), present[0] if present else value)
     if isinstance(value, dict):
         value = [dict(v, id=k) if isinstance(v, dict) else {'id': k} for k, v in value.items()]
     if not isinstance(value, list):
@@ -407,7 +452,7 @@ def _options(value, fields):
             item = {'id': item}
         if not isinstance(item, dict):
             continue
-        identity = item.get('id') or item.get('model_id') or item.get('profile_id') or item.get('voice_id')
+        identity = item.get('id') or item.get('model_id') or item.get('profile_id') or item.get('voice_id') or item.get('model')
         label = item.get('label') or item.get('name') or identity
         if not isinstance(identity, str) or not 0 < len(identity) <= 2000 or identity in seen:
             continue
@@ -416,7 +461,7 @@ def _options(value, fields):
     return result
 
 
-async def discover(name, provider=None, check=False):
+async def discover(name, provider=None, check=False, draft_key=None):
     if name not in ROLES:
         raise ValueError('Unknown model role')
     config, _ = _read_config()
@@ -427,29 +472,114 @@ async def discover(name, provider=None, check=False):
         config['roles'][name] = merge(config['roles'][name], provider)
         config = store.normalize(config)
     role = attach_keys(config)['roles'][name]
+    _draft_key(role, draft_key)
     if name == 'classifier' and role.get('provider'):
         # Model discovery asks the provider's OpenAI-style base (/v1/models), a decision model's server included.
         from .convo_classifier_catalog import resolve_base
         role['url'] = resolve_base(role)
     if name == 'tts':
         result = await speech_discovery.discover(role, _get, _options)
+        try:
+            await _connection_extras(result, name, role, endpoint(role) if role.get('url') else '', result.pop('_failure', None))
+        except ContractError:
+            pass
     else:
         result = {'ok': True, 'models': [], 'voices': [], 'tuning': [], 'warnings': []}
         verification = {'state': 'unavailable', 'message': 'No connection checked.'}
-        url = ''
+        url, failure = '', None
         try:
             url, headers = endpoint(role), credentials(role)
             data = await _get(url + '/models', headers)
             result['models'] = _options(data, ('data', 'models', 'available_models'))
-            found = role.get('model') in {m['id'] for m in result['models']}
-            verification = {'state': 'ready' if found else 'unverified', 'message': 'Endpoint responded; selected model listed. Audio and duplex capabilities still require testing.' if found else 'Endpoint responded; saved model is not listed. Its selection was preserved.'}
+            model = role.get('model') or ''
+            found = model in {m['id'] for m in result['models']}
+            close = '' if found else _close_match(model, result['models'])
+            if close:
+                result['close_match'] = close
+            verification = {'state': 'ready' if found else 'unverified', 'message': 'Endpoint responded; selected model listed. Audio and duplex capabilities still require testing.' if found
+                            else ('Endpoint responded; it lists “' + close + '”, not “' + model + '”: model names must match exactly.' if close
+                                  else 'Endpoint responded; saved model is not listed. Its selection was preserved.')}
         except (ValueError, httpx.HTTPError, KeyError) as error:
+            failure = error
             verification = {'state': 'unavailable', 'message': _connection_problem(error, url) + '; no fallback was used.'}
         result['verification'] = verification
+        await _connection_extras(result, name, role, url, failure)
     if check:
         # Store evidence only for the exact provider tested; never change selection.
         evidence = {**result['verification'], 'fingerprint': _fingerprint(role), 'checked_at': time.time()}
         store.transaction(_verification_path(), lambda previous: merge(previous, {name: evidence}))
+    return result
+
+
+def _save_secrets(manager, values):
+    secret_path = store.config_path().parent / 'data' / 'connections.env'
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.save_secrets('\n'.join(k + '=' + json.dumps(v) for k, v in values.items()) + '\n')
+    os.chmod(secret_path, 0o600)
+
+
+def key_rebind(name, provider=None):
+    """"Use it for this address": Convo's saved key for a card follows the card's current address (`provider` = the card's
+    draft, as Test sends it). Only the binding moves, on this explicit request; the key is never read back or returned."""
+    if name not in ROLES:
+        raise ValueError('Unknown model role')
+    config, _ = _read_config()
+    if provider is not None:
+        store.reject_credentials(provider)
+        if not isinstance(provider, dict):
+            raise ValueError('Provider must be an object')
+        config['roles'][name] = merge(config['roles'][name], provider)
+        config = store.normalize(config)
+    address = _key_address(name, config)
+    if not address:
+        raise ValueError('Enter the address first.')
+    with store.lock():
+        manager = _secrets()
+        values = dict(manager.load_secrets())
+        if not values.get(_key_name(name)):
+            raise ValueError('Convo has no saved key for this card.')
+        values[_key_name(name) + '_URL'] = address
+        _save_secrets(manager, values)
+    return read()
+
+
+def _https_address(url):
+    if not isinstance(url, str) or len(url) > 2000 or not url.lower().startswith('https://'):
+        raise ValueError('An https address is required.')
+    return url
+
+
+def tls_accept(url):
+    """Remember the certificate the server at `url` presents now (after it changed, or before first use). Own network only."""
+    try:
+        return {'ok': True, 'certificate': convo_net.remember(_https_address(url))}
+    except OSError:
+        raise ValueError('Could not read the certificate at ' + convo_net.origin(url) + '; nothing was remembered.') from None
+
+
+def tls_forget(url):
+    convo_net.forget(_https_address(url))
+    return {'ok': True, 'certificate': None}
+
+
+def _key_bound(config):
+    """Per card with a saved Convo key: the address that key is bound to (the card offers "Use it for this address" when its
+    address is now another). Addresses only; never a key."""
+    try:
+        saved = _secrets().load_secrets()
+    except Exception:
+        return {}
+    return {name: saved[_key_name(name) + '_URL'] for name in ROLES if saved.get(_key_name(name)) and saved.get(_key_name(name) + '_URL')}
+
+
+def _certificates(config):
+    """The certificate remembered for each card's address (fingerprint, names, expiry; never the certificate itself)."""
+    from .convo_classifier_catalog import resolve_base
+    result = {}
+    for name in ROLES:
+        role = config['roles'][name]
+        url = resolve_base(role) if name == 'classifier' and role.get('provider') else role.get('url', '')
+        result[name] = convo_net.public_pin(convo_net.pin_for(url)) if url else None
     return result
 
 

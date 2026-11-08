@@ -161,7 +161,7 @@ try {
         await page.eval(`(() => { const b = [...document.querySelectorAll('.convo-speech button')].find(x => x.textContent.trim() === 'Find models & voices'); b.setAttribute('data-smoke', 'discover'); return 1; })()`);
         await page.click('[data-smoke="discover"]');
         await page.waitFor(`(() => { const c = Alpine.store('convoSetup').choices.tts; return !!c && !c.busy && !!c.verification; })()`, 90000, 300);
-        const found = await page.eval(`(() => { const c = Alpine.store('convoSetup').choices.tts; return { models: (c.models || []).map(m => m.id), voices: (c.voices || []).map(v => v.id), checks: c.checks || [], server: c.server || null, verification: c.verification }; })()`);
+        const found = await page.eval(`(() => { const c = Alpine.store('convoSetup').choices.tts; return { models: (c.models || []).map(m => m.id), voices: (c.voices || []).map(v => v.id), checks: JSON.parse(JSON.stringify(c.checks || [])), server: c.server ? JSON.parse(JSON.stringify(c.server)) : null, verification: JSON.parse(JSON.stringify(c.verification)) }; })()`);
         check('discovery lists your container’s models', found.models.length > 0, found.models.join(', '));
         check('discovery lists clone voices by the id speech requests use', found.voices.some(id => id.startsWith('clone:')), found.voices.slice(0, 6).join(', '));
         check('only read-only routes were asked', found.checks.length > 0 && found.checks.every(c => READ_ROUTES.includes(c.path.replace(/^\/v1/, ''))), found.checks.map(c => `${c.path}=${c.status}`).join(' '));

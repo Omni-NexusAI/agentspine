@@ -104,7 +104,7 @@ try {
     console.log('INFO  chatProviderDetails shape: ' + JSON.stringify(detailShape));
 
     // 3. Model search goes through Agent Zero's store (spied and answered in the page; nothing is searched for real).
-    await choose('llama_cpp');
+    await choose('openai');                              // a cloud provider: Agent Zero's own search (a server on your network lists its own)
     await page.eval(`(() => { const m = Alpine.store('modelConfig'); window.__classifierSpy = { search: [], group: 0, original: { search: m.searchModels, group: m.groupResults } };
         m.searchModels = async (...args) => { window.__classifierSpy.search.push(args); return ['spy-d1-omni-600M', 'spy-qwen3']; };
         m.groupResults = function (models, query) { window.__classifierSpy.group++; return window.__classifierSpy.original.group.call(this, models, query); }; return 1; })()`);
@@ -112,7 +112,7 @@ try {
         await page.click(`${CARD} [data-convo-field="classifier-model"] ~ .model-search-btn`);
         await page.waitFor(`document.querySelectorAll('${CARD} .model-search-item[role="option"]').length > 0`, 10000);
         const spied = await page.eval(`(() => ({ search: JSON.parse(JSON.stringify(window.__classifierSpy.search)), group: window.__classifierSpy.group, items: [...document.querySelectorAll('${CARD} .model-search-item[role="option"]')].map(e => e.textContent) }))()`);
-        check('model search goes through Agent Zero’s store for the chosen provider', spied.search.length === 1 && spied.search[0][0] === 'llama_cpp' && spied.search[0][2] === 'chat', JSON.stringify(spied.search));
+        check('model search goes through Agent Zero’s store for the chosen provider', spied.search.length === 1 && spied.search[0][0] === 'openai' && spied.search[0][2] === 'chat', JSON.stringify(spied.search));
         check('results are grouped by Agent Zero’s own groupResults', spied.group > 0 && spied.items.join() === 'spy-d1-omni-600M,spy-qwen3', JSON.stringify(spied));
         await page.eval(`(() => { document.querySelector('${CARD} [data-convo-field="classifier-model"]').focus(); return 1; })()`);
         await page.key('ArrowDown'); await page.key('Escape');
@@ -120,6 +120,7 @@ try {
     } finally {
         await page.eval(`(() => { const m = Alpine.store('modelConfig'), o = window.__classifierSpy?.original; if (o) { m.searchModels = o.search; m.groupResults = o.group; } delete window.__classifierSpy; return 1; })()`);
     }
+    await choose('llama_cpp');                                                               // the decision server the next steps use
 
     // 4. The System One toggle locks the fields with System One's values and a verdict; off brings Convo's values back.
     await page.eval(`(() => { ${S}.config.roles.classifier.model = 'convo-own-model'; return 1; })()`);

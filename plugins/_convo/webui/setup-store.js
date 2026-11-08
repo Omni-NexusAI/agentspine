@@ -9,6 +9,10 @@ import { dictationSetup } from '/plugins/_convo/webui/dictation-setup.js';
 const clone = value => JSON.parse(JSON.stringify(value));
 const endpoint = '/plugins/_convo/conversation';
 let loading = null, patching = null, saving = null;    // the read in flight; the patch and the save in flight (writes never overlap)
+const asked = {};                                      // per role: the newest discovery request (an older answer is not shown)
+// What a discovery answer depends on: an answer for another address, provider or key source than the card shows now is stale.
+const addressOf = role => JSON.stringify(['provider', 'api_base', 'url', 'key_source', 'token_env', 'kind', 'connection'].map(field => role?.[field] ?? ''));
+const LOOPBACK = /^(localhost|localhost\.localdomain|ip6-localhost|ip6-loopback|127(\.\d{1,3}){3}|::1|\[::1\])$/i;
 
 // One shared draft, edited by cards that each own a methods-only mixin in their own file, so the cards can change
 // independently. State and getters stay in the core: spreading an object copies a getter's current value, not the getter.
@@ -32,6 +36,7 @@ export const store = createStore('convoSetup', compose({
     section: 'Connections', sections: ['Connections', 'Conversation', 'Voice & Audio'],   // tuning lives in the developer diagnostics panel
     roles: ['conversation', 'classifier', 'tts'], choices: {}, searches: {}, error: '', message: '',
     importDocument: null, importPreview: null, importPaths: [],
+    network: {}, certificates: {}, keyBound: {},       // where Agent Zero runs, remembered certificates, the address each saved key is for
     ui: { conversation: {}, classifier: {}, speech: {}, dictation: {} },  // each card's transient view state; its mixin holds methods only
     get dirty() { return !!this.config && (JSON.stringify(this.config) !== this.baseline || Object.keys(this.keys).length > 0); },
     // System One's own decider as the server describes it (decider_reference), with its verdict `audio`.
@@ -58,7 +63,13 @@ export const store = createStore('convoSetup', compose({
         this.decisionBackends = result.decision_backends || [];
         this.providers = result.providers || []; this.native = result.native || {}; this.deciderReference = result.decider_reference || null;
         this.classifierCatalog = result.classifier_catalog || null;
+        this.takeFacts(result);
         this.keys = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
+    },
+    takeFacts(result) {
+        this.network = result.network || this.network || {};
+        this.certificates = result.certificates || this.certificates || {};
+        this.keyBound = result.key_bound || this.keyBound || {};
     },
     // Take in a write's result without losing what is still being edited: merged three ways (what this editor last loaded,
     // its draft, what is saved now), so other unsaved edits stay, saved fields come in, and a field changed in both places is
@@ -75,6 +86,7 @@ export const store = createStore('convoSetup', compose({
         this.providers = result.providers || this.providers; this.native = result.native || this.native;
         this.deciderReference = result.decider_reference || this.deciderReference;
         this.classifierCatalog = result.classifier_catalog || this.classifierCatalog;
+        this.takeFacts(result);
         this.conflicts = [...conflicts, ...earlier]; this.stale = false; this.revisionSeen = ''; this.error = '';
         return conflicts;
     },
@@ -106,6 +118,7 @@ export const store = createStore('convoSetup', compose({
             this.providers = result.providers || this.providers; this.native = result.native || this.native;
             this.deciderReference = result.decider_reference || this.deciderReference;
             this.classifierCatalog = result.classifier_catalog || this.classifierCatalog;
+            this.takeFacts(result);
             this.conflicts = conflicts; this.stale = false; this.revisionSeen = '';
             this.message = conflicts.length ? 'Merged. Some fields changed in both places: choose which to keep.' : 'Merged: the other changes were brought in and yours were kept.';
         } catch (error) { this.fail(error); }
@@ -165,17 +178,63 @@ export const store = createStore('convoSetup', compose({
         patching = run;
         try { return await run; } finally { if (patching === run) patching = null; }
     },
+    // Discovery (and Test connection, `test`) for what the card shows now, with a key typed but not saved yet for this request
+    // only. Only the newest request's answer is shown, and only while the card's address, provider and key source are unchanged:
+    // typing a model name meanwhile does not throw the answer away.
     async discover(role, test = false) {
-        if (this.choices[role]?.busy) return;
+        if (!this.config?.roles?.[role]) return;
+        const id = asked[role] = (asked[role] || 0) + 1;
         this.choices[role] = {...this.choices[role], busy:true};
-        const provider = clone(this.config.roles[role]);
+        const provider = clone(this.config.roles[role]), draft = this.keys[role];
         try {
-            const result = await this.api(test ? 'connection_test' : 'discover', {role, provider});
-            // A response for an endpoint edited while awaiting discovery is stale.
-            if (JSON.stringify(provider) !== JSON.stringify(this.config.roles[role])) return;
+            const result = await this.api(test ? 'connection_test' : 'discover', {role, provider, ...(draft ? {draft_key: draft} : {})});
+            if (id !== asked[role] || addressOf(provider) !== addressOf(this.config.roles[role])) return;
             this.choices[role] = {...result, busy:false};
-        } catch (error) { this.choices[role] = {...this.choices[role], verification:{state:'error', message:error.message}}; this.fail(error); }
-        finally { this.choices[role] = {...this.choices[role], busy:false}; }
+            if ('certificate' in result) this.certificates = {...this.certificates, [role]: result.certificate};
+        } catch (error) { if (id === asked[role]) { this.choices[role] = {...this.choices[role], verification:{state:'error', message:error.message}}; this.fail(error); } }
+        finally { if (id === asked[role]) this.choices[role] = {...this.choices[role], busy:false}; }
+    },
+
+    // ---- One connection's extras, the same on every card: where "localhost" goes, the certificate remembered for this server
+    // (or a changed one), the address that answers after a refused connection, and the saved key's own address.
+    connectionResult(role) { return role === 'classifier' ? (this.ui?.classifier?.check || {}) : (this.choices[role] || {}); },
+    thisComputerText(url) {
+        let host = '';
+        try { host = new URL(url).hostname; } catch { return ''; }
+        if (!LOOPBACK.test(host)) return '';
+        if (this.network?.translated) return `This computer: Agent Zero reaches ${host} through ${this.network.this_computer}, so the address works as typed.`;
+        return this.network?.in_docker ? `Inside Agent Zero’s container ${host} is the container itself, and host.docker.internal is not available here: use this computer’s LAN address.` : '';
+    },
+    connectionSuggestion(role) { return this.connectionResult(role).suggestion || null; },
+    certificateChanged(role) { return this.connectionResult(role).certificate_changed || null; },
+    certificateNote(role) {
+        const result = this.connectionResult(role), certificate = 'certificate' in result ? result.certificate : this.certificates?.[role];
+        if (!certificate) return '';
+        const names = (certificate.names || []).slice(0, 4).join(', ');
+        return `Private certificate remembered${certificate.subject ? ' · ' + certificate.subject : ''}${names ? ' · ' + names : ''} · SHA-256 ${String(certificate.sha256 || '').slice(0, 23)}…`
+            + (certificate.expires ? ` · valid until ${certificate.expires}` : '');
+    },
+    async certificateAccept(role, url) {
+        try { await this.api('tls_accept', { url }); } catch (error) { this.fail(error); return false; }
+        return this.connectionRetest(role);
+    },
+    async certificateForget(role, url) {
+        try { await this.api('tls_forget', { url }); } catch (error) { this.fail(error); return false; }
+        this.certificates = {...this.certificates, [role]: null};
+        if (role === 'classifier') { if (this.ui.classifier.check) this.ui.classifier.check = {...this.ui.classifier.check, certificate: null}; }
+        else this.choices[role] = {...this.choices[role], certificate: null};
+        return true;
+    },
+    async connectionRetest(role) { return role === 'classifier' ? this.classifierCheck() : this.discover(role, true); },
+    // A saved Convo key bound to another address than the card shows: offered for this one ("Use it for this address").
+    keyMoveOffer(role, url, usesConvoKey = true) {
+        const bound = this.keyBound?.[role] || '';
+        return usesConvoKey && !(role in (this.keys || {})) && bound && url && bound.replace(/\/+$/, '') !== url.replace(/\/+$/, '') ? bound : '';
+    },
+    async keyMove(role) {
+        try { this.adopt(await this.api('key_rebind', { role, provider: clone(this.config.roles[role]) })); }
+        catch (error) { this.fail(error); return false; }
+        return this.connectionRetest(role);
     },
     options(role, kind = 'models') {
         const values = this.choices[role]?.[kind] || [];

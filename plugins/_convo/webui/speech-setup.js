@@ -100,6 +100,9 @@ export const speechSetup = {
     speechUpdate(changes) {
         try { this.config.roles.tts = normalizeTts({ ...this.config.roles.tts, ...changes }); } catch (error) { this.fail(error); }
     },
+    // A Test answer's one-click address (the port Docker publishes, or this computer's own address), then the test again.
+    speechUseAddress(url) { if (typeof url !== 'string') return null; this.speechUpdate({ url }); return this.discover('tts', true); },
+    speechKeyMoveOffer() { return this.keyMoveOffer('tts', this.config?.roles?.tts?.url || '', this.speechUsesConvoKey()); },
     speechSetDeclared(on) { this.speechUpdate({ accepts_instructions: on === true }); },
 
     // ---- which controls show (the markup asks show('tts', name)); hidden values are kept, never cleared

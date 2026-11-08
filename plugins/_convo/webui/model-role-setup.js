@@ -10,6 +10,8 @@ import { NETWORK_HINT, credentialReferenceProblem, isLocalHost } from './connect
 // another plugin (Provider Profiles) adds or patches there reaches both cards. Keys never pass through Convo's settings.
 
 export const AUTOSAVE_MS = 350;
+export const FOUND_MS = 60000;                                  // the models a server listed are reused this long while typing
+const VERDICT = { ready: ['check_circle', 'Ready'], unverified: ['help', 'Answered'], unavailable: ['error', 'Not reached'], error: ['error', 'Not reached'] };
 const COMPATIBLE_ROUTES = new Set(['openai', 'hosted_vllm']);   // LiteLLM routes that speak the OpenAI API at an API base
 const PROVIDER_ID = /^[a-z0-9_]{1,64}$/;                         // convo_contract.PROVIDER_ID
 
@@ -314,20 +316,59 @@ export function modelRoleSetup(role, spec) {
             return 'Changes save automatically.';
         },
 
-        // ---- Model name: Agent Zero's own search for a provider it knows (its key stays on the server, and a patched search
-        // reaches this card too); Convo's discovery for Other and the endpoint-only setup, so only the address you entered is
-        // asked, with Convo's key.
-        SearchesHost() { return !!this[n('Provider')](this[n('Role')]().provider || '')?.hostKey; },
+        // ---- Model name. A server on this machine or your network (llama.cpp, vLLM, Other, the endpoint-only setup, a decision
+        // server) is asked for its own list by Convo's discovery: with the key this card uses (a key typed but not saved yet
+        // included), this card's certificate and address rules, and every name it serves (audio models too). A cloud provider
+        // Agent Zero knows is searched by Agent Zero's own search (its key stays on the server, and a patched search reaches this
+        // card too); when that finds nothing, Convo's discovery says why. The list is fetched once per address and key and reused
+        // while you type (FOUND_MS); what you type only orders it.
+        SearchesHost() {
+            const url = this[n('Url')]();
+            return !!this[n('Provider')](this[n('Role')]().provider || '')?.hostKey && !(url && isLocalHost(hostnameOf(url)));
+        },
+        async Found() {
+            const current = this[n('Role')](), ui = view(this);
+            const key = JSON.stringify([this[n('Url')](), current.provider || '', current.key_source || '', current.token_env || '', this.keys?.[role] || '']);
+            if (ui.found?.key === key && Date.now() - ui.found.at < FOUND_MS && ui.found.models.length) return ui.found.models.slice();
+            await this.discover(role);
+            const models = (this.choices[role]?.models || []).map(item => item.id);
+            ui.found = { key, at: Date.now(), models };
+            return models;
+        },
         async Search(query = '') {
             const current = this[n('Role')](), provider = current.provider || '';
-            if (!this[n('SearchesHost')]()) {
-                await this.discover(role);
-                return (this.choices[role]?.models || []).map(item => item.id);
-            }
+            if (!this[n('SearchesHost')]()) return this[n('Found')]();
             const store = await this[n('Host')]();
-            if (!store?.searchModels) return [];
-            return await store.searchModels(provider, query, 'chat', (current.api_base || '').trim());
+            const found = store?.searchModels ? await store.searchModels(provider, query, 'chat', (current.api_base || '').trim()) : [];
+            return Array.isArray(found) && found.length ? found : (this[n('Url')]() ? this[n('Found')]() : []);
         },
+        // Said in the list when it is empty: why discovery found nothing (its own words), else that the server listed nothing.
+        SearchNote() {
+            const verification = this.choices[role]?.verification;
+            return verification && ['unavailable', 'error'].includes(verification.state) && verification.message ? verification.message : 'No models found';
+        },
+        // Test connection, as the card shows it: the latest answer with its icon, or what it would do.
+        ConnectionView() {
+            const choice = this.choices[role] || {};
+            if (choice.busy) return { state: 'busy', icon: 'progress_activity', label: 'Checking: ', message: 'asking the server for its models…' };
+            const verification = choice.verification;
+            if (!verification?.state) return { state: 'none', icon: 'help', label: '', message: 'Test connection lists the models at this address with the key in use (one typed here included, before you save it).' };
+            const [icon, label] = VERDICT[verification.state] || VERDICT.unverified;
+            return { state: verification.state, icon, label: label + ': ', message: verification.message || '' };
+        },
+        // One click from a Test answer: the address that answers instead, or the listed name that differs only in letter case.
+        UseAddress(url, autosave = false) {
+            if (!this.config?.roles?.[role] || typeof url !== 'string') return;
+            spec.beforeEdit?.(this);
+            if (spec.useAddress) spec.useAddress(this, url, autosave);
+            else {
+                const path = prefix + (this[n('Role')]().provider ? 'api_base' : 'url');
+                setPath(this.config, path, url);
+                this[n('Edited')](path, autosave);
+            }
+            return this.connectionRetest(role);
+        },
+        CloseMatch() { const close = this.choices[role]?.close_match; return typeof close === 'string' && close !== this[n('Role')]().model ? close : ''; },
         // Agent Zero's own grouping (names containing what was typed first), read from its store when it is used.
         Group(models, query) {
             const list = Array.isArray(models) ? models.filter(model => typeof model === 'string') : [], store = this[n('HostStore')]();
@@ -374,9 +415,10 @@ export function modelRoleSetup(role, spec) {
         },
         ConvoKeyHint(autosave = false) {
             const url = this[n('Url')]();
-            return `Convo’s own key, kept for ${url || 'the address above'} only and never shown again. `
+            return `Convo’s own key, kept for ${url || 'the address above'} only and never shown again. Test connection uses what you type here before it is saved. `
                 + (autosave ? 'Saved when you leave the field.' : 'Leave blank to keep the saved key; it is saved with your changes.');
         },
+        KeyMoveOffer() { return this.keyMoveOffer(role, this[n('Url')](), this[n('UsesConvoKey')]()); },
         // The preset editor saves Convo's own key at once: pending changes land first (the key is bound to the saved address),
         // then a key-only save that changes no setting.
         async SaveConvoKey() {

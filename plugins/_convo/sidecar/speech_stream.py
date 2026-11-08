@@ -22,6 +22,7 @@ import json
 
 import httpx
 
+from ..helpers import convo_net
 from ..helpers.convo_contract import Capabilities, ContractError, credentials, endpoint
 from ..helpers.convo_transport import pcm_chunks
 from . import speech_admission
@@ -73,7 +74,7 @@ async def provider_pcm(role=None, text=None, *, prepared=None):
     """Yield bounded PCM metadata/audio chunks, keeping response ownership local."""
     prepared = prepared or prepare_request(role, text)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(35, connect=5), follow_redirects=False, trust_env=False) as client:
+        async with convo_net.client(httpx.Timeout(35, connect=5)) as client:
             async with client.stream('POST', prepared.url, content=prepared.content, headers=prepared.headers) as response:
                 if 400 <= response.status_code < 500:
                     size = 0

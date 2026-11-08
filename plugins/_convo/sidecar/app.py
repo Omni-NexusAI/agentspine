@@ -15,6 +15,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from ..helpers import convo_net
 from ..helpers.convo_contract import Capabilities, ContractError, credentials, endpoint, validate_audio
 
 app = FastAPI(title="Convo sidecar", docs_url=None, redoc_url=None, openapi_url=None)
@@ -208,7 +209,7 @@ async def policy(payload: dict, request: Request = None):
         {"role": "user", "content": input_content(payload, role)},
     ], "temperature": 0, "max_tokens": 256, "stream": False}
     async def classify():
-        async with httpx.AsyncClient(timeout=8, follow_redirects=False, trust_env=False) as client:
+        async with convo_net.client(8) as client:
             response = await client.post(url + "/chat/completions", json=body, headers=headers)
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
@@ -240,7 +241,7 @@ async def answer(payload: dict):
     async def generate():
         calls = {}
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5), follow_redirects=False, trust_env=False) as client:
+            async with convo_net.client(httpx.Timeout(60, connect=5)) as client:
                 async with client.stream("POST", url + "/chat/completions", json=body, headers=headers) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -306,7 +307,7 @@ async def speech(payload: dict, request: Request = None):
 
     async def synthesize():
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
+            async with convo_net.client(30) as client:
                 async with client.stream('POST', prepared.url, content=prepared.content, headers=prepared.headers) as response:
                     parts, size = [], 0
                     async for part in response.aiter_bytes():

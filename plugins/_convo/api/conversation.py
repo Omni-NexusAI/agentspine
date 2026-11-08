@@ -29,14 +29,18 @@ class Conversation(ApiHandler):
         if action == 'studio_open':
             importlib.import_module(m.__package__ + '.studio_proxy').attach(self.app)
             return {'ok': True}
-        if action in {'setup_read', 'setup_save', 'setup_patch', 'discover', 'connection_test', 'import_preview', 'import_apply', 'runtime_start', 'runtime_stop'}:
+        if action in {'setup_read', 'setup_save', 'setup_patch', 'discover', 'connection_test', 'key_rebind', 'tls_accept', 'tls_forget',
+                      'import_preview', 'import_apply', 'runtime_start', 'runtime_stop'}:
             setup = importlib.import_module(m.__package__ + '.convo_setup')
             try:
                 if action == 'setup_read': return setup.read()
                 if action == 'setup_save': return setup.save(input.get('config'), input.get('revision'), input.get('keys'))
                 if action == 'setup_patch': return setup.patch(input.get('changes'))
                 if action in {'discover', 'connection_test'}:
-                    return await setup.discover(input.get('role'), input.get('provider'), check=action == 'connection_test')
+                    return await setup.discover(input.get('role'), input.get('provider'), check=action == 'connection_test', draft_key=input.get('draft_key'))
+                if action == 'key_rebind': return setup.key_rebind(input.get('role'), input.get('provider'))
+                if action == 'tls_accept': return setup.tls_accept(input.get('url'))
+                if action == 'tls_forget': return setup.tls_forget(input.get('url'))
                 if action == 'import_preview': return setup.preview(input.get('document'))
                 if action == 'import_apply': return setup.apply(input.get('document'), input.get('paths'), input.get('revision'))
                 managed = importlib.import_module(m.__package__ + '.managed_runtime')

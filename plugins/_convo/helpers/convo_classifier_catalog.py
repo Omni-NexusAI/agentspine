@@ -303,6 +303,7 @@ def readiness_rows(config):
 
 # ---- Check server: on the user's click only. Lists the models, and for a decision model sends ONE tiny text decision.
 CHECK_TIMEOUT = 4.0                 # seconds per request
+LOAD_TIMEOUT = 90.0                 # the one decision, when a router lists the model as not loaded yet (it loads on that request)
 CHECK_LIMIT = 256 * 1024            # bytes read from any answer
 PROBE = {'state': 'Connection check from Convo. The text is: "hello".',
          'questions': {'check': {'type': 'choice', 'instructions': 'Is this a connection check?',
@@ -324,21 +325,32 @@ def model_ids(listing):
             name = item.get('id') or item.get('model') or item.get('name') if isinstance(item, Mapping) else None
             if isinstance(name, str) and 0 < len(name) <= 200 and name not in found:
                 found.append(name)
-    return found[:20]
+    return found[:500]
 
 
-async def _send(client, method, url, headers, body=None):
-    """One bounded request: (status, parsed JSON or None), or (None, None) when nothing answered. Redirects are not followed."""
+def _loaded(listing, model):
+    """False when a router's model list says `model` is not loaded yet (llama.cpp router mode: `status.value`), else True."""
+    for item in (listing.get('data') or []) if isinstance(listing, Mapping) and isinstance(listing.get('data'), list) else ():
+        if isinstance(item, Mapping) and item.get('id') == model and isinstance(item.get('status'), Mapping):
+            return item['status'].get('value') in (None, 'loaded')
+    return True
+
+
+async def _send(client, method, url, headers, body=None, failures=None, timeout=None):
+    """One bounded request: (status, parsed JSON or None), or (None, None) when nothing answered (the failure is added to
+    `failures`). Redirects are not followed."""
     import httpx
     try:
-        async with client.stream(method, url, headers=headers, json=body) as response:
+        async with client.stream(method, url, headers=headers, json=body, **({'timeout': timeout} if timeout else {})) as response:
             chunks, size = [], 0
             async for chunk in response.aiter_bytes():
                 size += len(chunk)
                 if size > CHECK_LIMIT:
                     return response.status_code, None
                 chunks.append(chunk)
-    except httpx.HTTPError:
+    except httpx.HTTPError as failure:
+        if failures is not None:
+            failures.append(failure)
         return None, None
     try:
         return response.status_code, json.loads(b''.join(chunks) or b'null')
@@ -400,20 +412,34 @@ async def check(request, *, transport=None):
     _checking = True
     try:
         try:
-            headers = convo_setup.classifier_headers(config, role, root if decision else base)
+            headers = convo_setup.classifier_headers(config, role, root if decision else base, request.get('draft_key'))
+        except ValueError as error:
+            return _refusal('invalid', str(error), host)
         except Exception:
             return _refusal('unavailable', 'The key for this server could not be prepared; nothing was sent.', host)
         urls = ([base + '/models'] if 'chat' in offered else []) + ([root + '/health', root + '/v1/models'] if decision else [])
-        import httpx
-        answers = {}
-        async with httpx.AsyncClient(transport=transport, timeout=CHECK_TIMEOUT, follow_redirects=False, trust_env=False) as client:
+        import time
+        from . import convo_net
+        answers, failures, model = {}, [], fields['model'].strip()
+        async with convo_net.client(CHECK_TIMEOUT, transport) as client:
             for url in dict.fromkeys(urls):
-                answers[url] = await _send(client, 'GET', url, headers)
+                answers[url] = await _send(client, 'GET', url, headers, failures=failures)
             health = answers.get(root + '/health', (None, None))[0]
             answered = any(status_code is not None for status_code, _ in answers.values())
-            posted = await _send(client, 'POST', root + ROUTE, headers, PROBE) if decision and answered and health != 503 else (None, None)
-        return {'ok': True, **_verdict(answers, posted, health, fields['model'].strip(), label, host, decision,
-                                       PROVIDERS.get(provider, {}).get('text_only', False))}
+            # A router loads a model on its first request: that one decision may wait for the load (LOAD_TIMEOUT).
+            loading = decision and bool(model) and not all(_loaded(data, model) for code, data in answers.values() if code == 200)
+            started = time.monotonic()
+            posted = await _send(client, 'POST', root + ROUTE, headers, {**PROBE, 'model': model} if model else PROBE, failures,
+                                 LOAD_TIMEOUT if loading else None) if decision and answered and health != 503 else (None, None)
+            waited = time.monotonic() - started
+        result = {'ok': True, **_verdict(answers, posted, health, model, label, host, decision,
+                                         PROVIDERS.get(provider, {}).get('text_only', False))}
+        if result['state'] == 'unreachable' and failures:
+            result['message'] = convo_net.describe(failures[0], root if decision else base, int(CHECK_TIMEOUT))[1] + ' Nothing else was tried.'
+        if loading and posted[0] == 200:
+            result['message'] += ' The router loaded ' + model + ' for this check (' + str(round(waited)) + ' s): keep it loaded for '                                  'conversations (for llama.cpp, load-on-startup), since each turn allows the classifier about 1.5 s.'
+        await convo_setup._connection_extras(result, 'classifier', role, root if decision else base, failures[0] if failures else None)
+        return result
     finally:
         _checking = False
 
@@ -424,7 +450,6 @@ def _verdict(answers, posted, health, model, label, host, decision, text_only):
     for status_code, data in answers.values():
         if status_code == 200:
             models += [name for name in model_ids(data) if name not in models]
-    models = models[:20]
     statuses = [status_code for status_code, _ in list(answers.values()) + [posted] if status_code is not None]
     listing = (', '.join(models[:5])) if models else ''
     named = ' It lists ' + listing + ', not “' + model + '”; the name is sent as it is.' if model and models and model not in models else ''

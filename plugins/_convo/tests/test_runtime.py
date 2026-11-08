@@ -157,7 +157,7 @@ class SidecarTests(unittest.IsolatedAsyncioTestCase):
             ]
             return httpx.Response(200, text=''.join('data: ' + json.dumps(v) + '\n\n' for v in lines) + 'data: [DONE]\n\n')
         original = httpx.AsyncClient
-        with patch('plugins._convo.sidecar.app.httpx.AsyncClient', side_effect=lambda **kw: original(transport=httpx.MockTransport(handle), **kw)):
+        with patch('plugins._convo.sidecar.app.httpx.AsyncClient', side_effect=lambda **kw: original(**{**kw, 'transport': httpx.MockTransport(handle)})):
             role = merge(DEFAULTS['roles']['conversation'], {'model': 'test'})
             response = await self.client.post('/answer', headers=self.headers, json={'role': role, 'system': 'Voice rules', 'history': [], 'audio': wav(), 'allow_tools': True})
         self.assertIn('tool.proposal', response.text)

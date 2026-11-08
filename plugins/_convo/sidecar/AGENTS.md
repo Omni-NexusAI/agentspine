@@ -1,7 +1,10 @@
 # Convo sidecars
 
 - `app.py` is the authenticated model-adapter boundary. Role endpoints come only
-  from server settings; no redirects or provider fallback for inference.
+  from server settings; no redirects or provider fallback for inference. Role
+  calls (`app.py`, `speech_stream.py`) use `helpers/convo_net.client`: loopback
+  reaches this computer from inside Docker, and remembered private certificates
+  are accepted.
 - `studio.py` has a fixed private managed-audio destination and an operation
   allowlist. Sidecar/audio tokens remain in server environments.
 - Studio pre-dispatch validation has a distinct `StudioRejected` type. Read a

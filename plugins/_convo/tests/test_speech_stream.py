@@ -67,7 +67,7 @@ class SpeechStreamTests(unittest.TestCase):
             return httpx.Response(200, headers=headers, stream=stream)
         original = httpx.AsyncClient
         mock = httpx.MockTransport(handle)
-        patcher = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: original(transport=mock, **kwargs))
+        patcher = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: original(**{**kwargs, 'transport': mock}))
         return patcher, stream, seen
 
     def test_split_samples_metadata_bounded_chunks_and_request_fields(self):

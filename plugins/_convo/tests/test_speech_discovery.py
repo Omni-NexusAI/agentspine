@@ -243,10 +243,14 @@ class ReadOnlyProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.probe(lambda request: httpx.Response(200, json={'data': []})), {'status': 200, 'data': {'data': []}, 'error': ''})
         def slow(request):
             raise httpx.ReadTimeout('slow', request=request)
-        self.assertEqual(await self.probe(slow), {'status': None, 'data': None, 'error': 'timeout'})
+        answer = await self.probe(slow)                       # the failure itself comes back too, for the card's hints (never sent on)
+        self.assertIsInstance(answer.pop('failure'), httpx.ReadTimeout)
+        self.assertEqual(answer, {'status': None, 'data': None, 'error': 'timeout'})
         def refused(request):
             raise httpx.ConnectError('refused', request=request)
-        self.assertEqual(await self.probe(refused), {'status': None, 'data': None, 'error': 'unreachable'})
+        answer = await self.probe(refused)
+        self.assertIsInstance(answer.pop('failure'), httpx.ConnectError)
+        self.assertEqual(answer, {'status': None, 'data': None, 'error': 'unreachable'})
 
     def test_only_read_routes_are_known(self):
         self.assertEqual(self.module.READ_ROUTES, ('/models', '/backend/models', '/voices', '/tuning/profiles', '/audio/speech'))

@@ -10,6 +10,16 @@ Development-only provisioner. It registers a served `d1-omni`-style decision mod
 - Every source obeys the classifier's locality rule (`allowed_url`, the mirror of Convo's `convo_contract.classifier_url`; the tests hold both to one table): this machine, Convo's containers and your network (LAN and Tailscale, Convo's `local_host`, mirrored here and held to Convo's `tests/fixtures/connection-rules-cases.json`) as they are (http or https); a public address only with Convo's classifier consent (`roles.classifier.remote`) and over HTTPS; a valid port, no credentials, query or fragment, and no path except a root derived from an API base. With Convo off there is no consent, so this plugin's own address must be local. A public address without consent is refused (`remote`). A bad address never blocks registration: the call is refused before anything is sent (`DeciderUnavailable`, codes `text_only`, `remote`, `invalid_url`, `not_installed`, `not_configured`, `unknown`, `unavailable`), the SDK reports it as a decision failure and Convo's turn is degraded. Nothing falls back to another server. Nothing here starts, stops or loads the model.
 - A call to Convo's own decision classifier (source `convo`) sends `Authorization: Bearer <key>` when Convo resolves a key (`convo_setup.classifier_bearer`, called in-process for each call: the classifier's environment reference, Agent Zero's key for its provider, or Convo's key bound to that server root). Calls for the other sources carry no key. The key is never cached, stored, logged or put in status.
 - `helpers/core/decision.py` and `media_decision.py` are copies of System One's canonical SDK files (`C:/a0-plugins/portable/system_1/core`, hashes pinned in `helpers/provisioner.py`); a changed file is refused. Re-pin only from System One's source, never by editing the copy.
+- A call to Convo's own decision classifier names its model (`"model"`, from `decider.model`) when one is set: a router serving several decision models (llama.cpp router mode) answers with that one. Without a name the body is unchanged, so the 9931 default works as before.
+- With Convo installed, calls follow Convo's connection rules (`helpers/convo_net.py` via `_net`/`_open`): loopback reaches this computer from inside Docker, and an https server on your network is accepted by its remembered certificate (remembered on first contact if Check server has not done so). Without Convo the address is used exactly as given.
+- To generalize before shipping without the model (kept for development, on the user's word, 2026-11-08):
+  - the `http://host.docker.internal:9931` default;
+  - the single `d1_llama_cpp` kind and the plugin's d1 identity;
+  - the fixed four-question set and its wording;
+  - the d1-omni model abilities (`media_decision.py`);
+  - the gate floors fitted on d1-omni-600M.
+
+  These should become per-model profiles.
 - Nothing is stored: no keys, no audio, no answers. Status shows counts, last latency, the last error class, and where the next call would go (`source`, `host`, `base_url`) or why it would be refused (`refused`, `refused_detail`); it never contacts the server.
 
 ## Operation

@@ -258,7 +258,7 @@ async function rig({ config = {}, credentials = {}, hostKeys = {}, reactive = tr
         if (problem) throw new Error(problem);
     };
     const answer = extra => ({ ok: true, config: plain(server.config), revision: server.revision, readiness: plain(server.readiness || []),
-        credentials: plain(server.credentials), decision_backends: [], providers: [], native: {}, ...extra });
+        credentials: plain(server.credentials), decision_backends: [], providers: [], native: {}, ...(server.facts || {}), ...extra });
     const host = {
         chatProviders: [{ value: 'anthropic', label: 'Anthropic' }, { value: 'google', label: 'Google' }, { value: 'lm_studio', label: 'LM Studio' },
                         { value: 'openai', label: 'OpenAI' }, { value: 'openrouter', label: 'OpenRouter' }, { value: 'other', label: 'Other OpenAI compatible' },
@@ -296,6 +296,9 @@ async function rig({ config = {}, credentials = {}, hostKeys = {}, reactive = tr
                     return answer();
                 }
                 case 'discover': return { ok: true, models: server.models.map(id => ({ id, label: id })), voices: [], tuning: [], warnings: [], verification: { state: 'unverified', message: 'listed' } };
+                case 'connection_test': return server.answers.test || { ok: true, models: server.models.map(id => ({ id, label: id })), voices: [], tuning: [], warnings: [], verification: { state: 'unverified', message: 'listed' } };
+                case 'key_rebind': return answer();
+                case 'tls_accept': case 'tls_forget': return { ok: true, certificate: null };
                 case 'conversation_key_copy': return server.answers.copy || { ok: true, copied: true, provider: payload.provider, message: 'Copied Convo’s key.' };
                 case 'audio_probe': return server.answers.probe || { ok: true, passed: true, code: 'passed', message: 'Accepted.', reply: 'OK' };
                 default: return answer();
@@ -899,4 +902,85 @@ test('Every control is labelled and keyboard reachable, and nothing writes a tit
     assert.match(html, /<template x-if="autosave"><div class="convo-model-autosave">/);   // status and inline conflicts only where it autosaves
     assert.match(html, /:disabled="\$store\.convoSetup\.isDiscovering\(role\)"/);
     assert.match(html, /<button type="button" class="button" data-convo-field="audio-probe" :disabled="\$store\.convoSetup\?\.ui\?\.conversation\?\.probe\?\.busy === true" @click="\$store\.convoSetup\.conversationProbe\(\)">Test audio input<\/button>/);
+});
+
+// ---- Connections: Test on the card, a typed key, the server's own model list, and the extras every card shows.
+test('Test connection sits on the card (not in Advanced) on all three cards, with its extras', async () => {
+    for (const [file, test] of [['conversation-model-field.html', 'connection-test'], ['classifier-model-field.html', 'classifier-check']]) {
+        const markup = await readWebui(file), advanced = markup.indexOf('advanced-body');
+        assert.ok(markup.indexOf(`data-convo-field="${test}"`) > 0 && markup.indexOf(`data-convo-field="${test}"`) < advanced, file);
+    }
+    for (const [file, prefix] of [['conversation-model-field.html', ''], ['classifier-model-field.html', 'classifier-'], ['speech-output-field.html', 'speech-']])
+        for (const part of ['this-computer', 'key-move', 'connection-suggestion', 'certificate-note', 'certificate-forget', 'certificate-accept'])
+            assert.ok((await readWebui(file)).includes(`data-convo-field="${prefix}${part}"`), file + ' ' + part);
+});
+
+test('Test connection uses a key typed but not saved, and an answer survives typing a model name but not a new address', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-i96ld4g:8098/v1', 'roles.conversation.key_source': 'convo' } });
+    f.store.setKey('conversation', 'typed-key');
+    let release; f.server.hold.connection_test = new Promise(resolve => { release = resolve; });
+    const testing = f.store.discover('conversation', true);
+    f.role().model = 'Gemma-12b';                                                        // typing while the test runs
+    release(); await testing;
+    assert.equal(f.sent('connection_test')[0].draft_key, 'typed-key');
+    assert.equal(f.store.conversationConnectionView().message, 'listed');
+    assert.equal(f.store.config.roles.conversation.model, 'Gemma-12b');
+    f.server.hold.connection_test = new Promise(resolve => { release = resolve; });
+    const again = f.store.discover('conversation', true);
+    f.role().api_base = 'http://100.96.86.99:8098/v1';                                  // a new address: that answer is not shown
+    f.store.choices.conversation = {};
+    release(); await again;
+    assert.equal(f.store.choices.conversation.verification, undefined);
+    f.store.setKey('conversation', '');
+    await f.store.discover('conversation', true);
+    assert.equal('draft_key' in f.sent('connection_test').at(-1), false);
+});
+
+test('A server on your network lists its own models while you type; the list is fetched once and the reason shows when it fails', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'llama_cpp', 'roles.conversation.api_base': 'http://desktop-i96ld4g:8098/v1' } });
+    f.server.models = ['Gemma-12b-Q4-QAT', 'qwen3-omni'];
+    assert.deepEqual(await f.store.conversationSearch('g'), ['Gemma-12b-Q4-QAT', 'qwen3-omni']);
+    assert.deepEqual(await f.store.conversationSearch('ge'), ['Gemma-12b-Q4-QAT', 'qwen3-omni']);
+    assert.deepEqual([f.host.searches.length, f.sent('discover').length], [0, 1]);       // Convo's discovery, with Convo's rules, once
+    f.store.choices.conversation = { verification: { state: 'unavailable', message: 'Nothing is listening at desktop:8098.' } };
+    assert.equal(f.store.conversationSearchNote(), 'Nothing is listening at desktop:8098.');
+    f.store.choices.conversation = {};
+    assert.equal(f.store.conversationSearchNote(), 'No models found');
+});
+
+test('One click from a Test answer: the port that answers, the exact model name, the saved key for this address', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://localhost:8080/v1', 'roles.conversation.key_source': 'convo', 'roles.conversation.model': 'gemma' } });
+    f.server.answers.test = { ok: true, models: [{ id: 'Gemma', label: 'Gemma' }], verification: { state: 'unavailable', message: 'Nothing is listening at localhost:8080.' },
+                              suggestion: { url: 'http://localhost:8890/v1', label: 'Use port 8890', message: 'Something answers on port 8890.' }, close_match: 'Gemma' };
+    await f.store.discover('conversation', true);
+    assert.deepEqual(plain(f.store.connectionSuggestion('conversation')), f.server.answers.test.suggestion);
+    assert.equal(f.store.conversationCloseMatch(), 'Gemma');
+    await f.store.conversationUseAddress(f.store.connectionSuggestion('conversation').url);
+    assert.equal(f.role().api_base, 'http://localhost:8890/v1');
+    assert.equal(f.sent('connection_test').length, 2);                                  // tested again at once
+    f.server.facts = { key_bound: { conversation: 'http://host.docker.internal:8098/v1' } };
+    await f.store.load(true);
+    assert.equal(f.store.conversationKeyMoveOffer(), 'http://host.docker.internal:8098/v1');
+    f.store.setKey('conversation', 'new');
+    assert.equal(f.store.conversationKeyMoveOffer(), '');                                // a new key typed: nothing to move
+    f.store.setKey('conversation', '');
+    delete f.store.keys.conversation;
+    await f.store.keyMove('conversation');
+    assert.equal(f.sent('key_rebind')[0].provider.api_base, f.role().api_base);
+});
+
+test('Where "localhost" goes and a remembered certificate are said in words', async () => {
+    const f = await rig();
+    f.store.network = { in_docker: true, this_computer: 'host.docker.internal', translated: true };
+    assert.match(f.store.thisComputerText('https://127.0.0.1:18201/v1'), /reaches 127\.0\.0\.1 through host\.docker\.internal/);
+    assert.equal(f.store.thisComputerText('https://100.75.98.97:18201/v1'), '');
+    f.store.network = { in_docker: true, this_computer: '', translated: false };
+    assert.match(f.store.thisComputerText('http://localhost:8890/v1'), /container itself/);
+    f.store.network = { in_docker: false, this_computer: '', translated: false };
+    assert.equal(f.store.thisComputerText('http://localhost:8890/v1'), '');
+    f.store.certificates = { classifier: { sha256: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB', names: ['DJsLaptop', '127.0.0.1'], subject: 'DJsLaptop', expires: '2027-10-31' } };
+    assert.equal(f.store.certificateNote('classifier'), 'Private certificate remembered · DJsLaptop · DJsLaptop, 127.0.0.1 · SHA-256 AB:CD:EF:01:23:45:67:89… · valid until 2027-10-31');
+    assert.equal(f.store.certificateNote('tts'), '');
+    await f.store.certificateForget('classifier', 'https://127.0.0.1:18201/v1');
+    assert.deepEqual([f.sent('tls_forget')[0].url, f.store.certificateNote('classifier')], ['https://127.0.0.1:18201/v1', '']);
 });

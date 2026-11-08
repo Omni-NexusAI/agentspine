@@ -23,7 +23,7 @@ class PolicyDisconnect(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(environment.stop)
         self.upstream = {'started': asyncio.Event(), 'cancelled': False, 'finished': False, 'release': asyncio.Event(), 'calls': 0}
         self.original_client = httpx.AsyncClient
-        clients = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: self.original_client(transport=httpx.MockTransport(self.provider), **kwargs))
+        clients = patch.object(httpx, 'AsyncClient', side_effect=lambda **kwargs: self.original_client(**{**kwargs, 'transport': httpx.MockTransport(self.provider)}))
         clients.start()
         self.addCleanup(clients.stop)
 

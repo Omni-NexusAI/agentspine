@@ -155,18 +155,19 @@ test('A provider added to Agent Zero later appears at once; an OpenAI-compatible
     assert.deepEqual(plain(f.store.classifierKinds()), ['chat']);
     assert.deepEqual(plain(f.store.classifierKindOptions().map(option => [option.id, option.disabled])), [['auto', false], ['decision', true], ['chat', false]]);
     assert.equal(f.store.classifierEffectiveKind(), 'chat');
-    // Agent Zero's key for that provider id, as the server routes it (convo_classifier_catalog.host_key), and Agent Zero's search.
-    assert.deepEqual([f.store.classifierProviderInfo().compatible, f.store.classifierHostKey(), f.store.classifierUsesHostKey(), f.store.classifierSearchesHost()], [true, 'late_router', true, true]);
+    // Agent Zero's key for that provider id, as the server routes it (convo_classifier_catalog.host_key); a server on your network
+    // is asked for its own models by Convo's discovery (with that key), not by Agent Zero's search.
+    assert.deepEqual([f.store.classifierProviderInfo().compatible, f.store.classifierHostKey(), f.store.classifierUsesHostKey(), f.store.classifierSearchesHost()], [true, 'late_router', true, false]);
     assert.equal(f.store.classifierRemoteShown(), false);                                            // a private network address: no consent needed
     f.host.chatProviders = [...f.host.chatProviders, { value: 'Bad-Id', label: 'Bad id' }];
     f.host.chatProviderDetails = { ...f.host.chatProviderDetails, 'Bad-Id': { litellm_provider: 'openai', api_base: 'http://10.0.0.9/v1' } };
     assert.equal(f.store.classifierProviderOptions().find(option => option.id === 'Bad-Id')?.disabled, true);   // an id the contract refuses
 });
 
-test('Model search goes through Agent Zero’s store at the moment of use and its own grouping; Convo’s discovery only for a server you run', async () => {
-    const f = await rig({ config: { 'roles.classifier.provider': 'llama_cpp', 'roles.classifier.api_base': 'http://host.docker.internal:9931/v1' } });
+test('Model search: a cloud provider through Agent Zero’s store at the moment of use and its own grouping; a server on your network lists its own models', async () => {
+    const f = await rig({ config: { 'roles.classifier.provider': 'openai', 'roles.classifier.remote': true } });
     assert.deepEqual(plain(await f.store.classifierSearch('d1')), ['qwen3-chat', 'd1-omni-600M', 'd1-omni-1B']);
-    assert.deepEqual(plain(f.host.searches), [['llama_cpp', 'd1', 'chat', 'http://host.docker.internal:9931/v1']]);
+    assert.deepEqual(plain(f.host.searches), [['openai', 'd1', 'chat', '']]);
     assert.deepEqual(plain(f.store.classifierGroup(['qwen3-chat', 'd1-omni-600M', 7], 'd1')), { matched: ['d1-omni-600M'], rest: ['qwen3-chat'] });
     assert.equal(f.host.grouped, 1);                                                                 // the host's own grouping, not a copy
     let patched = 0;
@@ -178,6 +179,11 @@ test('Model search goes through Agent Zero’s store at the moment of use and it
     const g = await rig({ config: { 'roles.classifier.provider': 'other', 'roles.classifier.api_base': 'http://host.docker.internal:9931/v1' } });
     assert.deepEqual(plain(await g.store.classifierSearch('x')), ['own-server-model']);
     assert.deepEqual([g.host.searches.length, g.sent('discover').length, g.sent('discover')[0].role], [0, 1, 'classifier']);
+    assert.deepEqual(plain(await g.store.classifierSearch('xy')), ['own-server-model']);
+    assert.equal(g.sent('discover').length, 1);                                                      // typing reuses the list it fetched
+    const h = await rig({ config: { 'roles.classifier.provider': 'llama_cpp', 'roles.classifier.api_base': 'http://100.75.98.97:18201/v1' } });
+    assert.deepEqual(plain(await h.store.classifierSearch('d1')), ['own-server-model']);              // llama.cpp on your tailnet: its own list
+    assert.deepEqual([h.host.searches.length, h.sent('discover').length], [0, 1]);
     g.store.classifierSetProvider('jev');
     await g.store.classifierSearch('');
     assert.deepEqual([g.host.searches.length, g.sent('discover').length], [0, 2]);                  // no Agent Zero key goes to TypeSafe through Convo

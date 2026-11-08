@@ -322,3 +322,37 @@ Not verified: a real microphone, listening quality, any provider actually accept
   - Real browser on the test host: the new `tests/live-connection-smoke.mjs` 14/14; regressions: UI 19/19, model type 26/26, Classifier 24/24, speech 54/54.
   - The model-type script now starts its key step from "Agent Zero's key", because the host is saved with Convo's own key. Every script restored the saved settings exactly.
 - **Not verified:** a connection to your desktop's server. I don't have its address, and nothing on it was started or contacted.
+
+## 13. Connections that set up easily (2026-11-08, test host only)
+
+The user set up the connections by hand to see a user's experience, and nothing connected. Causes found, read-only:
+- **Speech:** the address was the audio.cpp container's internal port (8080); Docker publishes it as 8890.
+- **Conversation model:** the address was `host.docker.internal:8098`, which is this laptop, not the desktop. Its key was bound to that address.
+- **Decision router:** it uses HTTPS with a self-made certificate, and Convo trusted none.
+- **On the cards:** Test sat hidden in Advanced, ignored a typed key, and the model field never listed what the server serves.
+
+**Changes:**
+- **`helpers/convo_net.py`, for every role connection:**
+  - `localhost`/`127.x` works from inside Docker. It is connected through `host.docker.internal`, and the typed address stays the identity.
+  - The rule is generic and nothing per machine is stored. `host.docker.internal` still works as typed.
+  - Private certificates on your own network are remembered automatically on first contact, and a changed one is refused until accepted.
+  - Failures are described in Convo's words, with a one-click address that answers instead.
+- **Cards:**
+  - Test sits on the card.
+  - A typed key is used before it is saved.
+  - "Use it for this address" moves a saved key.
+  - The model list comes from your server as you type.
+  - A model name differing only in letter case is offered as one click.
+- **Decision plugin:** it sends `"model"`, and follows the same connection rules. D1 defaults are kept, with the list to generalize in its AGENTS.md.
+
+**Verification:**
+- **Offline:**
+  - Node 424/424.
+  - Python 854 run, with only the known `soundfile` error; `test_convo_net.py` uses real local HTTPS with throwaway certificates.
+  - Decision plugin 32/32; Plugin Doctor 5/5.
+- **Live on the test host:** new `tests/live-setup-smoke.mjs` 13/13 against the real audio.cpp container and decision router. Regressions: connection 14/14, UI 19/19, model type 26/26, classifier 24/24, speech 60/60.
+- **Restored afterwards:** settings were restored, and the certificate the checks remembered was forgotten.
+- **Not verified:**
+  - the desktop's server. It timed out from the container even with plain Python, while Tailscale showed it through a relay.
+  - keyed calls to the router or the desktop. The keys are the user's.
+
