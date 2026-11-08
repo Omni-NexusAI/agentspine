@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "volume": 0.6,
+  "cues": {
+    "activate": null,
+    "deactivate": null,
+    "dictation-start": null,
+    "dictation-ptt": null,
+    "dictation-end": null,
+    "error": null
+  }
+}

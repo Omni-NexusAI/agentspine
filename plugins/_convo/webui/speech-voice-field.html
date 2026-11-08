@@ -1,0 +1,36 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<!-- Speech output's Voice & Audio part. Agent Zero's field structure and the conversation card's .convo-model-card styles, as in
+     Connections; methods live in speech-setup.js. -->
+<section class="convo-card convo-model-card convo-native" x-show="$store.convoSetup.show('tts', 'native')">
+  <h4>Native Kokoro speech</h4>
+  <p class="field-description">Convo speaks with Agent Zero’s own Kokoro settings. Change the voice, blend and speed there; Convo uses them as they are. Model, clone, tuning and PCM settings do not apply to Kokoro, and their saved values are kept for when you switch back.</p>
+  <dl class="convo-facts" x-show="$store.convoSetup.native.kokoro?.summary">
+    <dt>Voice</dt><dd x-text="$store.convoSetup.voiceMix($store.convoSetup.native.kokoro?.summary?.voices)"></dd>
+    <dt>Speed</dt><dd x-text="$store.convoSetup.native.kokoro?.summary?.speed"></dd>
+    <dt>Compute</dt><dd x-text="($store.convoSetup.native.kokoro?.summary?.device || 'auto') + ($store.convoSetup.native.kokoro?.summary?.remote ? ' (remote worker)' : '')"></dd>
+  </dl>
+  <p class="field-description convo-model-alert" role="note" x-show="$store.convoSetup.native.kokoro && !$store.convoSetup.native.kokoro.enabled">Native Kokoro is off or missing in this host; turn it on in Plugins before starting a conversation.</p>
+  <div class="convo-model-actions"><button class="button" x-show="!$store.convoSetup.inConfigModal" @click="$store.convoSetup.openNative('_kokoro_tts')">Open native speech settings</button></div>
+</section>
+<section class="convo-card convo-model-card" x-show="!$store.convoSetup.show('tts', 'native')">
+  <h4>Speech voice</h4>
+  <dl class="convo-facts">
+    <dt>Provider</dt><dd x-text="$store.convoSetup.speechSummary().provider"></dd>
+    <dt>Model</dt><dd x-text="$store.convoSetup.speechSummary().model"></dd>
+    <dt>Voice</dt><dd x-text="$store.convoSetup.speechSummary().voice"></dd>
+  </dl>
+  <div class="convo-model-actions"><button type="button" class="button" @click="$store.convoSetup.section = 'Connections'">Change in Connections</button><button type="button" class="button" x-show="$store.convoSetup.show('tts', 'studio')" @click="$store.convo.openStudio()">Open Voice Studio</button></div>
+</section>
+<div class="convo-model-card convo-model-fields convo-speech-voice" x-id="['speech-tuning', 'speech-pcm']">
+  <div class="field" x-show="$store.convoSetup.show('tts', 'tuning')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-tuning')">Tuning profile</div><div class="field-description">Find models &amp; voices (Connections) also discovers tuning profiles. Save to apply at the next response boundary; an in-progress response keeps its frozen settings.</div></div>
+    <div class="field-control"><select :aria-labelledby="$id('speech-tuning')" x-model="$store.convoSetup.config.roles.tts.tuning_profile"><option value="">Use Studio’s current tuning selection</option><template x-for="option in $store.convoSetup.options('tts','tuning')" :key="option.id"><option :value="option.id" :selected="option.id === $store.convoSetup.config.roles.tts.tuning_profile" x-text="option.label || option.id"></option></template></select></div>
+  </div>
+  <p class="field-description" x-show="$store.convoSetup.show('tts', 'server')" x-text="$store.convoSetup.speechTuningText()"></p>
+  <div class="field" x-show="$store.convoSetup.show('tts', 'pcm')">
+    <div class="field-label"><div class="field-title" :id="$id('speech-pcm')">Experimental incremental PCM playback</div><div class="field-description">Off by default. This is playback only: your speech is still sent as completed turns, not streamed in. It needs a server that sends the audio.cpp PCM16 stream format (audio.cpp does); any other answer is rejected without falling back. Buffered WAV remains the stable path. Sustained listening acceptance is still required.</div></div>
+    <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="speech-pcm" :aria-labelledby="$id('speech-pcm')" x-model="$store.convoSetup.config.roles.tts.capabilities.native_pcm"><span class="toggler"></span></label></div>
+  </div>
+  <p class="field-description" x-show="$store.convoSetup.show('tts', 'studio')">Create clones, preview voices and manage tuning in Studio.</p>
+</div>
+</body></html>

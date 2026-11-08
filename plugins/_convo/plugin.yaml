@@ -1,0 +1,7 @@
+name: _convo
+title: Convo
+description: Local-first conversation, native dictation, linked voice history and explicit background delegation. Development preview; live acceptance pending.
+version: 0.1.0
+always_enabled: false
+settings_sections:
+  - agent

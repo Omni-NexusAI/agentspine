@@ -1,0 +1,9 @@
+name: plugin_doctor
+title: Plugin Doctor
+description: Inspect disabled plugins and refresh repaired code without rebuilding the host image.
+version: 0.1.0
+settings_sections:
+  - developer
+always_enabled: false
+per_project_config: false
+per_agent_config: false

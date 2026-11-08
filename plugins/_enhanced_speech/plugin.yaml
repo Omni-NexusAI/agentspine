@@ -1,7 +1,7 @@
 name: _enhanced_speech
-title: Enhanced Speech
-description: Enables portable enhanced speech controls, GPU-aware Whisper STT, and Kokoro TTS in the plugin framework.
+title: Enhanced Speech compatibility
+description: Deprecated settings and import compatibility only. Convo owns speech integration; this shim installs no microphone handlers.
 version: 0.9.9
-always_enabled: true
+always_enabled: false
 settings_sections:
   - agent

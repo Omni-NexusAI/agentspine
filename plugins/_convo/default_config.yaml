@@ -1,0 +1,24 @@
+tts:
+  provider: kokoro
+  kokoro:
+    primary_voice: am_michael
+    secondary_voice: ''
+    voice_blend: 50
+    speed: 1.1
+    device: auto
+    remote:
+      enabled: false
+      url: http://kokoro-gpu-worker:8891
+      token: ''
+      timeout: 20
+stt:
+  provider: whisper
+  whisper:
+    model_size: base
+    device: auto
+    language: en
+    message_mode: send
+    silence_threshold: 0.3
+    silence_duration: 1000
+    waiting_timeout: 2000
+convo: {"enabled":false,"ambient_enabled":false,"remote_ambient_consent":false,"transcription_enabled":false,"voice_message_draft":"single","developer_mode":false,"ai_link_development_mode":false,"system_one":{"enabled":false,"backend":""},"decider":{"source":"","kind":"d1_llama_cpp","url":"","model":""},"style":"","response_detail":"balanced","spoken_updates":"completion","activation_names":[],"hotkey":"Ctrl+Shift+Space","sidecar":{"url":"http://convo-runtime:8090","token_env":"CONVO_SIDECAR_TOKEN","remote":false,"managed":false},"roles":{"conversation":{"provider":"","key_source":"provider","api_base":"","url":"http://host.docker.internal:8080/v1","model":"","token_env":"","remote":false,"capabilities":{"audio_input":true,"cancellation":true,"tool_calls":true}},"classifier":{"provider":"","key_source":"provider","api_base":"","context_window":8192,"kind":"auto","url":"","model":"","token_env":"","remote":false,"capabilities":{"audio_input":true,"cancellation":true}},"tts":{"backend":"openai","provider":"","connection":"","key_source":"provider","accepts_instructions":false,"url":"http://convo-audio:8080/v1","model":"","voice":"","token_env":"","remote":false,"capabilities":{"audio_output":true,"cloning":true}}},"compaction":{"trigger":0.7,"target":0.5,"recent_exchanges":6,"context_tokens":16384,"output_reserve":2048},"direct_timeout":30,"clarification_cooldown":60,"audio_token_reserve":4096,"max_audio_seconds":20,"echo_guard":"adaptive","speculative_reply":false,"main_listen_decision":false,"continuation_seconds":7,"first_clause_speech":false,"recent_remarks_seconds":0,"policy_gate":{"respond_min":0.3,"ambient_respond_min":0.9,"interrupt_min":0.6,"ignore_min":1.0,"name_min":0.9,"clarify_min":0.3,"clarify_elsewhere_max":0.5}}

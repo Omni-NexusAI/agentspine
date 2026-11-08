@@ -1,0 +1,47 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<div x-data><template x-if="$store.convoSetup?.config"><section class="convo-settings" @input="$store.convoSetup.message = ''">
+  <nav class="convo-tabs" aria-label="Convo settings sections"><template x-for="section in $store.convoSetup.sections" :key="section"><button type="button" class="button" :aria-pressed="$store.convoSetup.section === section" @click="$store.convoSetup.section = section" x-text="section"></button></template></nav>
+  <x-component path="/plugins/_convo/webui/settings-banner.html"></x-component>
+  <p class="convo-hint">One set of settings for the sidebar and Voice Studio. No models are downloaded or loaded by discovering options.</p>
+  <div x-show="$store.convoSetup.section === 'Connections'" class="convo-stack">
+    <x-component path="/plugins/_convo/webui/conversation-model-field.html"></x-component>
+    <x-component path="/plugins/_convo/webui/classifier-model-field.html"></x-component>
+    <x-component path="/plugins/_convo/webui/speech-output-field.html"></x-component>
+  </div>
+  <div x-show="$store.convoSetup.section === 'Conversation'" class="convo-stack">
+    <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.enabled">Enable Convo composer control</label>
+    <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.transcription_enabled">Show parallel Whisper transcripts</label>
+    <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.ambient_enabled">Allow ambient and name-activated listening</label>
+    <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.remote_ambient_consent">Allow continuous ambient processing by remote providers</label>
+    <p class="convo-hint">Ambient mode is opt-in. Unrelated speech is not stored. No automatic provider fallback.</p>
+    <label>Activation names, one per line<textarea :value="$store.convoSetup.config.activation_names.join('\n')" @change="$store.convoSetup.config.activation_names = $event.target.value.split('\n').map(s => s.trim()).filter(Boolean)" rows="2"></textarea></label>
+    <label>Personality and speaking style<textarea x-model="$store.convoSetup.config.style" rows="4" maxlength="1600"></textarea></label>
+    <p class="convo-hint">Extends your agent’s persona without changing permissions or delegation rules.</p>
+    <label>Answer length<select x-model="$store.convoSetup.config.response_detail"><template x-for="option in [['concise','Concise: the headline first'],['balanced','Balanced'],['detailed','Detailed: reasons and specifics']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.response_detail" x-text="option[1]"></option></template></select></label>
+    <label>Spoken task updates<select x-model="$store.convoSetup.config.spoken_updates"><template x-for="option in [['completion','Only when a task finishes'],['milestones','Meaningful results and blockers'],['frequent','Short progress updates']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.spoken_updates" x-text="option[1]"></option></template></select></label>
+    <p class="convo-hint">Defaults for how much Convo says, separate from personality. Saying “briefly”, “in detail” or “just the headline” changes only that one answer. Errors, permission requests and decisions you must make are always spoken. Answer length applies from the next response; the personality is read when a conversation starts or you change its chat. Routine progress stays visible as text without being spoken. Agent Zero currently reports a delegated task to Convo only when it finishes, fails or is left unconfirmed, so the other two levels only change what happens once it reports milestones or progress.</p>
+    <label>Focused-app shortcut<input x-model="$store.convoSetup.config.hotkey" placeholder="Ctrl+Shift+Space"></label>
+  </div>
+  <div x-show="$store.convoSetup.section === 'Voice & Audio'" class="convo-stack">
+    <x-component path="/plugins/_convo/webui/speech-voice-field.html"></x-component>
+    <label>Echo protection<select x-model="$store.convoSetup.config.echo_guard"><template x-for="option in [['adaptive','Adaptive: ignore Convo’s own voice, allow interruptions'],['strict','Strict: ignore the microphone while Convo speaks'],['off','Off: browser echo cancellation only']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.echo_guard" x-text="option[1]"></option></template></select></label>
+    <p class="convo-hint">Adaptive compares the microphone with the exact audio being played and passes on only speech that is clearly yours, after about half a second; a one-word interruption shorter than that is not detected. Strict never listens during playback. Takes effect the next time you start Convo.</p>
+    <x-component path="/plugins/_convo/webui/dictation-field.html"></x-component>
+  </div>
+  <section class="convo-developer" aria-label="Developer">
+    <div class="convo-developer-row"><strong>Developer</strong>
+      <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.developer_mode">Developer diagnostics</label>
+      <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.ai_link_development_mode">AI Link development mode</label>
+      <button type="button" class="button" x-show="$store.convoDiagnostics?.available" @click="$store.convoDiagnostics?.open()">Open diagnostics</button>
+    </div>
+    <p class="convo-hint">Keep Convo enabled and its browser voice idle while AI Link uses the existing native speech providers. End any active Convo session before saving this mode. Leaving this mode does not resume capture automatically.</p>
+  </section>
+  <p role="alert" class="convo-error" x-show="$store.convoSetup.error" x-text="$store.convoSetup.error"></p><p role="status" class="convo-hint" x-show="$store.convoSetup.message" x-text="$store.convoSetup.message"></p>
+  <footer class="convo-actions"><button class="button" :disabled="!$store.convoSetup.dirty || $store.convoSetup.busy" @click="$store.convoSetup.save()" x-text="$store.convoSetup.busy ? 'Saving…' : 'Save changes'"></button><button class="button" @click="$store.convoSetup.load(true)">Reload saved</button><small x-show="$store.convoSetup.dirty">Unsaved changes</small></footer>
+</section></template></div>
+<style>
+.convo-settings,.convo-stack{display:flex;flex-direction:column;gap:1rem;min-width:0}.convo-settings{width:100%;color:var(--color-text);font:inherit}.convo-tabs,.convo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}.convo-tabs .button[aria-pressed=true]{background:var(--color-highlight,var(--color-panel));border-color:var(--color-text)}.convo-settings label{display:flex;flex-direction:column;gap:.4rem;min-width:0;font-size:.9rem}.convo-settings input:not([type=checkbox]),.convo-settings select,.convo-settings textarea{box-sizing:border-box;width:100%;min-width:0;min-height:40px;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:8px;padding:.55rem .65rem;font:inherit}.convo-settings .convo-check{flex-direction:row;align-items:flex-start;gap:.6rem}.convo-check input{margin-top:.25rem}.convo-check small{display:block;overflow-wrap:anywhere}.convo-card{border:1px solid var(--color-border);border-radius:12px;padding:1rem;min-width:0;display:flex;flex-direction:column;gap:.8rem;background:var(--color-panel)}.convo-card legend{padding:0 .35rem;font-weight:600}.convo-card>h4{margin:0}.convo-hint{color:var(--color-text);font-size:.875rem;line-height:1.4;opacity:.8;margin:.15rem 0;overflow-wrap:anywhere}.convo-settings summary{cursor:pointer;padding:.5rem 0}.convo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.8rem}.convo-error{color:var(--color-error,#da6868);overflow-wrap:anywhere}.convo-facts{display:grid;grid-template-columns:max-content 1fr;gap:.25rem .9rem;margin:0;font-size:.88rem}.convo-facts dt{opacity:.7}.convo-facts dd{margin:0;overflow-wrap:anywhere}.convo-banner{border:1px solid var(--color-border);border-left:3px solid #c8aa72;border-radius:10px;padding:.7rem .9rem;display:flex;flex-direction:column;gap:.5rem;background:var(--color-panel)}.convo-conflict{display:flex;flex-direction:column;gap:.3rem;padding:.4rem 0;border-top:1px solid var(--color-border)}.convo-conflict code{font-size:.8rem;overflow-wrap:anywhere}.convo-conflict small{opacity:.75;overflow-wrap:anywhere}.convo-reasons{margin:0;padding-left:1.1rem;font-size:.82rem;line-height:1.5}.convo-decider summary small{opacity:.7;margin-left:.4rem}.convo-settings .button{min-height:40px;white-space:normal}.convo-settings :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}@media(max-width:600px){.convo-settings .button,.convo-settings select{min-height:44px}.convo-card{padding:.75rem}.convo-tabs .button{flex:1 1 40%}}
+/* Cards are x-components: the wrapper takes no box, so each card lays out exactly as if it were written here. */
+.convo-settings x-component{display:contents}
+.convo-developer{display:flex;flex-direction:column;gap:.4rem;border-top:1px solid var(--color-border);padding-top:.75rem}.convo-developer-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.25rem}.convo-developer-row strong{font-size:.85rem}
+</style></body></html>

@@ -1,0 +1,75 @@
+<html><head><title>Convo</title><script type="module">
+import { store, install } from '/plugins/_convo/webui/convo-store.js';
+install();
+</script></head><body><div x-data><template x-if="$store.convo"><section class="convo-panel" x-init="$store.convo.mountPanel()" x-destroy="$store.convo.unmountPanel()">
+  <header class="convo-bar">
+    <div class="convo-heading"><h2>Convo</h2><span class="convo-chip" :data-state="$store.convo.chipState" role="status" aria-live="polite"><span class="convo-dot" aria-hidden="true"></span><span x-text="$store.convo.statusLabel"></span></span></div>
+    <div class="convo-tools">
+      <button type="button" class="button convo-icon" @click="$store.convo.openStudio()" title="Voice Studio" aria-label="Open Voice Studio"><span class="material-symbols-outlined" aria-hidden="true">graphic_eq</span></button>
+      <button type="button" class="button convo-icon" @click="$store.convo.openSettingsModal()" title="Convo settings" aria-label="Convo settings" aria-haspopup="dialog"><span class="material-symbols-outlined" aria-hidden="true">settings</span></button>
+    </div>
+  </header>
+  <div class="convo-target"><span class="convo-target-name">Chat · <strong x-text="$store.convo.targetLabel"></strong></span><button type="button" class="button convo-link" x-show="$store.convo.canRetarget" @click="$store.convo.retarget()" title="Switch voice to the selected Agent Zero chat">Use selected chat</button></div>
+  <div class="convo-controls">
+    <button type="button" class="button convo-primary" @click="$store.convo.toggle()" :disabled="$store.convo.settings?.ai_link_development_mode && !$store.convo.active && !$store.convo.busy" x-text="$store.convo.active || $store.convo.busy ? 'Stop conversation' : $store.convo.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Start conversation'"></button>
+    <button type="button" class="button" @click="$store.convo.toggleDictation()" :aria-pressed="$store.convo.dictating" x-text="$store.convo.dictating ? 'Finish dictation' : 'Dictate'"></button>
+  </div>
+  <p class="convo-hint" x-text="$store.convo.note || ($store.convo.active ? 'Microphone active · ' + ($store.convo.settings?.remote_processing ? 'remote processing configured' : 'local providers configured') : ($store.convo.dictating ? 'Native dictation microphone active' : 'Microphone off · click the composer orb to talk, hold to dictate'))"></p>
+  <p class="convo-error" role="alert" x-show="$store.convo.error" x-text="$store.convo.error"></p>
+  <ul class="convo-activity" x-show="$store.convo.activeJobs.length" aria-label="Background tasks in progress"><template x-for="job in $store.convo.activeJobs" :key="job.id"><li><span class="convo-activity-state" x-text="job.status.replaceAll('_', ' ')"></span><span class="convo-activity-text" x-text="job.prompt"></span><span class="convo-activity-buttons"><button type="button" class="button" x-show="['queued','running'].includes(job.status)" @click="$store.convo.cancelJob(job)">Cancel</button><button type="button" class="button" x-show="job.status === 'running'" @click="$store.convo.steerJob(job)" title="Send an explicit instruction to this running task">Steer</button></span></li></template></ul>
+  <div class="convo-log">
+    <section class="convo-transcript" role="log" aria-live="off" aria-label="Voice conversation history" tabindex="0"
+             x-init="$store.convo.bindTranscript($el)" x-destroy="$store.convo.unbindTranscript($el)" @scroll.passive="$store.convo.onScroll($el)"
+             x-effect="$store.convo.visibleEvents.length; $store.convo.draft; $store.convo.queueSettle()">
+      <button type="button" class="button convo-earlier" x-show="$store.convo.moreEarlier" :disabled="$store.convo.loadingEarlier" @click="$store.convo.loadEarlier()" x-text="$store.convo.loadingEarlier ? 'Loading…' : 'Load earlier messages'"></button>
+      <div class="convo-empty" x-show="!$store.convo.visibleEvents.length && !$store.convo.draft"><span class="material-symbols-outlined" aria-hidden="true">forum</span><h3>Ready when you are</h3><p>Connect your models with the settings button above, then start a conversation.<br>Your voice history appears here; text chat stays separate.</p></div>
+      <template x-for="event in $store.convo.visibleEvents" :key="event.seq"><article class="convo-message" :data-role="$store.convo.eventRole(event)"><header x-text="$store.convo.eventLabel(event)"></header><div x-show="$store.convo.eventText(event)" x-text="$store.convo.eventText(event)"></div></article></template>
+      <article class="convo-message" data-role="assistant" x-show="$store.convo.draft" aria-live="off"><header>Draft · not yet delivered</header><div x-text="$store.convo.draft"></div></article>
+    </section>
+    <!-- Outside the scroller on purpose: inside it, showing the button would lengthen the content and move the reader away from the end. -->
+    <button type="button" class="button convo-latest" x-show="!$store.convo.pinned" @click="$store.convo.jumpToLatest()"><span class="material-symbols-outlined" aria-hidden="true">arrow_downward</span><span x-text="$store.convo.unseen ? $store.convo.unseen + ' new · latest' : 'Jump to latest'"></span></button>
+  </div>
+</section></template></div>
+<style>
+.convo-panel{display:flex;flex-direction:column;gap:.55rem;padding:.75rem;box-sizing:border-box;min-width:0;width:100%;height:100%;min-height:320px;overflow:hidden;color:var(--color-text);font:inherit}
+.modal-bd .convo-panel{height:min(78vh,720px)}
+.convo-panel>*{min-width:0;flex-shrink:0}
+.convo-bar{display:flex;align-items:center;justify-content:space-between;gap:.6rem}
+.convo-heading{display:flex;align-items:center;gap:.6rem;min-width:0;flex-wrap:wrap}
+.convo-heading h2{margin:0;font-size:1.1rem;letter-spacing:-.02em}
+.convo-chip{display:inline-flex;align-items:center;gap:.4rem;font-size:.75rem;padding:.12rem .55rem;border:1px solid var(--color-border);border-radius:999px;opacity:.9}
+.convo-dot{width:.5rem;height:.5rem;border-radius:50%;background:currentColor;opacity:.45}
+.convo-chip[data-state=listening] .convo-dot{background:#69bdca;opacity:1}.convo-chip[data-state=speaking] .convo-dot{background:#aaa0d3;opacity:1}
+.convo-chip[data-state=considering] .convo-dot,.convo-chip[data-state=thinking] .convo-dot,.convo-chip[data-state=connecting] .convo-dot{background:#c8aa72;opacity:1}
+.convo-chip[data-state=dictation] .convo-dot{background:#7fc08b;opacity:1}.convo-chip[data-state=error] .convo-dot{background:var(--color-error,#da6868);opacity:1}
+.convo-tools{display:flex;gap:.35rem;flex-shrink:0}
+.convo-panel .button{min-height:36px;white-space:normal;gap:.35rem}
+.convo-panel .convo-icon{min-width:36px;padding:.25rem .5rem;display:inline-flex;align-items:center;justify-content:center}
+.convo-panel .convo-icon .material-symbols-outlined{font-size:1.25rem}
+.convo-target{display:flex;align-items:center;justify-content:space-between;gap:.5rem;font-size:.8rem}
+.convo-target-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo-panel .convo-link{min-height:30px;padding:.15rem .6rem;font-size:.75rem}
+.convo-controls{display:flex;flex-wrap:wrap;gap:.5rem}
+.convo-panel .convo-primary{background:var(--color-highlight,var(--color-panel));border-color:var(--color-text);color:#fff}
+.convo-panel .convo-primary:disabled{background:transparent;border-color:var(--color-border);color:var(--color-text);opacity:.5;cursor:not-allowed}
+.convo-panel .convo-hint{font-size:.75rem;line-height:1.4;opacity:.65;margin:0}
+.convo-panel .convo-error{color:var(--color-error,#da6868);overflow-wrap:anywhere;margin:0;font-size:.8rem}
+.convo-activity{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.3rem;font-size:.78rem}
+.convo-activity li{display:flex;align-items:center;gap:.5rem;border:1px solid var(--color-border);border-left:2px solid #c8aa72;border-radius:8px;padding:.3rem .5rem;background:var(--color-panel)}
+.convo-activity-state{text-transform:capitalize;opacity:.7;flex-shrink:0}.convo-activity-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo-activity-buttons{display:flex;gap:.25rem;flex-shrink:0}.convo-activity .button{min-height:28px;padding:.1rem .5rem;font-size:.72rem}
+.convo-log{position:relative;flex:1 1 0;min-height:140px;display:flex;flex-direction:column}
+.convo-transcript{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:.7rem;overflow-y:auto;overflow-x:hidden;padding:.4rem .15rem .6rem;scrollbar-gutter:stable;overscroll-behavior:contain}
+.convo-transcript>*{flex-shrink:0}
+.convo-earlier{align-self:center;min-height:30px!important;font-size:.75rem}
+.convo-empty{text-align:center;margin:auto;padding:1.5rem .5rem;opacity:.65;font-size:.85rem;line-height:1.6}.convo-empty>span{font-size:1.7rem}.convo-empty h3{font-size:1rem;margin:.5rem 0}
+.convo-message{align-self:flex-start;max-width:94%;min-width:0;box-sizing:border-box;border:1px solid var(--color-border);border-left:2px solid #69bdca;border-radius:12px;padding:.6rem .8rem;background:var(--color-panel);font-size:.88rem;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}
+.convo-message header{font-size:.7rem;opacity:.65;margin-bottom:.25rem;white-space:normal}
+.convo-message header:only-child{margin-bottom:0}
+.convo-message[data-role=assistant]{align-self:flex-end;border-left:1px solid var(--color-border);border-right:2px solid #aaa0d3}
+.convo-message[data-role=activity]{align-self:center;max-width:100%;border-left-color:#c8aa72;font-size:.78rem;padding:.4rem .7rem}
+.convo-latest{position:absolute;bottom:.6rem;left:50%;transform:translateX(-50%);box-shadow:0 2px 10px rgba(0,0,0,.3);background:var(--color-panel);white-space:nowrap}
+.convo-panel :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+@media(max-width:600px){.convo-panel{padding:.6rem}.convo-panel .button{min-height:44px}.convo-panel .convo-icon{min-width:44px}.convo-message{max-width:97%}}
+@media(prefers-reduced-motion:reduce){.convo-transcript{scroll-behavior:auto}}
+</style></body></html>
