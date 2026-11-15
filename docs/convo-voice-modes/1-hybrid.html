@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1 · Hybrid (today) — Convo voice agent modes</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html">Overview</a><a href="1-hybrid.html" aria-current="page">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>1 · Hybrid chosen: what a person sees first</h1>
+  <p>Settings → Connections, as it would look after build step 1. The new <strong>Voice agent mode</strong> card is the first thing in Connections. Hybrid is today’s behaviour and stays the default; the three cards under it are unchanged.</p>
+  <div class="mock-controls" data-mock-controls>
+    <fieldset><legend>Theme</legend><label><input type="radio" name="mock-show" value="both" checked> Both</label><label><input type="radio" name="mock-show" value="dark"> Dark</label><label><input type="radio" name="mock-show" value="light"> Light</label></fieldset>
+    <fieldset><legend>Width</legend><label><input type="radio" name="mock-width" value="modal" checked> Settings modal</label><label><input type="radio" name="mock-width" value="phone"> Phone / narrow</label></fieldset>
+    <span class="mock-example">Example data: model names and dates are illustrations, not test results</span>
+  </div>
+</header>
+
+<template data-screen data-title="Hybrid chosen" data-where="Convo settings → Connections">
+  <p class="mock-modal-lead">These are the same settings as Plugins → Convo → Config. Model changes apply to the next conversation; voice changes apply to the next response.</p>
+  <nav class="convo-tabs" aria-label="Convo settings sections"><button type="button" class="button" aria-pressed="true">Connections</button><button type="button" class="button" aria-pressed="false">Conversation</button><button type="button" class="button" aria-pressed="false">Voice &amp; Audio</button></nav>
+
+  <fieldset class="convo-card convo-mode-card">
+    <legend>Voice agent mode</legend>
+    <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg><span>How Convo hears you, decides when to answer, and speaks. Applies from the next conversation.</span></p>
+    <fieldset class="convo-mode-options">
+      <legend>Voice agent mode</legend>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="auto">
+        <span class="convo-mode-name">Auto</span>
+        <span class="convo-mode-badge" data-state="picked"><svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>Would pick Hybrid</span>
+        <span class="convo-mode-plain">Convo picks the mode that fits your conversation model, and shows you why.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="hybrid" checked>
+        <span class="convo-mode-name">Hybrid</span>
+        <span class="convo-mode-badge" data-state="available"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Available</span>
+        <span class="convo-mode-plain">Your model hears each thing you say once you finish. A classifier decides whether to answer. Replies are spoken in the voice you choose.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="native" disabled aria-describedby="native-why">
+        <span class="convo-mode-name">Native <small>· listens and talks at once</small></span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-plain">The model hears you the whole time and can be interrupted, like a phone call. It speaks with its own voice.</span>
+        <span class="convo-mode-reason" id="native-why">A later Convo update adds it; nothing to set up now.</span>
+      </label>
+      <label class="convo-mode-option">
+        <input type="radio" name="mode" value="tuned" disabled aria-describedby="tuned-why">
+        <span class="convo-mode-name">Tuned <small>· a model trained to take turns</small></span>
+        <span class="convo-mode-badge" data-state="version"><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Not in this version</span>
+        <span class="convo-mode-plain">A fine-tuned model decides many times a second whether to talk, wait or stop, inside a harness made for it. Needs a separate voice.</span>
+        <span class="convo-mode-reason" id="tuned-why">A later Convo update adds it, with a harness for your fine-tuned model.</span>
+      </label>
+    </fieldset>
+    <details class="convo-model-why"><summary>Why some modes are not available</summary><ul>
+      <li><strong>Native</strong> is not built in this version of Convo. A later update adds it. Models made for it, such as OpenAI’s realtime models or NVIDIA’s NemotronLabs VoiceChat, can’t be used this way until then.</li>
+      <li><strong>Tuned</strong> is not built in this version of Convo. It comes with a harness for a fine-tuned conversation model.</li>
+    </ul></details>
+
+    <p class="convo-mode-flow-title" id="flow-title">Who does what with these settings</p>
+    <dl class="convo-mode-flow" aria-labelledby="flow-title">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>Conversation model · llama.cpp · gemma-4-E4B-it<small>Each finished sentence, sent as audio.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>Classifier · llama.cpp · d1-omni-600M<small>Answers when it is fairly sure you spoke to Convo.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>Speech output · audio.cpp · clone:jarvis<small>The first clause is spoken as soon as it is ready.</small></dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Classifier<small>Delegated work runs only when you clearly ask (0.9 or more).</small></dd></div>
+    </dl>
+
+    <details class="convo-model-why"><summary>What Convo knows about gemma-4-E4B-it</summary>
+      <table class="convo-mode-facts">
+        <thead><tr><th scope="col">Can it…</th><th scope="col">Answer</th><th scope="col">How Convo knows</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">hear audio?</th><td>Yes</td><td><span class="convo-mode-evidence" data-kind="checked"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Checked here</span><span class="convo-mode-source">Test audio input passed, 2 Nov 2026</span></td></tr>
+          <tr><th scope="row">speak with its own voice?</th><td>No (text out)</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span><span class="convo-mode-source">Google’s Gemma 4 model card, read 4 Nov 2026</span></td></tr>
+          <tr><th scope="row">listen while it talks?</th><td>No</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span></td></tr>
+          <tr><th scope="row">talk over a realtime connection?</th><td>Not checked</td><td><span class="convo-mode-evidence" data-kind="unknown"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Unknown</span></td></tr>
+          <tr><th scope="row">Best mode</th><td>Hybrid</td><td><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Convo’s list · vendor says</span></td></tr>
+        </tbody>
+      </table>
+      <div class="convo-model-actions"><button type="button" class="button">Check what it can do</button></div>
+      <p class="field-description">Checks only on your click: lists the server’s models, sends one short synthetic clip, and asks whether it offers a realtime connection. Nothing is saved except the results.</p>
+    </details>
+  </fieldset>
+
+  <fieldset class="convo-card convo-model-card">
+    <legend>Conversation model</legend>
+    <div class="convo-model-fields">
+      <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg><span>Convo sends your speech as audio — choose a model that accepts audio input (omni / multimodal audio model).</span></p>
+      <div class="field"><div class="field-label"><div class="field-title" id="c-prov">Provider</div></div><div class="field-control"><select aria-labelledby="c-prov"><option>llama.cpp</option></select></div></div>
+      <div class="field"><div class="field-label"><div class="field-title" id="c-model">Model name</div></div><div class="field-control"><input type="text" aria-labelledby="c-model" value="gemma-4-E4B-it"></div></div>
+      <p class="convo-elided">API base URL, context window, accepts audio input, remote processing and Advanced Settings: as today.</p>
+    </div>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card">
+    <legend>Classifier</legend>
+    <div class="convo-model-fields">
+      <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg><span>Decides whether speech is meant for Convo and whether to answer. A decision model (System One style) or a chat model that accepts audio.</span></p>
+      <p class="convo-elided">Provider, model, key, context window, audio input, “Use System One’s decider”: as today.</p>
+    </div>
+  </fieldset>
+  <fieldset class="convo-card convo-model-card">
+    <legend>Speech output</legend>
+    <div class="convo-model-fields">
+      <p class="convo-model-note"><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg><span>The voice Convo’s replies are spoken with. It is not an Agent Zero model type: these are Convo’s own settings, used from the next response.</span></p>
+      <p class="convo-elided">Provider, connection, model and voice: as today.</p>
+    </div>
+  </fieldset>
+</template>
+
+<section class="mock-notes">
+  <h2>What to look at</h2>
+  <ul>
+    <li><strong>Mode first, cause above effect.</strong> The mode card sits above the three cards it controls, so when a later mode hides or locks a card the reason is on screen above it.</li>
+    <li><strong>Four fixed questions.</strong> “Who does what” answers the same four questions in every mode: who hears you, who decides when to answer, who speaks, who approves actions. Comparing modes means comparing four lines.</li>
+    <li><strong>Plain names.</strong> Each mode has a one-line explanation. “Duplex” never appears on the card; Native is described as “listens and talks at once” and the word is explained in the design doc only.</li>
+    <li><strong>Not built ≠ hidden.</strong> Native and Tuned are listed but disabled, with the reason as visible text tied to the radio by <code>aria-describedby</code> (never a tooltip), plus the same “Why some … are not available” disclosure the provider select already uses.</li>
+    <li><strong>Evidence per claim.</strong> “What Convo knows” is a table: each claim has its own source and date, so a checked fact and a vendor claim are never merged into one badge.</li>
+  </ul>
+  <h2>Keyboard</h2>
+  <ul>
+    <li>Native radio group: Tab enters at the chosen mode, arrow keys move between the available ones, disabled modes are skipped. Nothing saves until Save (the shared draft).</li>
+    <li>The disclosures are <code>&lt;details&gt;</code>: Enter or Space opens them.</li>
+  </ul>
+</section>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

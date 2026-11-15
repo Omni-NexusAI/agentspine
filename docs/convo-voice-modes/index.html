@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Convo voice agent modes — mockups</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="mock-page">
+<header>
+  <nav class="mock-nav" aria-label="Mockups">
+    <a href="index.html" aria-current="page">Overview</a><a href="1-hybrid.html">1 · Hybrid (today)</a><a href="2-auto.html">2 · Auto</a><a href="3-native.html">3 · Native</a><a href="4-tuned.html">4 · Tuned</a><a href="5-unavailable.html">5 · Unavailable</a><a href="6-unknown-model.html">6 · Unknown model and research</a><a href="7-narrow-and-elsewhere.html">7 · Narrow canvas and elsewhere</a>
+  </nav>
+  <h1>Convo voice agent modes: UI mockups</h1>
+  <p>Static mockups for <code>plugins/_convo/VOICE_AGENT_MODES.md</code>. <strong>Design only</strong>: nothing here is wired to Convo or deploys with the plugin. Every page shows Agent Zero’s dark and light themes side by side and uses the plugin’s real classes and host tokens where practical. Model names, dates and results are <strong>examples</strong>, not test results.</p>
+  <p>Open the pages from a checkout (a browser, no server needed), or see the screenshots in <code>screens/</code>.</p>
+</header>
+
+<template data-screen data-title="Overview" data-where="What a person sees">
+  <section class="mock-notes">
+    <h2>The idea in one picture</h2>
+    <p>One new card, <strong>Voice agent mode</strong>, is the first thing in Settings → Connections. It holds four choices, Auto, Hybrid, Native and Tuned, each with one plain sentence. Under them, <strong>Who does what</strong> answers the same four questions for whichever mode is in effect:</p>
+    <dl class="convo-mode-flow">
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>Hears you</dt><dd>Hybrid: the conversation model, each finished sentence. Native: the model, continuously. Tuned: live transcription.</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-decide"/></svg>Decides when to answer</dt><dd>Hybrid: the classifier. Native: the model itself. Tuned: the tuned model, every tick.</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>Speaks</dt><dd>Hybrid: your speech output, or the model’s own voice once supported. Native: the model’s own voice. Tuned: your speech output.</dd></div>
+      <div><dt><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Approves actions</dt><dd>Every mode: the classifier, only on a clear request (0.9 or more), unless delegated work is turned off.</dd></div>
+    </dl>
+    <p>The cards below the mode card then show one of four states: <span class="convo-mode-tag">normal</span> <span class="convo-mode-tag" data-state="required">Required</span> <span class="convo-mode-tag" data-state="limited">Limited role</span> <span class="convo-mode-tag" data-state="unused">Not used (kept)</span>.</p>
+
+    <h2>Which card does what in each mode</h2>
+    <table class="mock-table">
+      <thead><tr><th scope="col">Card or setting</th><th scope="col">Hybrid (today)</th><th scope="col">Native</th><th scope="col">Tuned</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Conversation model</th><td>Required, as today</td><td>Required; must pass “Check realtime connection”; audio input locked on</td><td>Required: the fine-tuned model</td></tr>
+        <tr><th scope="row">Classifier</th><td>Required: decides every turn</td><td>Limited: approves delegated work only (or not needed when delegated work is off)</td><td>Limited: approves delegated work only</td></tr>
+        <tr><th scope="row">Speech output</th><td>Required (or the model’s own voice, build step 5)</td><td>Not used (kept); optional instead of the model’s voice</td><td>Required</td></tr>
+        <tr><th scope="row">Speech input (new card)</th><td>Not shown</td><td>Not shown</td><td>Required</td></tr>
+        <tr><th scope="row">Harness (in the mode card)</th><td>Not shown</td><td>Not shown</td><td>Required</td></tr>
+        <tr><th scope="row">Echo protection</th><td>As today</td><td>As today; Strict warns that it blocks interruptions</td><td>As today</td></tr>
+        <tr><th scope="row">Ambient and name listening</th><td>As today</td><td>Not in the first Native version</td><td>Not in the first Tuned version</td></tr>
+        <tr><th scope="row">Diagnostics → Tune: speech gate, turn engine</th><td>Apply</td><td>“Applies in Hybrid only” (kept, editable)</td><td>Harness floors shown instead; Convo’s gate “Applies in Hybrid only”</td></tr>
+      </tbody>
+    </table>
+
+    <h2>How Convo knows something about a model</h2>
+    <p>Each claim about a model carries its own label, so a checked fact and a vendor claim are never merged:</p>
+    <ul>
+      <li><span class="convo-mode-evidence" data-kind="checked"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Checked here</span> a check you ran on this machine passed (date shown). It proves the route, not the quality.</li>
+      <li><span class="convo-mode-evidence" data-kind="tested"><svg class="icon" aria-hidden="true"><use href="#i-verified"/></svg>Tested by Convo</span> the maintainers ran it live and recorded the result.</li>
+      <li><span class="convo-mode-evidence" data-kind="user"><svg class="icon" aria-hidden="true"><use href="#i-person"/></svg>You said</span> you declared or confirmed it. Used, but not verified.</li>
+      <li><span class="convo-mode-evidence" data-kind="vendor"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Vendor says</span> the model’s own documentation (source and date shown). Not verified.</li>
+      <li><span class="convo-mode-evidence" data-kind="agent"><svg class="icon" aria-hidden="true"><use href="#i-draft"/></svg>Draft, not used</span> Agent Zero drafted it from web pages. Ignored until you confirm it.</li>
+    </ul>
+    <p>Rule: <strong>claims choose, checks allow.</strong> A claim can make Auto prefer a mode; only a passing check on this machine lets Auto pick it.</p>
+
+    <h2>Pages</h2>
+    <ol>
+      <li><a href="1-hybrid.html">Hybrid chosen</a>: what a person sees first; Native and Tuned “Not in this version”.</li>
+      <li><a href="2-auto.html">Auto</a>: what it picked and why, the override, and what happens when its pick changes.</li>
+      <li><a href="3-native.html">Native</a>: folded cards, the privacy note, delegated work and voice choices.</li>
+      <li><a href="4-tuned.html">Tuned</a>: harness, live speech input, a missing requirement.</li>
+      <li><a href="5-unavailable.html">Unavailable</a>: not in this version, not with this model, and the start refusal.</li>
+      <li><a href="6-unknown-model.html">Unknown model</a>: “Research this model” and the draft review.</li>
+      <li><a href="7-narrow-and-elsewhere.html">Narrow canvas and elsewhere</a>: phone width, panel chip, preset editor, diagnostics.</li>
+    </ol>
+  </section>
+</template>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

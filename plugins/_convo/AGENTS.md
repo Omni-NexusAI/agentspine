@@ -5,7 +5,7 @@
 - Built-in, plugin-owned successor to Enhanced Speech. Do not modify Agent Zero core.
 - Existing speech services, standalone worktrees, user profiles and settings are not deployment or lifecycle targets.
 - Default to local endpoints, explicit activation and no ambient retention. Never fall back to another provider.
-- Voice agent modes (Tuned harness, Native duplex, Hybrid, Auto) are a design only, in `VOICE_AGENT_MODES.md`; today's runtime is the Hybrid foundation. Do not describe the other modes as available.
+- Voice agent modes (Auto, Hybrid, Native, Tuned; setting `voice_agent.mode`, distinct from the listening mode active/ambient/name) are a design only, in `VOICE_AGENT_MODES.md`, with static UI mockups in the repository's `docs/convo-voice-modes/` (outside this plugin, never deployed). Today's runtime is the Hybrid foundation. Do not describe the other modes as available, and build each step only with its own approval.
 - `helpers/convo_system_one.py` is the optional generic decision consumer;
   `convo.system_one` is default-off and names an explicitly registered backend.
   Host-runtime-owned registrations survive exact namespace refresh without
