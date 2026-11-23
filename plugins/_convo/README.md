@@ -1,107 +1,125 @@
 # Convo
 
-Convo adds a local-first voice conversation alongside Agent Zero's text chat. It is a built-in successor to Enhanced Speech, retaining native dictation while connecting a conversational model to background agent work.
+Convo is a voice-conversation plugin for Agent Zero. You speak, the conversation model hears your own audio, and the answer is spoken back in the voice you chose; longer work is handed to the selected Agent Zero chat. It is a plugin-owned successor to Enhanced Speech, keeps the host's dictation, and does not modify Agent Zero's core.
 
-**Development status:** implementation in progress. A local Agent Zero v2.11 installation has passed gateway activation/recovery checks; full voice use is not certified. Existing model services and the standalone pipeline remain unchanged. See [local installation checks](INSTALLATION_TEST_RESULTS.md).
+**Status:** in development. It is used daily on a test host and is not a stable release yet. The automated tests cover the code paths described here; they do not replace listening tests with a real microphone, real models and a real room. [ACCEPTANCE.md](ACCEPTANCE.md) lists what must hold before a stable release.
 
-The plugin-local testing and same-build recovery phase is complete; see [local validation results](LOCAL_TEST_RESULTS.md). This closes the offline test scope, not the full functional-release plan below.
+The companion plugin `plugins/convo_d1_decider` is a development-only backend that connects a decision model to Convo's classifier.
 
-## Implemented source checkpoint
+## How it works
 
-The October recovery pass adds semantic overlap decisions, an optional generic
-System One text/image/audio consumer, native weighted-speech compatibility, and
-experimental framed PCM playback. See [System One provisioning](SYSTEM_ONE.md).
-These additions are tested with synthetic providers; actual model and listening
-acceptance remain required.
+**Listening**
 
-- Capability-based configuration, authenticated host WebSocket and authenticated model sidecar. No browser-selected service URLs, provider fallback or bundled weights.
-- Separate conversation/classifier/TTS roles, direct WAV input and Whisper text compatibility; buffered speech from an explicit compatible API, response-scoped native Kokoro on newer hosts, or managed audio.cpp Base cloning.
-- Application-level speech/action gates, silence on uncertainty, one clarification per ambiguity episode with a 60-second cooldown, cancellation epochs and bounded input/output queues. No speculative model concurrency is enabled.
-- SQLite event journal, full visible history, heard-versus-generated speech, delayed transcript reconciliation, explicit chat retargeting, and immutable-prefix background compaction through the host utility model.
-- Persistent background jobs with submit/inspect/cancel/explicit-steer semantics, busy-target queueing, uncertain-outcome recovery and target-linked completion notices. Voice shutdown leaves jobs intact.
-- Native composer orb, click/hold dictation, accessible dictation control, focused-app shortcut, sidebar extension and fallback panel.
-- Cached voice-persona extraction at session start/retarget, constrained style overlay, bounded direct web search and already-loaded scoped memory retrieval.
-- Headless audio.cpp packaging with a private authenticated control surface, persistent models/profiles and explicit load/unload. Native Studio provides clone creation, preview, tuning interchange and download inspection/approval/progress/pause/resume for two Base presets.
-- Reversible, idempotent legacy JSON migration; old built-in import paths remain compatibility shims. Native voice/blending settings remain authoritative and general Convo saves do not overwrite them.
+- The browser finds where an utterance begins and ends and uploads the completed utterance as 16 kHz mono audio. A conversation model that accepts audio input hears it directly (voice, tone, pace); a text-only model gets Whisper's transcript instead.
+- Input is completed turns only. Nothing is streamed into the model while you speak, and Convo does not claim duplex operation.
 
-These are implemented code paths, **not a certification that they work together on either deployed host**. See [ACCEPTANCE.md](ACCEPTANCE.md) for outstanding release gates.
+**Deciding whether and when to answer**
 
-## Automatic gateway startup (Linux hosts)
+- A separate classifier reads short probes while you speak and then the finished utterance. It runs beside the conversation model, never in place of it, and there is no fallback to another classifier.
+- In a conversation you started, a finished turn is presumed to be meant for the assistant and is answered, unless the classifier is confident it was not: a short acknowledgement, or talk to someone else. Ambient and name listening use stricter thresholds.
+- The conversation model may still decline a turn: `[SILENT]` (noise, speech meant for someone else, a request not to respond) or `[WAIT]` (an unfinished thought). A declined turn is not spoken, shown or stored as a reply. What you say next within `continuation_seconds` joins an unfinished thought and is answered as one.
+- A finished turn the classifier could not judge (slow, busy or failing) is asked once more. In a conversation you started it is then answered without the classifier's reading, and you are told once.
+- Behaviour comes from meaning, never from particular words: no code path matches a phrase or a word list, in any language.
 
-Convo can own its gateway process inside the existing host container. This avoids a separate launch script on each use or a full image rebuild. It does not start the conversation, classifier or TTS model servers. The separately packaged audio.cpp Studio service remains a separate setup requirement.
+**Speaking over a reply**
 
-After explicitly approving dependencies, the installer can run `python plugins/_convo/setup_runtime.py --approve-dependencies` once from the host root. It installs only the declared web-runtime requirements into `usr/plugins/_convo/data/runtime-env`, not the framework Python environment. No weights are downloaded. Then enable **Automatically run Convo's local gateway** in settings. External deployments retain their existing behavior by default.
+- Detected speech only lowers the playback volume. The classifier then reads it: a request, a question or a stop ends the reply with a short fade; an acknowledgement or side talk lets it go on.
+- Independently, your confirmed voice over the reply for `barge_in_seconds` ends it whatever the classifier says. Stop releases the microphone at once.
+- The history keeps what you actually heard of an interrupted reply and marks it interrupted.
 
-Native plugin ON and host startup launch the configured gateway. OFF, update and uninstall stop only the owned process; parent-process death also stops it. Credentials are ephemeral and stay server-side; the inherited listener is loopback-only. The sidebar reports gateway state. Missing dependencies or failed health checks block requests rather than selecting another service. Histories, configuration and delegated jobs survive shutdown.
+**Speaking**
 
-## External gateway development setup
+- A reply is spoken phrase by phrase through the speech provider: the first full sentences early, the rest in as few requests as possible, in order, with one voice, one seed and one language for the whole reply.
+- Markdown, reasoning, tool markup and the hidden header lines are never spoken. A model that writes a tool call as plain text has that markup removed and read as a tool proposal.
+- A buffered WAV per phrase is the default. Incremental PCM playback is an opt-in, experimental path for a speech server that provides it.
 
-1. Review the plugin and legacy shims together using an existing compatible host image and plugin-only bind mounts. Ordinary plugin source tests do not require a host rebuild. Do not overlay the shims without `_convo`. Keep existing host/plugin config and toggle backups. Use the migration preview before applying; rollback refuses to overwrite newer edits.
-2. Select the existing host Docker network through `CONVO_HOST_NETWORK`. Configure a fresh `CONVO_SIDECAR_TOKEN` in both the host and Convo runtime environments. Credentials are environment references, not browser settings values.
-3. Review `sidecar/compose.yaml` before any deployment. Its default service is the model adapter on private port 8090; the separate `managed-audio` profile adds Convo-owned audio.cpp with fresh `convo-models` and `convo-voices` volumes. That profile requires a separate fresh `CONVO_AUDIO_TOKEN`, shared by runtime and audio service. No existing speech volume or service is mounted or managed. Starting the supervisor does not load models.
-4. For managed audio, set the appropriate CUDA architecture at build time. Use native Studio to inspect the source/revision/license/size, approve a download, explicitly load a model, and create a clone profile from an authorized reference WAV plus exact transcript. Downloads verify every file before directory registration; cancellation preserves partials and failed checksums are quarantined. Storage reserve is enforced. No automatic re-download or overwrite of an installed model.
-5. Configure explicit conversation and classifier URLs/model IDs. Audio input does **not** imply incremental input or duplex. Prefer an audio-capable classifier for local ambient mode; text-only compatibility is available in active mode through native Whisper. Whisper itself must be prepared through the host's controls. Remote ambient processing requires its own opt-in.
-6. Choose `managed_audio` and the exact loaded model/clone IDs, or an explicit external speech endpoint/voice, or supported local native Kokoro. Preview native Kokoro voices first so both pipeline and embeddings are already cached; Convo refuses to load/download them implicitly. Managed Base capabilities are fixed to the adapter contract; unsupported instruction/voice-design controls are not inferred from family names. The [Qwen variant table](https://github.com/QwenLM/Qwen3-TTS#released-models-description-and-download) distinguishes Base cloning from other variants.
-7. Enable the plugin and its composer control, then select a chat before starting. The microphone is acquired only after the authenticated sidecar handshake and persona setup. Click toggles Convo; holding for 450 ms enters native dictation. Changing the selected text chat alone does not silently retarget voice—use **Use selected chat**.
+**History and memory**
 
-Model selection applies at the next session. Speech configuration is frozen per response; managed audio additionally freezes clone material, content revision/hash, engine epoch and supervisor instance. Native Kokoro freezes its response config. Generic external APIs must provide their own stable voice-selection semantics; mutable external clone-profile freezing is not yet certified.
+- An audio turn asks the model to begin with hidden `USER:` and `LANGUAGE:` lines. The first is stored as the turn's words: the history is the model's own report of what it heard.
+- With transcripts turned on, Whisper runs afterwards in Convo's own worker process. Its text is kept beside the model's line and becomes the record only when the model reported nothing or the two disagree strongly. A declined turn keeps no Whisper text, so noise never becomes "speech" in the history.
+- There is no turn limit. In quiet moments older turns are summarised into chapters, with short standing notes (your name, the language you asked for, lasting preferences). Speech stops that work and it resumes later; it never delays, cancels or refuses a turn. A request that still does not fit leaves its oldest turns out of that one request.
+- The full event journal (SQLite, under `usr/plugins/_convo/data`) is kept apart from what the model sees. Once anything is summarised the model can search it with `recall_conversation`.
 
-Runtime data lives under `usr/plugins/_convo/data`; model/profile data lives in the separate managed volumes. Disabling Convo or stopping voice does not delete either or cancel background work. Existing source checkouts, FasterQwen, Groxaxo and external model servers remain untouched.
+**Tools and delegation**
 
-## Isolated tests and same-build recovery
+- Direct, read-only tools: `web_search`, `memory_read`, `recall_conversation` and `camera_context`. One read-only call per reply; every use is journaled and shown in the panel, and a result reaches the model labelled as untrusted data.
+- Web search uses Agent Zero's own search service through a ladder: the ordinary request first; when it returns nothing, the news category and up to four further engines the service has loaded. At most three requests and eight seconds per search. Engines refusing the request is reported as a failed search, which is different from a search that worked and found nothing.
+- The camera is offered only while "Share camera" is on and the model has been measured to accept images. One frame is taken when the model asks, and it is never stored.
+- `delegate_task` queues longer work for the selected Agent Zero chat after a short hold, so an immediate correction can replace it. The confirmation says "queued", never "done". Jobs keep the chat they were submitted for and continue when the voice session ends; "Spoken task updates" sets how much is said about them.
+- A task Convo cannot tie to your own request is not started, and the refusal is said and shown, never silent.
 
-Run `tests/in-image.ps1` from PowerShell with `-SourceContainer agentspine-standard-v9.9` or `-SourceContainer agent-zero-v2.11`. The existing host is only inspected, never started or modified. The runner uses its already-installed image with read-only mounts for Convo, legacy shims and the independent developer **Plugin Doctor**. User data is empty temporary storage. No dependency install, model download, GPU, external network, host port or Docker socket is used. Sidecar/FastAPI tests remain in the separate local test environment.
+**Echo protection and the Sound panel**
 
-Scratch is capped at **400 MiB** (tmpfs; may use swap), logs at **1 MiB**. September 8 image checks used **32–36 KiB** of writable layer each, excluding Docker metadata/logs and shared image layers. Keep **1 GiB** free for this bounded path; this is an operational allowance, not a CUDA/model build estimate. The default is the existing Doctor fixture, automatically reused after identity/isolation validation. Do not make a new container per probe. A different fixture requires a distinct isolation need. No cleanup is automatic.
+- `echo_guard` is adaptive (default), strict or off. The guard compares the microphone with the exact playback output and releases only original microphone samples once independent speech is confirmed; echo and ambiguous audio are withheld.
+- The Sound panel has the noise gate with a level meter, Measure room, Interrupt after, End of turn, echo protection, the output device with a test sound, microphone processing and, on phones, the audio mode. Values are kept per device in the browser; saved settings are only the defaults.
 
-### AI Link development mode
+**Also**
 
-Keep Convo ON and Enhanced Speech OFF. In **Advanced**, enable **AI Link
-development mode** after ending browser voice. This keeps native speech hooks and
-weighted Kokoro/Whisper settings available while browser Convo stays idle; AI Link
-uses its unchanged protocol, endpoints and native audio path. Leaving this mode
-does not resume microphone capture. Native dictation remains an explicit control.
+- One voice conversation at a time, owned by one page. Another device is refused with the owner named unless it takes over; a dropped connection can re-attach for 20 seconds.
+- The assistant speaks as the selected chat's agent profile, or a pinned one. The persona is extracted in the background and never blocks a turn.
+- The orb on the composer: a tap toggles Convo, a longer hold starts the host's hands-free dictation, a still longer hold is push-to-talk. One microphone capture at a time.
+- Developer mode adds a diagnostics panel: content-free timing marks per turn, the classifier's probabilities, "What the model saw / wrote" for the last ten turns, the memory view, test clips, "Record raw and sent" and "Save for replay".
 
-### Experimental incremental speech
+## Setup
 
-**Voice & Audio → Experimental incremental PCM playback** is opt-in, not the
-stable default. (With the Qwen3 audio.cpp voice it is the fastest path measured: first audio
-bytes about 2.1 s after the request against 2.8-4.6 s for a buffered WAV; the owner of this
-installation runs it with that voice.) The provider must explicitly describe PCM16 mono audio headers.
-The gateway independently drains and tracks each request; the host validates its
-framed sequence, byte count and checksum. The browser uses the existing audio
-context, and only a complete played phrase is acknowledged. No WAV/headerless
-fallback or inference capability is guessed from a model name. Combined-load,
-sustained playback and listening acceptance remain open.
+Enable the plugin in Agent Zero's plugin manager and turn on "Enable Convo composer control" in Convo's settings. Convo's own runtime (the gateway that calls your models during a conversation) starts with Agent Zero whenever Convo is on and needs nothing installed. Running a gateway yourself is an advanced choice on the "Convo runtime" card; `sidecar/` holds its development packaging.
 
-An uncertain speech or Studio request remains recorded across OFF/restart.
-Do not clear its admission record based on a healthy gateway alone. Independently
-verify provider idleness before explicit operator reconciliation; no automatic
-reset is available.
+Convo needs three connections. All three are cards on the Connections tab of Convo's settings (the gear in the Convo panel, or the plugin's Config). Nothing is contacted until you press Test connection, Check server or Find models & voices.
 
-Reuse refuses altered commands, writable/unexpected mounts, device/GPU access, exposed ports, weakened isolation, missing resource/log limits, unbounded scratch or missing offline flags. Run `tests/image-policy.test.ps1` in PowerShell to check that guard without Docker.
+1. **Conversation model.** An OpenAI-compatible chat-completions address such as `http://<host>:<port>/v1`, served by a local server or by a cloud provider. For direct audio choose a model that accepts audio input; "Test audio input" checks it with a short synthetic clip. Test connection also measures whether the model calls tools natively and whether it accepts images. The same setting appears as a model type in Agent Zero's preset editor.
+2. **Classifier.** One of: a decision model (it returns a probability for every kind of speech; served by a local decision server and connected through `convo_d1_decider`), System One's decider (see [SYSTEM_ONE.md](SYSTEM_ONE.md)), or an OpenAI-compatible chat model. Only a decision model gives the measured speech gate; a chat classifier keeps fixed thresholds and readiness says so. In an audio conversation the classifier must accept audio; one that cannot is refused at start.
+3. **Speech output.** Kokoro (already loaded in Agent Zero, with its voices cached), an audio.cpp server you run, llama.cpp, Unsloth Studio, OpenAI, or any OpenAI-compatible speech endpoint such as `http://<host>:<port>/v1`. Audio.cpp managed by Convo, with Voice Studio for clone profiles, is optional and needs separate, explicitly approved setup; see `sidecar/AGENTS.md`.
 
-Disable Convo through the native plugin manager to invalidate voice sessions, cancel/detach voice and compaction, restore owned Python hooks, and pause new job dispatch. Existing authorized host jobs continue and remain tracked; histories/settings/profiles stay intact. Convo's disable/status-loss handlers release microphone/playback, and the native frontend refresh removes UI extensions; reload the page if old frontend modules remain cached. Use Plugin Doctor while OFF, apply the fix, refresh and rerun tests, then explicitly re-enable. A stale singleton or wedged shared host process may still require an approved **same-image process restart**. Disabling is not an undo for external actions.
+Addresses on this machine and on your own network (LAN, Tailscale) are used as they are. Any other address needs that connection's remote consent and HTTPS. Keys are stored by the host, bound to the address they were entered for, and never returned to the browser. The speech gate thresholds were measured for one decision model on synthetic speech: measure them again (`tests/calibrate_gate.py`) for another model or for real voices.
 
-## Verification
+## Tests
 
-From the host repository root:
+Python, from the repository root:
 
 ```sh
-python -m unittest discover -s plugins/_convo/tests -v
-python -m unittest discover -s usr/plugins/plugin_doctor/tests -v
-node --test plugins/_convo/tests/audio.test.mjs
-node --experimental-vm-modules --test plugins/_convo/tests/ui.test.mjs
+python -m unittest discover -s plugins/_convo/tests -p "test_*.py"
+python -m unittest plugins.convo_d1_decider.tests.test_provisioner
 ```
 
-The offline suites cover a 200-turn journal/compaction simulation, retarget races, cancellation/detachment, download checksums, native-setting preservation, headless gateway auth and disable/re-enable recovery. The image runner additionally exercises actual HTTP auth/CSRF routing, WebSocket security admission, host loader/toggle functions and Plugin Doctor against a deliberately broken OFF fixture, without importing that fixture. These checks do not measure first-audible latency, acoustic judgment or GPU capacity. The reused supervisor emits FastAPI lifecycle deprecation warnings; its wrapper owns startup/shutdown explicitly. See the dated results for other observed warnings.
+Node, from `plugins`:
 
-## Still incomplete / not release-ready
+```sh
+node --experimental-vm-modules --test _convo/tests/*.test.mjs
+```
 
-- Full deployed host integrations, sidecar image builds, real browser/microphone cutover, updater compatibility and live recovery rehearsal. Offline same-process loader/disable recovery has passed in both installed host images; this is not live microphone acceptance.
-- Adaptive coupled-echo protection from standalone, measured semantic endpointing, classifier selection/quality corpus, classifier/main-model combined scheduling and performance instrumentation. Current capture uses browser AEC plus a bounded energy VAD; current inference classifies before answering and does not run speculative drafts.
-- Native camera-context adapter, mid-session persona invalidation, optional compaction-model override, true incremental model input, and duplex/omni adapters remain incomplete. Experimental native PCM output and the optional completed-observation System One media adapter are implemented, not live-certified.
-- Native Studio profile editing/deletion and full form-based tuning parity, conversation/classifier download presets, and live metadata/download verification. The current download catalog covers audio.cpp Base TTS only.
-- Combined-load benchmarks, sustained playback, ambient privacy/network observation and user listening acceptance. Ambient mode must not be treated as unattended-ready.
+- The tests use temporary directories and scripted providers. They touch no installed settings, model or service.
+- The gateway route tests need `httpx` and Starlette in the interpreter. Tests for optional parts (Gradio, FastAPI, Flask, throwaway certificates) skip when their package is missing.
+- The System One tests (`test_system_one_consumer.py`, `test_classifier_acceptance.py`, `test_decider_reference.py`) skip unless they find System One's SDK: set `CONVO_SYSTEM_ONE_TEST_SDK` to a folder that holds its `media_decision.py` and `SYSTEM_ONE_TEST_CORE` to one that holds its `decision.py`. A System One core checkout holds both, so both can point at it.
+- `tests/update-persistent.ps1` copies the plugin's source into an installed Agent Zero host. It previews by default and copies only with `-Apply`; Convo must be switched off first (`-WebOnly` allows browser files while it is on). It never touches settings, `data/` or toggles, backs up every file it replaces, and restores with `-Rollback -BackupStamp`. `-Plugin convo_d1_decider` deploys the companion plugin. Its targets are fixed to the maintainer's hosts; change them before using it elsewhere.
+- `tests/live-*.mjs` check the real interface on an isolated loopback test host with a throwaway headless browser, for example `node tests/live-ui-smoke.mjs http://127.0.0.1:<port>/`. They refuse any other address, start no voice session, and put back any setting they change. They are not part of the Node run above; run them after deploying to a test host.
 
-Implementation is developed on a dedicated feature branch against Agent Spine development. The user-approved development installation is restored in persistent storage on the retained Agent Zero host; see [the October checkpoint](RECOVERY_BACKEND_RESULTS_20261014.md). This is not release acceptance or a merge/publish authorization. No model download/load or protected external-service lifecycle change is implied.
+## Privacy and limits
+
+- Local first. Defaults point at local addresses and nothing is activated without an explicit choice.
+- No automatic fallback. When a model, classifier or speech provider fails, Convo reports it; it never switches to another provider.
+- A remote address needs consent for that connection and HTTPS. Ambient listening with a remote classifier needs its own consent.
+- Conversation audio is held in memory only and never written to disk. The exceptions are developer mode's "Record raw and sent", test clips and "Save for replay", each only when you press it, each listed and deletable.
+- A camera picture goes to the model for one reply and is never stored or journaled.
+- Timing marks hold names and numbers, never audio, words or credentials.
+- Summaries are written by the conversation model. Agent Zero's utility model writes them only when it runs on your own machine or network, or with your consent.
+- Enabling the plugin installs nothing and starts or downloads no model. Whisper is used only from a model file that is already complete on disk. At the start of a conversation, a router that loads models on demand is asked to load the configured ones, and the page says what it is waiting for.
+- Turning the plugin off ends voice sessions and releases the microphone. Histories and settings stay, and work already handed to a chat continues.
+
+## Not done yet
+
+- Listening acceptance with a real microphone, real models and a real room, and the measurements in [ACCEPTANCE.md](ACCEPTANCE.md).
+- Voice agent modes (tuned harness, native duplex, auto) are a design only: [VOICE_AGENT_MODES.md](VOICE_AGENT_MODES.md). Today's runtime is the hybrid foundation it describes.
+- Conversations that span chats or a project are designed, not built: [GLOBAL_CONVERSATION.md](GLOBAL_CONVERSATION.md).
+- Incremental or duplex audio input. The model receives completed turns.
+- Interruption: the thresholds are starting points not yet measured on real overlapped speech, an interruption shorter than about half a second of voice is not detected, and there is no undo for a reply that was cut.
+- The speech gate is fitted to one decision model. The decision plugin is development-only and still carries that model's address default, question set and thresholds; these are to become per-model profiles.
+- Not proved live: cache reuse and slot pinning on a real llama.cpp server during memory upkeep, Whisper load times in the worker, and incremental PCM playback under combined load.
+- Voice Studio: an operation whose outcome is uncertain blocks further Studio writes and a voice start, and there is no reset yet.
+- Open observations: a repeated acknowledgement is sometimes answered twice, and background noise is sometimes answered.
+
+## Design notes and attribution
+
+- [AGENTS.md](AGENTS.md) is the binding contract for this plugin; `webui/AGENTS.md` and `sidecar/AGENTS.md` cover the interface and the gateway.
+- [SYSTEM_ONE.md](SYSTEM_ONE.md), [VOICE_AGENT_MODES.md](VOICE_AGENT_MODES.md) and [GLOBAL_CONVERSATION.md](GLOBAL_CONVERSATION.md) are design notes.
+- The echo guard (`webui/echo-guard.js`), the continuation tracker (`helpers/convo_continuation.py`) and the phrase pacing (`helpers/convo_firstclause.py`) are adapted from the same owner's standalone speech-to-speech fork (Apache-2.0); each file's header names its source.
+- `sidecar/audiocpp/NOTICE.md` records the vendored speech runtime, the adapted Voice Studio and the audio.cpp engine revision; the Apache-2.0 text is in `sidecar/audiocpp/LICENSE.speech-to-speech`. No model weights or voice profiles are bundled, and model licences are shown before an explicit download.

@@ -19,5 +19,5 @@ The engine is built from https://github.com/0xShug0/audio.cpp at
 Model licenses are separate and shown before an explicit download.
 
 The reused supervisor's measured guard thresholds are admission safeguards,
-not performance claims about a user's hardware. Native incremental PCM stays
-disabled in this preview. This image has not yet been built or listening-tested.
+not performance claims about a user's hardware. Native incremental PCM is an
+opt-in, experimental path. This image has not been listening-tested.
