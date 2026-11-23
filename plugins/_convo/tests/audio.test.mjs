@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { AudioSession, DUCK, DuckController, MIN_VOICED_SECONDS, PRE_ROLL_SECONDS, SpeechBoundary, VOICED_RMS, feedBoundary, wavBase64 } from '../webui/audio.js';
+import { AudioSession, DUCK, DuckController, MIN_VOICED_SECONDS, PRE_ROLL_FADE_MS, PRE_ROLL_SECONDS, Resampler, SpeechBoundary, TurnEncoder, VOICED_RMS, feedBoundary, microphoneWarning, wavBase64 } from '../webui/audio.js';
+
+// The turn's first block is a copy of the original that rises from silence over PRE_ROLL_FADE_MS; the rest is identical.
+function fadedFrom(chunk, original, rate = 16000) {
+    const fade = Math.round(PRE_ROLL_FADE_MS / 1000 * rate);
+    if (chunk === original || chunk.length !== original.length) return false;
+    for (let i = 0; i < chunk.length; i++) if (Math.abs(chunk[i] - (i < fade ? original[i] * i / fade : original[i])) > 1e-6) return false;
+    return true;
+}
 
 test('WAV conversion preserves original sample duration', () => {
     const bytes = Buffer.from(wavBase64([new Float32Array(48000).fill(.25)], 48000), 'base64');
@@ -19,7 +27,7 @@ test('Admission requires 450ms and retains pre-admission original samples', () =
     assert.equal(starts, 0);
     boundary.push(speech); assert.equal(starts, 1);
     for (let n=0;n<10;n++) boundary.push(new Float32Array(1600));
-    assert.equal(turns.length, 1); assert.equal(turns[0][0], speech);
+    assert.equal(turns.length, 1); assert.ok(fadedFrom(turns[0][0], speech)); assert.equal(turns[0][1], speech);
 });
 
 test('Short noises and idle silence produce no uploads', () => {
@@ -51,7 +59,7 @@ test('Candidate probes use cumulative existing samples without becoming turns', 
     const chunk = new Float32Array(1600).fill(.1);
     for (let n=0;n<20;n++) boundary.push(chunk);
     assert.ok(probes.length >= 2); assert.equal(turns.length,0);
-    assert.equal(probes[0][0],chunk); assert.ok(probes[1].length > probes[0].length);
+    assert.ok(fadedFrom(probes[0][0],chunk)); assert.equal(probes[0][1],chunk); assert.equal(probes[1][0],probes[0][0]); assert.ok(probes[1].length > probes[0].length);
     for (let n=0;n<10;n++) boundary.push(new Float32Array(1600));
     assert.equal(turns.length,1);
 });
@@ -76,7 +84,7 @@ test('A block that ends exactly on the maximum cuts without carrying anything, a
     for (let n = 0; n < 10; n++) boundary.push(block);
     assert.equal(turns.length, 1);
     assert.equal(boundary.chunks.length, 0);
-    assert.equal(turns[0].length, 10); assert.equal(turns[0][0], block);  // whole blocks are kept by identity when no split is needed
+    assert.equal(turns[0].length, 10); assert.ok(fadedFrom(turns[0][0], block)); assert.equal(turns[0][1], block);  // whole blocks are kept by identity when no split is needed (the first is the faded copy)
     // A silent block that straddles the maximum while idle is dropped whole, as before.
     const idle = new SpeechBoundary({rate: 16000, maximum: 1, onStart: () => {}, onTurn: () => assert.fail('no turn')});
     idle.push(new Float32Array(40000)); assert.equal(idle.chunks.length, 0);
@@ -153,8 +161,10 @@ test('PCM rejects malformed metadata, reordered or mismatched chunks and incompl
 });
 
 test('PCM bounds queued duration and stops scheduled sources on overflow',()=>{
-    const f=pcmFixture();f.start();for(let n=0;n<30&&!f.errors.length;n++)f.chunk(n,Buffer.alloc(32768));
-    assert.equal(f.errors.length,1);assert.ok(f.sources.length<30);assert.ok(f.sources.every(s=>s.stopped));
+    // 32 KiB at 24 kHz is .68 s: 90 s ahead of playback is reached after about 132 chunks, never at 30 (the old 12 s bound).
+    const f=pcmFixture();f.start();for(let n=0;n<140&&!f.errors.length;n++)f.chunk(n,Buffer.alloc(32768));
+    assert.equal(f.errors.length,1);assert.ok(f.sources.length>120&&f.sources.length<140);assert.ok(f.sources.every(s=>s.stopped));
+    assert.match(f.errors[0],/fell more than 90 seconds behind[\s\S]*next phrase plays normally/);
     assert.deepEqual(f.events,[]);assert.equal(f.audio.pcmSources.size,0);
 });
 

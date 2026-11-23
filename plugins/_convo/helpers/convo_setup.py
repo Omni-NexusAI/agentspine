@@ -216,6 +216,9 @@ def read():
     from .convo_system_one import decider_rows
     from . import convo_classifier_catalog
     checks += _hook_rows(conversation_rows, config, 'conversation_provider', 'Conversation provider')
+    checks += _hook_rows(lambda saved: [measured_row(saved)], config, 'conversation_measured', 'Tools and images (measured)')
+    from .convo_summarizer import readiness_rows as summary_rows
+    checks += _hook_rows(summary_rows, config, 'summary_writer', 'Summaries')
     checks += _hook_rows(speech_rows, config, 'speech_provider', 'Speech provider')
     checks += _hook_rows(convo_classifier_catalog.readiness_rows, config, 'classifier_provider', 'Classifier provider')
     checks += _hook_rows(decider_rows, config, 'decider', 'Classifier')
@@ -461,6 +464,171 @@ def _options(value, fields):
     return result
 
 
+# ── Tool and image probe (Test connection on the Conversation card) ──────────────────────────────────────────────────────────
+# Measured, never assumed: at temperature 0, one tiny tool with the call forced (`tool_choice: "required"`), and one tiny test image.
+# The verdict is kept as a record in Convo's data folder (`convo_tools.MEASURED`), never in the settings' `capabilities` (an older
+# Convo rejects unknown capability keys, which would break a rollback). The declared "Supports tool calls" stays an override.
+PROBE_TIMEOUT = 60                   # seconds per request (a router may load the model first)
+PROBE_LIMIT = 256 * 1024
+PROBE_TOOL = {'type': 'function', 'function': {'name': 'get_time', 'description': 'The current time in a city.', 'parameters': {
+    'type': 'object', 'properties': {'city': {'type': 'string', 'description': 'The city.'}}, 'required': ['city'], 'additionalProperties': False}}}
+PROBE_TOOL_TEXT = 'What time is it in Tokyo right now? Use your tool.'
+PROBE_IMAGE_TEXT = 'What colour is this picture? Answer with one word.'
+TOOL_WORDS = {'native': 'calls tools natively', 'text': 'writes tool calls as text', 'ignored': 'ignores tools'}
+
+
+def _png(rgb, size=16):
+    """A tiny solid-colour PNG as a data URL (the image probe's picture), built here so nothing is read or downloaded."""
+    import base64
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    rows = b''.join(b'\x00' + bytes(rgb) * size for _ in range(size))
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+           + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+    return 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+
+
+PROBE_IMAGE = _png((220, 20, 20))
+
+
+async def _post(url, body, headers):
+    """One bounded POST for the probe: (status, parsed JSON or None). Raises on a transport failure."""
+    async with convo_net.client(httpx.Timeout(PROBE_TIMEOUT, connect=5)) as client:
+        async with client.stream('POST', url, json=body, headers=headers) as response:
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > PROBE_LIMIT:
+                    return response.status_code, None
+                chunks.append(chunk)
+    try:
+        return response.status_code, json.loads(b''.join(chunks))
+    except ValueError:
+        return response.status_code, None
+
+
+def _message(data):
+    try:
+        message = data['choices'][0]['message']
+        return message if isinstance(message, dict) else {}
+    except (KeyError, IndexError, TypeError):
+        return {}
+
+
+def _content(message):
+    content = message.get('content')
+    if isinstance(content, list):
+        content = ' '.join(str(part.get('text', '')) for part in content if isinstance(part, dict))
+    return str(content or '')
+
+
+def tool_verdict(status, data):
+    """'native' (a structured tool call came back), 'text' (the call was written in the answer, in a format Convo reads or naming
+    the tool), 'ignored' (neither), or None when the answer says nothing either way (another HTTP status)."""
+    from . import convo_tools
+    if status != 200:
+        return None
+    message = _message(data)
+    if isinstance(message.get('tool_calls'), list) and message['tool_calls']:
+        return 'native'
+    text = _content(message)
+    if convo_tools.parse_text_call(text) is not None or 'get_time' in text:
+        return 'text'
+    return 'ignored'
+
+
+def image_verdict(status, data):
+    """True when the model saw the picture (named its colour), False when the server refused it or the model did not see it, None
+    when the server could not be asked (anything but an answer or a refusal)."""
+    if status == 200:
+        return 'red' in _content(_message(data)).lower()
+    return False if status in (400, 413, 415, 422, 500, 501) else None
+
+
+def measured_text(record, declared=False):
+    """The probe's verdict in words, for the card and the readiness row."""
+    if not record or ('tool_mode' not in record and 'image_input' not in record):
+        return 'Not measured yet: Test connection checks whether this model calls tools and accepts images.'
+    parts = []
+    if record.get('tool_mode') in TOOL_WORDS:
+        words = TOOL_WORDS[record['tool_mode']]
+        parts.append(words[0].upper() + words[1:])
+    if 'image_input' in record:
+        parts.append('accepts images' if record['image_input'] is True else 'does not accept images (the camera tool is not offered)')
+    text = '; '.join(parts) + '.'
+    if declared and record.get('tool_mode') != 'native':
+        text += ' Native tools are on anyway, because “Supports tool calls” is declared.'
+    elif record.get('tool_mode') == 'text':
+        text += ' Convo describes the tools in its instructions and reads the written calls.'
+    return text
+
+
+def measured_row(config):
+    """The readiness row the Conversation card shows: the saved model's measured record. Reads one local file; contacts nothing."""
+    from . import convo_tools
+    role = config['roles']['conversation']
+    record = convo_tools.measured(store.config_path().parent / 'data', role)
+    declared = bool((role.get('capabilities') or {}).get('tool_calls'))
+    return {'id': 'conversation_measured', 'label': 'Tools and images (measured)', 'state': 'ready' if record else 'unverified',
+            'detail': measured_text(record, declared),
+            'measured': {key: record[key] for key in ('tool_mode', 'image_input', 'measured_at') if key in record}}
+
+
+def _keep_measured(role, found):
+    """Store the verdicts for this address and model in data/model_capabilities.json (what was not measured keeps its value)."""
+    from . import convo_tools
+    url, model = str(role.get('url') or '').rstrip('/'), role.get('model') or ''
+
+    def update(previous):
+        models = [item for item in (previous.get('models') or []) if isinstance(item, dict)]
+        kept = next((item for item in models if item.get('model') == model and str(item.get('url') or '').rstrip('/') == url), None)
+        record = {**(kept or {}), 'url': url, 'model': model, **found, 'measured_at': round(time.time(), 3)}
+        return {**previous, 'models': [record] + [item for item in models if item is not kept][:49]}
+    return store.transaction(store.config_path().parent / 'data' / convo_tools.MEASURED, update)
+
+
+async def probe_capabilities(role, url, headers):
+    """Two small requests to the conversation model (only from Test connection): does it call a forced tool natively, write the
+    call as text or ignore it; does it see a tiny test image. Keeps the verdict; never raises; no model text is echoed."""
+    from .convo_contract import local_host
+    from .convo_model_catalog import _voice_active
+    if _voice_active():
+        return {'state': 'skipped', 'message': 'Tools and images were not measured: end the Convo voice session first.'}
+    base = {'model': role.get('model') or '', 'temperature': 0, 'stream': False}
+    if local_host(urlsplit(url).hostname or ''):
+        base['chat_template_kwargs'] = {'enable_thinking': False}     # never sent to a cloud provider
+    found = {}
+    try:
+        body = {**base, 'max_tokens': 200, 'tools': [PROBE_TOOL], 'tool_choice': 'required', 'messages': [
+            {'role': 'system', 'content': 'This is an automatic tool check.'}, {'role': 'user', 'content': PROBE_TOOL_TEXT}]}
+        status, data = await _post(url + '/chat/completions', body, headers)
+        if status in (400, 422):
+            # Some servers refuse a forced choice but take tools: ask once more with the model choosing.
+            status, data = await _post(url + '/chat/completions', {**body, 'tool_choice': 'auto'}, headers)
+        verdict = tool_verdict(status, data)
+        if verdict is None and status in (400, 422):
+            verdict = 'ignored'                                        # the server refuses tools outright
+        if verdict:
+            found['tool_mode'] = verdict
+        body = {**base, 'max_tokens': 16, 'messages': [{'role': 'user', 'content': [
+            {'type': 'text', 'text': PROBE_IMAGE_TEXT}, {'type': 'image_url', 'image_url': {'url': PROBE_IMAGE}}]}]}
+        seen = image_verdict(*await _post(url + '/chat/completions', body, headers))
+        if seen is not None:
+            found['image_input'] = seen
+    except Exception:
+        pass
+    if not found:
+        return {'state': 'unavailable', 'message': 'Tools and images could not be measured (the model did not answer the check). Nothing was changed.'}
+    try:
+        _keep_measured(role, found)
+    except Exception:
+        return {'state': 'unverified', **found, 'message': measured_text(found) + ' (The result could not be kept.)'}
+    return {'state': 'ready', **found, 'message': measured_text(found, bool((role.get('capabilities') or {}).get('tool_calls')))}
+
+
 async def discover(name, provider=None, check=False, draft_key=None):
     if name not in ROLES:
         raise ValueError('Unknown model role')
@@ -499,6 +667,8 @@ async def discover(name, provider=None, check=False, draft_key=None):
             verification = {'state': 'ready' if found else 'unverified', 'message': 'Endpoint responded; selected model listed. Audio and duplex capabilities still require testing.' if found
                             else ('Endpoint responded; it lists “' + close + '”, not “' + model + '”: model names must match exactly.' if close
                                   else 'Endpoint responded; saved model is not listed. Its selection was preserved.')}
+            if check and name == 'conversation' and found:
+                result['capabilities'] = await probe_capabilities(role, url, headers)
         except (ValueError, httpx.HTTPError, KeyError) as error:
             failure = error
             verification = {'state': 'unavailable', 'message': _connection_problem(error, url) + '; no fallback was used.'}

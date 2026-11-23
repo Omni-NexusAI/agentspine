@@ -91,7 +91,7 @@ test('The audio output uses a ramp when the platform has one; closing cancels a 
 // ---- speech boundary: floor, admission threshold, pre-roll ---------------------------------------------------------------
 
 test('The admission threshold is a named constant (450 ms) and the voiced threshold a parameter of push', () => {
-    assert.equal(MIN_VOICED_SECONDS, .45); assert.equal(VOICED_RMS, .02); assert.equal(PRE_ROLL_SECONDS, 0);
+    assert.equal(MIN_VOICED_SECONDS, .45); assert.equal(VOICED_RMS, .02); assert.equal(PRE_ROLL_SECONDS, .4);   // measured on the corpus (the fork keeps 500 ms)
     const quiet = new Float32Array(1600).fill(.012);                       // rms .012: below the fixed threshold
     const fixed = new SpeechBoundary({ rate: 16000, onStart: () => assert.fail('never voiced'), onTurn: () => {} });
     for (let n = 0; n < 20; n++) fixed.push(quiet);
@@ -114,7 +114,10 @@ test('Pre-roll keeps the last blocks before the first voiced block, counts towar
     idle.forEach(block => boundary.push(block));
     assert.equal(boundary.chunks.length, 0);
     boundary.push(new Float32Array(1600).fill(.1));
-    assert.deepEqual(boundary.chunks.slice(0, 2), idle.slice(-2), 'the two most recent idle blocks (200 ms) lead the turn');
+    assert.deepEqual(boundary.chunks[1], idle.at(-1), 'the two most recent idle blocks (200 ms) lead the turn');
+    assert.ok(boundary.chunks[0].every((v, i) => Math.abs(v - idle.at(-2)[i] * Math.min(1, i / 128)) < 1e-9), 'the first one rises from silence over 8 ms');
+    assert.equal(boundary.preRolled, .2, 'the pre-roll is reported, never counted as speech');
+    assert.equal(boundary.speech, .1);
     for (let n = 0; n < 12; n++) boundary.push(new Float32Array(1600).fill(.1));
     assert.ok(probes[0].length >= 9 && probes[0].length <= 10, `first probe about .75 s after the onset: ${probes[0].length} blocks`);
     for (let n = 0; n < 10; n++) boundary.push(new Float32Array(1600));

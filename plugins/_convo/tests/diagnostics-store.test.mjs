@@ -54,6 +54,7 @@ async function setup({ developer = true, settings, seen = false, floating = fals
         timingReport: () => ({ turns: [{ turn: 'page-turn', marks: { onset: 10, speech_end: 600, final_sent: 900 } }], summary: {} }),
     };
     const taps = {};
+    const playback = { active: true, ducked: true, toggles: 2, playing: true, queued: 1, pcm: 0 };
     let cursor = 0;
     const api = async (_url, payload) => {
         calls.push(payload);
@@ -88,7 +89,7 @@ async function setup({ developer = true, settings, seen = false, floating = fals
     const bindings = {
         '/js/AlpineStore.js': { createStore: (name, state) => (stores[name] = state) },
         '/js/api.js': { callJsonApi: api, fetchApi: async () => ({ ok: true }) },
-        '/plugins/_convo/webui/convo-store.js': { store: convo, taps, install() {}, audioSnapshot: () => ({ active: true, ducked: true, toggles: 2, playing: true, queued: 1, pcm: 0 }) },
+        '/plugins/_convo/webui/convo-store.js': { store: convo, taps, install() {}, audioSnapshot: () => ({ ...playback }) },
         '/plugins/_convo/webui/floating-window.js': floatingWindow,
     };
     const globals = {
@@ -121,7 +122,7 @@ async function setup({ developer = true, settings, seen = false, floating = fals
     const rail = () => plain(canvas.railSurfaces.map(item => item.id));
     const metricsCalls = () => plain(calls.filter(call => call.action === 'metrics'));
     return { timers, convo, taps, calls, metricsCalls, toasts, storage, doc, canvas, surfaces, diagnostics, wrapper, settingsChanged, rail, windows, mounted, popout,
-             setCursor: value => { cursor = value; }, responses };
+             setCursor: value => { cursor = value; }, responses, playback };
 }
 
 test('developer mode off: no surface, nothing polled, and Open diagnostics says what to do', async () => {
@@ -297,11 +298,39 @@ test('where the canvas cannot dock it (phone width, or no chat yet), opening it 
 
 test('open sections are remembered per browser, and only known sections with true or false are read back', async () => {
     const f = await setup({ stored: { 'convo.diagnostics.sections': JSON.stringify({ live: false, turns: 'yes', evil: true }) } });
-    assert.deepEqual(plain(f.diagnostics.sections), { live: false, turns: true, gate: true, speculation: true, rolling: true, context: true, tune: false });
+    assert.deepEqual(plain(f.diagnostics.sections), { live: false, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false });
     f.diagnostics.toggle('tune');
     assert.equal(JSON.parse(f.storage.values.get('convo.diagnostics.sections')).tune, true);
     const broken = await setup({ stored: { 'convo.diagnostics.sections': '{not json' } });
     assert.equal(broken.diagnostics.sections.live, true);
+});
+
+test('the output tiles show the AudioContext state and device, and "Play test sound" says where the tone went or why it could not play', async () => {
+    const f = await setup();
+    await f.canvas.open(SURFACE); await f.wrapper();
+    assert.deepEqual([f.diagnostics.live.context, f.diagnostics.live.sink], ['', '']);           // the snapshot had none
+    Object.assign(f.playback, { context: 'suspended', sink: 'usb-headset' });
+    await f.diagnostics.pollNow();
+    assert.deepEqual([f.diagnostics.live.context, f.diagnostics.live.sink], ['suspended', 'usb-headset']);
+    f.convo.playTestSound = async () => ({ ok: true, path: 'conversation', state: 'running', sink: 'default' });
+    assert.equal(await f.diagnostics.testSound(), true);
+    assert.deepEqual([f.diagnostics.tone.ok, f.diagnostics.tone.busy], [true, false]);
+    assert.match(f.diagnostics.tone.text, /through the conversation’s own audio output, on the system default output device\. Heard nothing\?/);
+    f.convo.playTestSound = async () => ({ ok: true, path: 'temporary', state: 'running', sink: 'usb-headset' });
+    await f.diagnostics.testSound();
+    assert.match(f.diagnostics.tone.text, /a temporary audio output \(no voice session is running\), on output device usb-headset/);
+    f.convo.playTestSound = async () => ({ ok: false, message: 'The audio output is suspended; click again to resume it.' });
+    assert.equal(await f.diagnostics.testSound(), false);
+    assert.equal(f.diagnostics.tone.text, 'The audio output is suspended; click again to resume it.');
+    f.convo.playTestSound = async () => { throw new Error('no graph'); };
+    assert.equal(await f.diagnostics.testSound(), false);
+    assert.equal(f.diagnostics.tone.text, 'no graph');
+    const html = await (await import('node:fs/promises')).readFile(new URL('../webui/diagnostics.html', import.meta.url), 'utf8');
+    const markup = html.slice(0, html.indexOf('<style>'));
+    assert.match(markup, /<span class="convo-diag-k">Audio output<\/span>/);
+    assert.match(markup, /<span class="convo-diag-k">Output device<\/span>/);
+    assert.match(markup, /:disabled="\$store\.convoDiagnostics\.tone\?\.busy === true" @click="\$store\.convoDiagnostics\.testSound\(\)">[\s\S]*?Play test sound<\/button>/);
+    assert.match(markup, /<div class="convo-diag-tile convo-diag-meter" data-diag-level="output"><span class="convo-diag-k">Playback level<\/span>/);   // the output level, as before
 });
 
 test('seen on last time: registered before the settings arrive so a reload can restore it, then corrected by them', async () => {
@@ -313,4 +342,50 @@ test('seen on last time: registered before the settings arrive so a reload can r
     assert.deepEqual(unseen.rail(), ['convo']);
     await unseen.settingsChanged({ developer_mode: true });
     assert.deepEqual(unseen.rail(), ['convo', SURFACE]);
+});
+
+test('"What the model saw / wrote": read only when the section is open and the server says the turns changed; saved only on Save', async () => {
+    const turn = { turn: 't1', at: 1700000000, audio_s: 2.4, whisper: 'hi there', spoken: ['Hello.'], tools: [],
+                   passes: [{ kind: 'first', request: { system: 'rules', messages: [{ role: 'user', text: '[audio 2.4 s]' }], tools: ['web_search'], tool_mode: 'text', allow_tools: true, audio_s: 2.4 },
+                              raw: 'USER: hi\nLANGUAGE: English\nHello.', removed: { header: 'USER: hi\nLANGUAGE: English\n', markup: '', control: '' },
+                              filters: { user_line: 'hi', language: 'English' }, done: { finish_reason: 'stop', tool_calls: 0 }, after: 'Hello.', filtered: true }] };
+    const api = payload => (payload.action === 'inspect_turns' ? { ok: true, turns: [turn], revision: 7 }
+        : payload.action === 'metrics' ? { ok: true, now: 0, cursor: 0, turns: [], summary: {}, inspect_revision: 7 }
+        : payload.action === 'replay_save' ? { ok: true, id: '20261117-120000-abcdef01', saved: [{ id: '20261117-120000-abcdef01', audio_s: 2.4, passes: 1 }] }
+        : { ok: true, saved: [] });
+    const f = await setup({ responses: Array(60).fill(api) });
+    await f.diagnostics.pollNow();
+    assert.equal(f.calls.filter(call => call.action === 'inspect_turns').length, 0);              // section closed: not read
+    f.diagnostics.toggle('saw');
+    await f.diagnostics.pollNow(); await flush();
+    assert.equal(f.calls.filter(call => call.action === 'inspect_turns').length, 1);
+    await f.diagnostics.pollNow(); await flush();
+    assert.equal(f.calls.filter(call => call.action === 'inspect_turns').length, 1);              // same revision: not read again
+    const [shown] = plain(f.diagnostics.inspected);
+    assert.equal(shown.passes[0].label, 'First answer');
+    assert.match(shown.passes[0].saw, /TOOLS OFFERED: web_search \(described in the text\)/);
+    assert.match(shown.passes[0].saw, /AUDIO: 2\.4 s \(not shown\)/);
+    assert.deepEqual(shown.passes[0].removed.map(item => item.label), ['Hidden header lines']);
+    assert.equal(f.calls.filter(call => call.action === 'replay_save').length, 0);               // nothing written until the click
+    assert.ok(await f.diagnostics.replaySave('t1'));
+    assert.deepEqual(plain(f.calls.filter(call => call.action === 'replay_save')), [{ action: 'replay_save', turn: 't1' }]);
+    assert.equal(plain(f.diagnostics.replays).length, 1);
+    await f.diagnostics.replayDelete('20261117-120000-abcdef01');
+    assert.deepEqual(plain(f.diagnostics.replays), []);
+});
+
+test('the memory view asks for the conversation’s own chat, and says so when there is none', async () => {
+    const view = { ok: true, window: 24000, budget: { chapters_max: 3000, verbatim_high: 8400 }, chapters: [{ seq: 0, turns: 4, first: 'a', last: 'd', time: 1700000000, tokens: 120, chars: 300, stale: false, summary: 'S' }],
+                   chapters_tokens: 120, standing: 'Name: Sam.', standing_tokens: 5, verbatim_turns: 6, verbatim_tokens: 900, covered: 4, compactions: [{ at: 1700000001, ok: false, reason: 'stopped' }] };
+    const f = await setup({ responses: Array(60).fill(payload => (payload.action === 'memory_view' ? view : { ok: true, now: 0, cursor: 0, turns: [], summary: {} })) });
+    f.convo.target = '';
+    assert.equal(await f.diagnostics.loadMemory(), false);
+    assert.match(f.diagnostics.memoryNote, /Choose a chat first/);
+    f.convo.target = 'chat-1';
+    assert.equal(await f.diagnostics.loadMemory(), true);
+    assert.deepEqual(plain(f.calls.filter(call => call.action === 'memory_view')), [{ action: 'memory_view', target: 'chat-1' }]);
+    const memory = plain(f.diagnostics.memory);
+    assert.equal(memory.used, 1025);
+    assert.equal(memory.chapters[0].covers, 'a … d');
+    assert.match(memory.compactions[0].text, /deferred \(stopped\)/);
 });

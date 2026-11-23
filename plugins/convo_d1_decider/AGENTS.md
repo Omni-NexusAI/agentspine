@@ -12,6 +12,7 @@ Development-only provisioner. It registers a served `d1-omni`-style decision mod
 - `helpers/core/decision.py` and `media_decision.py` are copies of System One's canonical SDK files (`C:/a0-plugins/portable/system_1/core`, hashes pinned in `helpers/provisioner.py`); a changed file is refused. Re-pin only from System One's source, never by editing the copy.
 - A call to Convo's own decision classifier names its model (`"model"`, from `decider.model`) when one is set: a router serving several decision models (llama.cpp router mode) answers with that one. Without a name the body is unchanged, so the 9931 default works as before.
 - With Convo installed, calls follow Convo's connection rules (`helpers/convo_net.py` via `_net`/`_open`): loopback reaches this computer from inside Docker, and an https server on your network is accepted by its remembered certificate (remembered on first contact if Check server has not done so). Without Convo the address is used exactly as given.
+- Every live call is bounded by Convo's classifier deadline (`convo_system_one.CALL_SECONDS`, read per call through `call_seconds`; `DEFAULT_CALL_SECONDS` = 1.5 s when Convo does not say): urllib's socket bound covers connecting, sending and the wait for the answer. Convo never uses a later answer, and the SDK's worker lease keeps the backend busy until the call returns, so a longer bound only blocked the turns after a hung call (measured 2026-11-17: with the former fixed 20 s, a request that never finished connecting kept the classifier busy for over 10 s and the next question went unjudged). An explicit `timeout` (tests, other callers) still wins.
 - To generalize before shipping without the model (kept for development, on the user's word, 2026-11-08):
   - the `http://host.docker.internal:9931` default;
   - the single `d1_llama_cpp` kind and the plugin's d1 identity;
@@ -20,7 +21,7 @@ Development-only provisioner. It registers a served `d1-omni`-style decision mod
   - the gate floors fitted on d1-omni-600M.
 
   These should become per-model profiles.
-- Nothing is stored: no keys, no audio, no answers. Status shows counts, last latency, the last error class, and where the next call would go (`source`, `host`, `base_url`) or why it would be refused (`refused`, `refused_detail`); it never contacts the server.
+- Nothing is stored: no keys, no audio, no answers. Status shows counts, last latency, the last error class, the last failure (`last_failure`: where it stopped, `connect` = no connection or the request could not be sent, `answer` = no answer within the bound, `http` = an error status, `other`; how long it took; when; never its text), and where the next call would go (`source`, `host`, `base_url`) or why it would be refused (`refused`, `refused_detail`); it never contacts the server.
 
 ## Operation
 

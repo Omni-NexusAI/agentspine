@@ -9,7 +9,7 @@ import { createStore } from '/js/AlpineStore.js';
 import { callJsonApi } from '/js/api.js';
 import { store as convo, taps, audioSnapshot } from '/plugins/_convo/webui/convo-store.js';
 import { defaults } from '/plugins/_convo/webui/defaults.js';
-import { buildView, createModel, echoView, formatMs, ingest, probability, pushEcho } from '/plugins/_convo/webui/diagnostics-model.js';
+import { buildView, createModel, echoView, formatMs, ingest, inspectView, memoryView, probability, pushEcho } from '/plugins/_convo/webui/diagnostics-model.js';
 import { buildWindow, createFloatingWindow } from '/plugins/_convo/webui/floating-window.js';
 
 export const SURFACE = 'convo-diagnostics';
@@ -47,8 +47,65 @@ const sessionLive = () => !!(convo.active || convo.busy);
 const safe = (run, fallback) => { try { return run(); } catch { return fallback; } };
 
 export const store = createStore('convoDiagnostics', {
-    available: false, floating: false, dockedVisible: false, view: null, live: null, error: '', selectedTurn: '',
-    sections: { live: true, turns: true, gate: true, speculation: true, rolling: true, context: true, tune: false },
+    available: false, floating: false, dockedVisible: false, view: null, live: null, error: '', selectedTurn: '', tone: null,
+    sections: { live: true, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false },
+    lastRequest: null,                       // `metrics` last_request: what the conversation model was sent last (developer mode only)
+    clipLabel: 'request',                    // the label the test-clip recorder arms with
+    // "What the model saw / wrote" (`inspect_turns`, developer mode, memory only on the server): read again only when the server's
+    // `inspect_revision` changed and the section is open. Saved turns (`replay_*`) are written only on "Save for replay".
+    inspected: [], inspectRevision: -1, inspectNote: '', replays: [], openTurn: '',
+    memory: null, memoryNote: '',            // `memory_view` for the conversation's chat, read when the Memory section opens or on Refresh
+
+    // "What the model saw" as text: the system text, then each message by role; audio is shown as "[audio 2.3 s]", never played.
+    modelSawText() {
+        const request = this.lastRequest;
+        if (!request || typeof request !== 'object') return '';
+        const lines = [];
+        if (request.system) lines.push('SYSTEM:\n' + String(request.system));
+        for (const message of Array.isArray(request.messages) ? request.messages.slice(-60) : []) lines.push(String(message?.role || '?').toUpperCase() + ':\n' + String(message?.text ?? ''));
+        if (Number(request.audio_s) > 0) lines.push(`[audio ${Number(request.audio_s).toFixed(1)} s]`);
+        if (Array.isArray(request.tools) && request.tools.length) lines.push('TOOLS: ' + request.tools.map(tool => String(tool?.name ?? tool)).join(', '));
+        return lines.join('\n\n').slice(0, 200000);
+    },
+    modelSawWhen() { const at = Number(this.lastRequest?.at); return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toLocaleTimeString() : ''; },
+    wallTime(seconds) { const at = Number(seconds); return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toLocaleTimeString() : ''; },
+    openInspected(turn) { this.openTurn = this.openTurn === turn ? '' : turn; },
+    async loadInspected() {
+        try {
+            const result = await callJsonApi(endpoint, { action: 'inspect_turns' });
+            if (!result?.ok) { this.inspectNote = result?.error || 'The turns could not be read.'; return false; }
+            this.inspected = inspectView(result.turns);
+            this.inspectRevision = Number.isFinite(result.revision) ? result.revision : this.inspectRevision;
+            this.inspectNote = '';
+            return true;
+        } catch (error) { this.inspectNote = 'The turns could not be read: ' + (error?.message || String(error)); return false; }
+    },
+    async replayCall(action, payload = {}) {
+        try {
+            const result = await callJsonApi(endpoint, { action, ...payload });
+            if (Array.isArray(result?.saved)) this.replays = result.saved;
+            if (!result?.ok && result?.error) this.inspectNote = result.error;
+            return result || null;
+        } catch (error) { this.inspectNote = 'Saved turns could not be read: ' + (error?.message || String(error)); return null; }
+    },
+    async replaySave(turn) {
+        const result = await this.replayCall('replay_save', { turn });
+        if (result?.ok) this.inspectNote = 'Saved for replay as ' + result.id + ' (with its audio) in Convo’s data folder on the Agent Zero host.';
+        return !!result?.ok;
+    },
+    replayList() { return this.replayCall('replay_list'); },
+    replayDelete(id) { return this.replayCall('replay_delete', { id }); },
+    async loadMemory() {
+        const target = convo.target || '';
+        if (!target) { this.memory = null; this.memoryNote = 'Choose a chat first: memory belongs to one conversation.'; return false; }
+        try {
+            const result = await callJsonApi(endpoint, { action: 'memory_view', target });
+            if (!result?.ok) { this.memory = null; this.memoryNote = result?.error || 'Memory could not be read.'; return false; }
+            this.memory = memoryView(result);
+            this.memoryNote = '';
+            return true;
+        } catch (error) { this.memory = null; this.memoryNote = 'Memory could not be read: ' + (error?.message || String(error)); return false; }
+    },
 
     // ---- registration: only while the saved developer_mode is on
     // `watch(fn)` re-runs fn when the settings change: Alpine's effect in the page, a test's own trigger otherwise.
@@ -170,6 +227,21 @@ export const store = createStore('convoDiagnostics', {
     },
     // One read now (tests and the "refresh" button); the schedule carries on as before.
     async pollNow() { await poll(); },
+    // "Play test sound": a short soft tone through the conversation's own output (or a temporary one without a voice session), so
+    // a silent output can be told apart from a silent reply. Says where it went; whether it was heard is for the listener.
+    async testSound() {
+        if (this.tone?.busy) return false;
+        this.tone = { busy: true, ok: false, text: 'Playing a short tone…' };
+        let result;
+        try { result = await convo.playTestSound?.(); } catch (error) { result = { ok: false, message: error?.message || String(error) }; }
+        result = result || { ok: false, message: 'Convo cannot play a test sound in this page.' };
+        const device = result.sink && result.sink !== 'default' ? `output device ${result.sink}` : 'the system default output device';
+        const where = result.path === 'temporary' ? 'a temporary audio output (no voice session is running)' : 'the conversation’s own audio output';
+        this.tone = { busy: false, ok: !!result.ok,
+                      text: result.ok ? `Played a short tone through ${where}, on ${device}. Heard nothing? Check that device and its volume.` : (result.message || 'The test sound could not be played.') };
+        render();
+        return !!result.ok;
+    },
 });
 
 function defaultWatch(fn) {
@@ -226,6 +298,9 @@ async function poll() {
                                                                        : (result?.error || 'Diagnostics could not be read.');
         } else {
             store.error = '';
+            if ('last_request' in result) store.lastRequest = result.last_request && typeof result.last_request === 'object' ? result.last_request : null;
+            // The kept turns are read again only when they changed and someone has the section open.
+            if (store.sections.saw && Number.isFinite(result.inspect_revision) && result.inspect_revision !== store.inspectRevision) void store.loadInspected();
             ingest(model, result, { sent, received });
             more = !!result.more;
         }
@@ -245,6 +320,7 @@ function render() {
     const playback = safe(() => audioSnapshot(), {}) || {};
     store.live = { state: convo.statusLabel || '', chip: convo.chipState || '', session: sessionLive(), hold: !!convo.policyHold,
                    ducked: !!playback.ducked, toggles: playback.toggles || 0, playing: !!playback.playing, queued: playback.queued || 0,
+                   context: playback.context || '', sink: playback.sink || '',
                    echoSetting: settings.echo_guard || '', echo: echoView(ring) };
 }
 // Level meters are written straight to the DOM (no reactive state), four times a second (once with reduced motion).

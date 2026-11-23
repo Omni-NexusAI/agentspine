@@ -4,7 +4,7 @@
 //   node plugins/_convo/tests/echo-measure.mjs
 import { pathToFileURL } from 'node:url';
 import { DUCK, DuckController } from '../webui/audio.js';
-import { concat, mix, noise, replay, silence, speechLike, virtualTime } from './signals.mjs';
+import { concat, mix, noise, replay, silence, virtualTime, voiced } from './signals.mjs';
 
 export const RATES = [16000, 44100, 48000];
 export const LEAK_DB = [-10, -20, -30];
@@ -20,10 +20,14 @@ export function roomLeak(playback, rate, { db, delay = .12, noiseRms = 0, total,
 
 // The assistant starts speaking this long into the session / after the user's turn, so the guard has measured the room noise.
 const LEAD = 1.5;
+// Voices (synthetic voiced sources, signals.mjs voiced): the assistant low, the user higher. Since the guard decides with voicing,
+// the test voices must be periodic; the earlier noise bursts (speechLike) are what the guard now rejects as not a voice.
+const assistant = (seconds, rate) => voiced(seconds, rate, { rms: .1, seed: 9, f0: 115 });
+const person = (seconds, rate, rms) => voiced(seconds, rate, { rms, seed: 21, f0: 195, syllables: 3.1 });
 
 // False candidate starts while the assistant speaks and the user is silent, with the user's microphone otherwise quiet.
 export function falseStarts({ rate, db, noiseRms = 0 }) {
-    const playback = speechLike(3, rate, { rms: .1, seed: 9 }), total = LEAD + 5.5;
+    const playback = assistant(3, rate), total = LEAD + 5.5;
     const mic = roomLeak(playback, rate, { db, noiseRms, total, start: LEAD });
     const reference = concat(silence(LEAD, rate), playback, silence(total - LEAD - 3, rate));
     return {
@@ -36,8 +40,8 @@ export function falseStarts({ rate, db, noiseRms = 0 }) {
 
 // The user speaks over the assistant: seconds from the user's onset to the candidate start (null = never), and how many starts.
 export function overlapDelay({ rate, db, userRms, at = 2, seconds = 1.5, guard = 'adaptive' }) {
-    const playback = speechLike(5, rate, { rms: .1, seed: 9 }), total = LEAD + 8, userAt = LEAD + at;
-    const user = concat(silence(userAt, rate), speechLike(seconds, rate, { rms: userRms, seed: 21, syllables: 3.1 }), silence(total - userAt - seconds, rate));
+    const playback = assistant(5, rate), total = LEAD + 8, userAt = LEAD + at;
+    const user = concat(silence(userAt, rate), person(seconds, rate, userRms), silence(total - userAt - seconds, rate));
     const mic = mix(user, roomLeak(playback, rate, { db, total, start: LEAD }));
     const reference = concat(silence(LEAD, rate), playback, silence(total - LEAD - 5, rate));
     const result = guard ? replay(mic, rate, { guard, reference }) : replay(mic, rate);

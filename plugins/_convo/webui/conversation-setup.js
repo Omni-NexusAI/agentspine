@@ -38,8 +38,9 @@ export const CARD_PATHS = {
     'roles.conversation.token_env': 'Credential environment reference', 'roles.conversation.capabilities.audio_input': 'Accepts audio input',
     'roles.conversation.capabilities.cancellation': 'Supports cancellation', 'roles.conversation.capabilities.tool_calls': 'Supports tool calls',
     'compaction.context_tokens': 'Context window',
+    'summary_writer': 'Who writes the summaries', 'utility_summary_consent': 'Allow a utility model outside your network',
 };
-const ROWS = ['conversation_provider', 'conversation_key_route'];
+const ROWS = ['conversation_provider', 'conversation_key_route', 'summary_writer'];
 
 // The address a conversation role is reached at (helpers/convo_model_catalog.resolve_url). `compatibleBase` is Agent Zero's
 // address for an OpenAI-compatible provider Convo has no entry for ('' = such a provider cannot be used).
@@ -70,5 +71,13 @@ export const conversationSetup = {
         const saved = this.conversationSaved(), provider = saved.provider || '', usable = this.conversationProvider(provider);
         const name = !provider ? 'Custom endpoint' : usable ? usable.label : `${this.conversationHostLabels()[provider] || provider} (not usable)`;
         return { provider: name, model: saved.model || '' };
+    },
+    // Tools and images, measured by Test connection (helpers/convo_setup.probe_capabilities): the newest test's answer, else the saved
+    // record as the readiness row `conversation_measured` reports it. Never inferred in the browser.
+    conversationMeasured() {
+        const fresh = this.choices?.conversation?.capabilities;
+        if (fresh && typeof fresh.message === 'string' && fresh.message) return { state: fresh.state || 'unverified', message: fresh.message };
+        const row = (this.readiness || []).find(item => item?.id === 'conversation_measured');
+        return row && row.detail ? { state: row.state || 'unverified', message: String(row.detail) } : null;
     },
 };

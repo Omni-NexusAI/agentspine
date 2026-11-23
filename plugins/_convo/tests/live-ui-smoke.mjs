@@ -42,7 +42,7 @@ try {
     await page.waitFor(`!!document.querySelector('.convo-panel .convo-primary')`, 60000);
     await sleep(1500);
     const panel = await page.eval(`(() => { const p = document.querySelector('.convo-panel'); const wrap = p.closest('.right-canvas-surface-panel'); const q = s => p.querySelector(s); return { chip: q('.convo-chip')?.textContent.trim(), buttons: [...p.querySelectorAll('.convo-controls button')].map(b => b.textContent.trim()), tools: p.querySelectorAll('.convo-tools button').length, scroller: q('.convo-transcript')?.getBoundingClientRect().height, docked: !!wrap, active: wrap ? wrap.classList.contains('is-active') : null, opacity: wrap ? getComputedStyle(wrap).opacity : null, pointer: wrap ? getComputedStyle(wrap).pointerEvents : null }; })()`);
-    check('the panel renders its status, controls and settings/Studio buttons', !!panel.chip && panel.buttons.length === 2 && panel.tools === 2 && panel.scroller > 50, JSON.stringify(panel));
+    check('the panel renders its status, controls and Sound, settings and Studio buttons', !!panel.chip && panel.buttons.length === 3 && panel.buttons.some(b => /Share camera/.test(b)) && panel.tools === 3 && panel.scroller > 50, JSON.stringify(panel));
     if (panel.docked) check('a docked panel is visible and clickable (the host wrapper contract)', panel.active && panel.opacity === '1' && panel.pointer === 'auto');
 
     // the settings modal: tabs, no console noise, and a draft that is guarded

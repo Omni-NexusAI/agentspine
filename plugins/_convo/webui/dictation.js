@@ -212,7 +212,9 @@ export function bindOrbGesture({ store, document, window, selector = '#microphon
     const gesture = createGesture({ onEffect(effect) {
         switch (effect.type) {
             case 'press': store.setPressing(true); break;
-            case 'preopen': void store.preOpenDictation(); break;
+            // No pre-open on a touch tap: on a phone every microphone opened (and closed) can move the sound between the call and
+            // the media stream, and a tap is the common case. A touch press that becomes dictation starts it at the latch time.
+            case 'preopen': if (pressType !== 'touch') void store.preOpenDictation(); break;
             case 'discard': void store.discardDictationBuffer(); break;
             case 'abort': store.setPressing(false); break;
             case 'tap': {
@@ -229,6 +231,7 @@ export function bindOrbGesture({ store, document, window, selector = '#microphon
         }
     } });
     const sync = () => gesture.sync(!!store.dictationMode);
+    let pressType = '';                                                  // the pointer type of the press in progress ('' for a key)
     const pointer = event => 'p' + (event.pointerId ?? 0);
     const listeners = [];
     const on = (target, type, handler, capture = false) => { target.addEventListener(type, handler, capture); listeners.push([target, type, handler, capture]); };
@@ -237,6 +240,7 @@ export function bindOrbGesture({ store, document, window, selector = '#microphon
         if (!store.enabled || !orbOf(event) || event.button !== 0) return;
         event.preventDefault(); event.stopImmediatePropagation();       // the host's own microphone click must never also run
         sync();
+        if (!gesture.holding) pressType = String(event.pointerType || '');
         gesture.press(pointer(event), { primary: event.isPrimary !== false });
     }, true);
     on(document, 'pointerup', event => { sync(); gesture.release(pointer(event), { inside: !!orbOf(event) }); }, true);
@@ -262,7 +266,7 @@ export function bindOrbGesture({ store, document, window, selector = '#microphon
         if (!key || !orbOf(event) || !plain(event)) return;
         event.preventDefault();                                          // stops the button's own click for Enter (on keydown) and Space (on keyup)
         if (event.repeat) return;
-        sync(); gesture.press(key);
+        sync(); if (!gesture.holding) pressType = ''; gesture.press(key);
     }, true);
     on(document, 'keyup', event => {
         const key = orbKey(event);

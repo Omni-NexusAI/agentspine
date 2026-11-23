@@ -20,12 +20,24 @@ FIELDS = {'sequence': int, 'final': bool, 'disposition': str, 'speech': str, 'ac
           'epoch': int, 'previous_epoch': int, 'chars': int, 'error': str, 'gate': str, 'p_respond': float, 'p_addressed': float,
           'p_backchannel': float, 'p_side': float, 'p_unfinished': float, 'p_unclear': float, 'p_explicit': float, 'p_name': float,
           'mode': str, 'floor': float, 'reason': str, 'ctx_used': int, 'ctx_window': int,
-          'revisions': int, 'jobs': int, 'gap': float, 'seconds': float}
+          'revisions': int, 'jobs': int, 'gap': float, 'seconds': float,
+          # the 2026-11 turn engine: probe evidence, overlap timing, heard words, speech requests and why an answer was empty
+          'peak': float, 'voiced': float, 'words': int, 'count': int, 'finish_reason': str, 'reasoning_chars': int,
+          'tool_calls': int, 'tool': str,
+          # end-of-answer figures (reply.done) and the context estimate's left-out turns and size ratio (ctx.estimate)
+          'prompt_tokens': int, 'cached_tokens': int, 'passes': int, 'ctx_left_out': int, 'ctx_ratio': float,
+          # what a speech request carried (speech.sent, speech.language): the preset's name, the reply's seed, the language and why
+          # it was chosen, and the path the phrase took; names and numbers only, never words
+          'language': str, 'why': str, 'profile': str, 'seed': int, 'path': str,
+          # how a web search went (tool.search): the ladder's steps, requests sent, engines that answered and refused (counts)
+          'steps': str, 'asked': int, 'answered': int, 'refused': int, 'cached': bool}
 TURNS, MARKS = 200, 48
 PROBE_MARKS = 24       # a turn's probe marks; the rest of MARKS stays free for the completed turn
 END_MARKS = 16         # room above MARKS for the marks that end a turn
 TURN_END = frozenset({'admitted', 'state.sent', 'reply.done', 'reply.error', 'reply.empty', 'reply.markup', 'model.listen',
-                      'model.listen_overridden', 'turn.superseded', 'spec.promote', 'spec.discard', 'playback.completed'})
+                      'model.listen_overridden', 'turn.superseded', 'spec.promote', 'spec.discard', 'playback.completed',
+                      'reply.retry_empty', 'tool.from_text', 'overlap.safety', 'overlap.pinned', 'cont.withdrawn', 'speech.requests',
+                      'tool.refused', 'tool.not_run', 'tool.superseded'})
 LATEST = frozenset({'playback.completed'})    # one per spoken phrase: only the newest copy is kept
 REPORT_MARKS = 1000    # at most this many marks per cursor read; the reader asks again for the rest
 
@@ -67,6 +79,7 @@ class TimingLog:
         self.lock = threading.Lock()
         self.turns = collections.OrderedDict()
         self.sequence = 0      # the `seq` of the newest stored mark; it only grows, so a reader's cursor stays meaningful
+        self.sink = None       # where marks are also kept across restarts (the service sets Store.keep_mark), or None
 
     def reset(self):
         with self.lock:
@@ -92,7 +105,15 @@ class TimingLog:
             if keep:
                 record['probes'] += probe
                 self.sequence += 1
-                marks.append({'name': name, 't': round(stamp, 4), 'seq': self.sequence, **clean(fields)})
+                kept = {'name': name, 't': round(stamp, 4), 'seq': self.sequence, **clean(fields)}
+                marks.append(kept)
+        sink = self.sink
+        if keep and sink is not None:
+            # Kept across restarts (Store.keep_mark: a bounded queue to one writer thread); never waits, never raises.
+            try:
+                sink(turn, dict(kept))
+            except Exception:
+                pass
         return stamp
 
     def records(self, limit=50):

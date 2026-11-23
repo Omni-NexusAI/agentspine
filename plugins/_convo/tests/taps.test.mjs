@@ -33,13 +33,16 @@ test('A recreated session (retarget) is tapped the same way', async () => {
 
 test('The playback snapshot holds flags and counts only, and says when there is no session', async () => {
     const f = await storeFixture();
-    assert.deepEqual(plain(f.namespace.audioSnapshot()), { active: false, ducked: false, toggles: 0, playing: false, queued: 0, pcm: 0 });
+    assert.deepEqual(plain(f.namespace.audioSnapshot()), { active: false, ducked: false, toggles: 0, playing: false, queued: 0, pcm: 0, context: '', sink: '' });
     await f.store.start();
     const audio = f.audios.at(-1);
     Object.assign(audio, { duck: { ducked: true, toggles: 3 }, playing: { buffer: 'audio bytes' }, queue: [{ base64: 'UklGRg==' }, { base64: 'UklGRg==' }],
-                           pcm: new Map([['p1', { audio: 'AAAA' }]]) });
+                           pcm: new Map([['p1', { audio: 'AAAA' }]]), outputInfo: () => ({ state: 'running', sink: 'default', latency: .04 }) });
     const snapshot = f.namespace.audioSnapshot();
-    assert.deepEqual(plain(snapshot), { active: true, ducked: true, toggles: 3, playing: true, queued: 2, pcm: 1 });
+    assert.deepEqual(plain(snapshot), { active: true, ducked: true, toggles: 3, playing: true, queued: 2, pcm: 1, context: 'running', sink: 'default',
+        ducks: 0, rebuffers: 0, reopened: 0, last_reopen: 0, mode: '', mode_source: 'desktop', mode_reason: 'not a phone', read_aloud_skipped: 0 });
+    audio.outputInfo = () => { throw new Error('closed'); };                                       // observational: a failing read is no state
+    assert.equal(f.namespace.audioSnapshot().context, '');
     assert.doesNotMatch(JSON.stringify(snapshot), /UklGRg|AAAA|audio bytes/);                      // never the audio itself
     await f.store.stop();
     assert.equal(f.namespace.audioSnapshot().active, false);

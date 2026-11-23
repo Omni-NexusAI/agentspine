@@ -120,8 +120,31 @@ class JoinUnit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cont.enabled)
 
 
+    async def test_the_browser_pre_roll_is_not_speech_for_the_gap_or_the_short_command_test(self):
+        # Change 2 (2026-11-10): the browser keeps up to 0.4-0.5 s from before the speech began. A 2.2 s command arrives as 2.7 s of
+        # audio, so measured with the pre-roll it would no longer be "short" and its gap would look 0.5 s shorter.
+        cont = continuation.Continuation(7, 20)
+        first = self.wav(300, 1.0)
+        command = concat_wavs(silence(.5), self.wav(500, 2.2))                     # 0.5 s of pre-roll, then 2.2 s
+        cont.hold(first, 10.0)
+        merge = cont.plan(command, 10.0 + .7 + 2.2, pre_roll=.5)                    # the speech began 0.7 s after the first ended
+        self.assertAlmostEqual(merge.fragment, 2.2, delta=1e-6)
+        self.assertLessEqual(merge.fragment, 2.5)                                    # api/realtime.py SHORT_COMMAND_SECONDS
+        self.assertAlmostEqual(merge.gap, .7, delta=1e-6)
+        # The pre-roll is real sound from the gap, so only the rest of the gap is added as silence (0.7 s in all).
+        self.assertEqual(merge.audio, concat_wavs(first, silence(.2), command))
+        self.assertAlmostEqual(merge.seconds, 1.0 + .2 + 2.7, delta=1e-6)
+        unaware = cont.plan(command, 10.0 + .7 + 2.2)
+        self.assertGreater(unaware.fragment, 2.5)                                    # what the server would have measured without it
+        # A pre-roll longer than the gap adds no silence; nonsense values are bounded.
+        self.assertEqual(cont.plan(command, 10.0 + .2 + 2.2, pre_roll=.5).audio, concat_wavs(first, command))
+        self.assertAlmostEqual(cont.plan(command, 12.0, pre_roll=-3).fragment, 2.7, delta=1e-6)
+        self.assertAlmostEqual(cont.plan(command, 12.0, pre_roll=99).fragment, 0.0, delta=1e-6)
+
+
 class Held(Scenario):
-    """An `unfinished` completed utterance is no longer dropped: it waits, in memory, for its continuation."""
+    """An `unfinished` completed utterance is answered, after a short wait for the rest of it (policy.UNFINISHED_WAIT): a fragment
+    that starts within the wait, or while the user is still speaking then, is joined to it (memory only) and answered once."""
     def fragments(self, *, second_at, second_seconds=1.0, second_decision=ADDRESSED_PLAIN, first_seconds=1.0, config=None, tag_merged=None):
         async def scenario(h):
             typed(h)
@@ -140,70 +163,120 @@ class Held(Scenario):
                              classifier={'part one': script(UNFINISHED, .2), 'part two': script(second_decision, .2), **(tag_merged or {})}, default=ADDRESSED)
         return facts
 
-    def test_an_unfinished_utterance_is_held_not_answered_and_joined_to_its_continuation(self):
-        facts = self.fragments(second_at=4.0)
+    def test_an_unfinished_utterance_waits_and_is_joined_to_its_continuation(self):
+        facts = self.fragments(second_at=1.2)                                       # 1.2 s after it ended: inside the wait
         self.assertTrue(facts['held'])
-        self.assertEqual(facts['f1'], 'ignore')                                     # the browser still hears 'not answered'
-        self.assertEqual(facts['accepted'], ['f2'])                                  # f1 was never a turn
-        self.assertEqual(facts['requests'], [facts['f1_frames'] + int(1.5 * RATE) + facts['f2_frames']])   # the model heard one joined utterance
+        self.assertEqual(facts['f1'], 'admit')                                      # it will be answered...
+        self.assertEqual(facts['accepted'], ['f1', 'f2'])                            # ...but f2 took it over before its answer started
+        self.assertIn('turn.superseded', [event['kind'] for event in facts['journal']])
+        self.assertEqual(facts['requests'], [facts['f1_frames'] + int(.2 * RATE) + facts['f2_frames']])    # the model heard one joined utterance
         self.assertEqual(facts['heard'], 1)
         self.assertIsNone(facts['cont_after'])                                       # the joined clip was answered; nothing is kept for it
 
+    def test_an_unfinished_utterance_is_answered_when_nothing_follows(self):
+        async def scenario(h):
+            typed(h)
+            await h.candidate('f1', h.audio('part one', seconds=1.0), final=True)
+            await h.settle()
+            return h.accepted_turns(), len(h.answers), h.first_audible('f1')
+        (accepted, answers, audible), _ = self.play(scenario, model_deltas=[(PHRASE, .3)], classifier={'part one': script(UNFINISHED, .2)})
+        self.assertEqual((accepted, answers), (['f1'], 1))                           # never dropped
+        self.assertGreaterEqual(audible, 1.5)                                         # but only after the wait for the rest of it
+
     def test_the_joined_utterance_is_what_the_classifier_hears_too(self):
-        facts = self.fragments(second_at=4.0)
+        facts = self.fragments(second_at=1.2)
         self.assertEqual(len(facts['policy']), 3)                                    # f1; the short fragment alone (it could be a command); then the joined clip
         self.assertNotEqual(facts['policy'][-1], 'part two')                         # the last call heard the joined clip, not the fragment
 
+    def test_a_2_2_s_command_with_its_pre_roll_is_still_decided_on_its_own_first(self):
+        """The browser sends `pre_roll_s` with the audio; the server subtracts it, so a 2.2 s fragment that arrives as 2.7 s of audio
+        is still a short fragment (classified alone first), as it was before the pre-roll existed."""
+        def run(fields):
+            async def scenario(h):
+                typed(h)
+                first = h.audio('part one', seconds=1.0)
+                second = h.audio('part two', level=900, seconds=2.7)
+                await h.candidate('f1', first, final=True)
+                await h.until(1.2)
+                await h.candidate('f2', second, final=True, **fields)
+                await h.settle()
+                return [c[2] for c in h.log('policy.start')], h.state['candidate'].get('pre_roll_s')
+            (policy, lead), _ = self.play(scenario, model_deltas=[(PHRASE, .3)],
+                                          classifier={'part one': script(UNFINISHED, .2), 'part two': script(ADDRESSED_PLAIN, .2)}, default=ADDRESSED)
+            return policy, lead
+        policy, lead = run({'voiced_s': 1.9, 'pre_roll_s': .5})
+        self.assertEqual(lead, .5)
+        self.assertEqual(len(policy), 3)                                             # f1; the fragment alone (it could be a command); joined
+        self.assertEqual(policy[1], 'part two')
+        policy, lead = run({'voiced_s': 1.9})
+        self.assertEqual(lead, 0.0)
+        self.assertEqual(len(policy), 2, '2.7 s with no pre-roll reported is not short: joined at once')
+        policy, lead = run({'pre_roll_s': True})
+        self.assertEqual(lead, 0.0, 'a non-number is ignored')
+
     def test_audio_is_never_journaled(self):
-        facts = self.fragments(second_at=4.0)
+        facts = self.fragments(second_at=1.2)
         text = json.dumps(facts['journal'])
         self.assertNotIn(facts['first'][:64], text)
         self.assertNotIn(facts['second'][:64], text)
         self.assertTrue(all('audio' not in event['payload'] for event in facts['journal']))
 
-    def test_a_continuation_after_the_horizon_is_a_separate_utterance(self):
-        facts = self.fragments(second_at=12.0)
-        self.assertEqual(facts['accepted'], ['f2'])
-        self.assertEqual(facts['requests'], [facts['f2_frames']])                    # the held fragment was gone; f2 stands alone
+    def test_a_continuation_after_the_answer_started_is_a_separate_utterance(self):
+        facts = self.fragments(second_at=4.0)
+        self.assertEqual(facts['accepted'], ['f1', 'f2'])
+        self.assertEqual(facts['requests'], [facts['f1_frames'], facts['f2_frames']])   # f1 was answered; f2 stands alone
         self.assertEqual(facts['policy'][-1], 'part two')
 
-    def test_a_joined_utterance_that_is_not_for_the_assistant_is_dropped_with_the_held_audio(self):
+    def test_a_joined_utterance_that_is_not_for_the_assistant_withdraws_the_waiting_answer(self):
         # the joined clip is unknown to the script, so it gets the default decision: make that one a side conversation
         async def scenario(h):
             typed(h)
             await h.candidate('f1', h.audio('part one'), final=True)
-            await h.until(4.0)
+            await h.until(1.0)
             await h.candidate('f2', h.audio('part two', level=900), final=True)
             await h.settle()
-            return {'accepted': h.accepted_turns(), 'pending': h.state['cont'].pending, 'answers': len(h.answers)}
+            return {'accepted': h.accepted_turns(), 'pending': h.state['cont'].pending, 'answers': len(h.answers),
+                    'superseded': [p['superseded'] for _, p in h.events('turn.superseded')], 'f2': h.last_state('f2')}
         silent_env = {**UNFINISHED, 'attention': 'side_conversation',
-                      'attention_probabilities': {'addressed': .02, 'backchannel': .02, 'side_conversation': .9, 'unfinished': .03, 'unclear': .03}}
+                      'attention_probabilities': {'addressed': .02, 'backchannel': .02, 'side_conversation': .93, 'unfinished': .02, 'unclear': .01}}
         result, _ = self.play(scenario, default=silent_env, classifier={'part one': script(UNFINISHED, .2)})
-        self.assertEqual((result['accepted'], result['pending'], result['answers']), ([], None, 0))
+        self.assertEqual((result['accepted'], result['pending'], result['answers']), (['f1'], None, 0))     # f1's answer never started
+        self.assertEqual((result['superseded'], result['f2']), (['f1'], 'ignore'))
 
-    def test_a_joined_utterance_that_is_still_unfinished_is_held_again_up_to_the_limit(self):
+    def test_a_joined_utterance_that_is_still_unfinished_waits_again_up_to_the_limit(self):
         async def scenario(h):
             typed(h)
             seen = []
             for index in range(1, 11):
                 await h.candidate('f%d' % index, h.audio('more', level=300 + index, seconds=.5), final=True)
-                await h.settle()
-                await h.advance(1.0)
+                await h.advance(1.0)                                                 # the next fragment starts inside the wait
                 pending = h.state['cont'].pending
                 seen.append(None if pending is None else pending.revisions)
-            return seen, h.accepted_turns()
-        (seen, accepted), _ = self.play(scenario, default=UNFINISHED)
+            await h.settle()
+            return seen, len(h.answers)
+        (seen, answers), _ = self.play(scenario, default=UNFINISHED)
         self.assertEqual(seen[:9], [0, 1, 2, 3, 4, 5, 6, 7, None])                    # eight joins at most, then nothing is kept
-        self.assertEqual(accepted, [])
+        self.assertEqual(answers, 1)                                                  # one answer, after the user stopped
 
     def test_joining_is_off_when_the_horizon_is_zero(self):
         facts = self.fragments(second_at=4.0, config={'continuation_seconds': 0})
         self.assertFalse(facts['held'])
-        self.assertEqual(facts['requests'], [facts['f2_frames']])
+        self.assertEqual(facts['requests'], [facts['f1_frames'], facts['f2_frames']])   # each answered on its own
 
     def test_a_joined_utterance_longer_than_the_turn_limit_is_not_joined(self):
-        facts = self.fragments(second_at=11.0, first_seconds=12.0, second_seconds=9.0)
-        self.assertEqual(facts['requests'], [facts['f2_frames']])
+        async def scenario(h):
+            typed(h)
+            first, second = h.audio('part one', seconds=12.0), h.audio('part two', level=900, seconds=9.0)
+            await h.candidate('f1', first, final=True)
+            await h.until(1.95)
+            await h.candidate('f2', h.audio('part two so far', level=901, seconds=.75), sequence=1, final=False)   # began 1.2 s after f1
+            await h.until(10.2)
+            await h.candidate('f2', second, sequence=2, final=True)
+            await h.settle()
+            return [frame_count(a['audio']) for a in h.answers], frame_count(second)
+        (requests, two), _ = self.play(scenario, model_deltas=[(PHRASE, .3)], default=ADDRESSED_PLAIN,
+                                       classifier={'part one': script(UNFINISHED, .2), 'part two so far': script(ADDRESSED_PLAIN, .2)})
+        self.assertEqual(requests, [two])        # 22 s together is past the turn limit: f2 alone; f1's answer never talked over it
 
 
 class Unanswered(Scenario):
@@ -235,7 +308,8 @@ class Unanswered(Scenario):
             await h.candidate('f2', second, final=True)
             await h.settle()
             return queued, [(j['turn'], j['status']) for j in h.jobs()], [r['kind'] for r in h.store.events('a')]
-        (queued, jobs, kinds), _ = self.play(scenario, tts_delay=.5, model_deltas=[('Okay.', .2)], proposal=DELEGATE_TASK, default=DELEGATE,
+        # No words before the call: a spoken "Okay." would be heard before f2 and make f2 an ordinary barge-in instead.
+        (queued, jobs, kinds), _ = self.play(scenario, tts_delay=.5, model_deltas=[('', .2)], proposal=DELEGATE_TASK, default=DELEGATE,
                                              classifier={'part one': script(DELEGATE, .2), 'part two': script(DELEGATE, .2)})
         self.assertEqual(queued, [('f1', 'queued')])
         self.assertEqual(jobs[0], ('f1', 'cancelled'))                                # never started, so it is withdrawn
@@ -301,7 +375,8 @@ class Unanswered(Scenario):
         (pending, requests, frames, superseded), _ = self.play(scenario, config={'main_listen_decision': True}, model_deltas=[('[LISTEN]', .1)],
                                                               classifier={'part one': script(SPEAK_PLAIN, .2), 'part two': script(SPEAK_PLAIN, .2)})
         self.assertIsNone(pending)
-        self.assertEqual((requests, superseded), ([frames, frames], []))                 # f2 was asked on its own (and the model stayed quiet again)
+        # f2 was asked on its own (the model stayed quiet again); each decline was confirmed once (CONFIRM_SILENT)
+        self.assertEqual((requests, superseded), ([frames] * 4, []))
 
     def test_the_experimental_pcm_stream_commits_the_reply_too(self):
         async def scenario(h):

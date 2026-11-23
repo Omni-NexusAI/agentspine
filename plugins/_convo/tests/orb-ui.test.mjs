@@ -21,6 +21,7 @@ test('The orb is a pure function of state, and Convo owns it only when enabled',
         [{ dictating: true, dictationMode: 'latched' }, 'dictating-latched'],
         [{ dictating: true, dictationMode: 'ptt' }, 'dictating-ptt'],
         [{ error: 'Boom', active: true, state: 'listening' }, 'error'],
+        [{ loading: 'Loading Gemma on desktop…', active: true, state: 'listening' }, 'loading'],   // a model a router is loading
         [{ error: 'Boom', dictating: true }, 'dictating-latched'],    // an active dictation outranks a stale error
     ];
     for (const [snapshot, expected] of table) assert.equal(view(snapshot).id, expected, JSON.stringify(snapshot));
@@ -31,7 +32,8 @@ test('Every state has a spoken label; only a live session reads as pressed; a ho
     for (const id of ORB_STATES) {
         const snapshot = { ready: { active: false }, idle: { active: false, devIdle: true }, connecting: { busy: true }, listening: { active: true, state: 'listening' },
             hearing: { active: true, state: 'listening', hearing: true }, thinking: { active: true, state: 'considering' }, speaking: { active: true, state: 'speaking' },
-            'dictating-latched': { dictating: true }, 'dictating-ptt': { dictating: true, dictationMode: 'ptt' }, error: { error: 'Provider down' } }[id];
+            'dictating-latched': { dictating: true }, 'dictating-ptt': { dictating: true, dictationMode: 'ptt' }, error: { error: 'Provider down' },
+            loading: { active: true, state: 'listening', loading: 'Loading Gemma on desktop…' } }[id];
         const v = view(snapshot);
         assert.match(v.label, /^[A-Z][^.]+\. [A-Z][^.]+\.$/, id);        // "Name. Hint."
         assert.ok(v.title.includes(' · '), id);
@@ -263,7 +265,7 @@ test('The orb stylesheet has a glyph and animation for every state, honours redu
     const css = (await readFile(new URL('../extensions/webui/page-head/zz-convo-orb.html', import.meta.url), 'utf8'));
     assert.match(css, /touch-action:none/);                                         // a touch hold is dictation, not a scroll
     assert.match(css, /@media\(prefers-reduced-motion:reduce\)/);
-    const glyphFor = { ready: 'g-mic', idle: 'g-idle', connecting: 'g-spin', listening: 'g-bars', hearing: 'g-bars', thinking: 'g-dots', speaking: 'g-voice', 'dictating-latched': 'g-pen', 'dictating-ptt': 'g-ptt', error: 'g-err' };
+    const glyphFor = { ready: 'g-mic', idle: 'g-idle', connecting: 'g-spin', loading: 'g-spin', listening: 'g-bars', hearing: 'g-bars', thinking: 'g-dots', speaking: 'g-voice', 'dictating-latched': 'g-pen', 'dictating-ptt': 'g-ptt', error: 'g-err' };
     for (const id of ORB_STATES) assert.match(css, new RegExp(`\\[data-convo=${id}\\] \\.${glyphFor[id]}`), id);
     const hover = css.match(/#microphone-button\[data-convo\]:hover\{[^}]*\}/)[0];
     assert.doesNotMatch(hover, /--co|data-convo=|opacity/);                         // hover brightens only: it is not microphone-on proof

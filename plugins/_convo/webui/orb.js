@@ -13,9 +13,10 @@ const LABELS = {
     'dictating-latched': ['Hands-free dictation', 'Listening for speech; click to stop, Escape cancels'],
     'dictating-ptt': ['Push-to-talk', 'Listening only while held; release to finish'],
     error: ['Convo needs attention', 'Click to try again'],
+    loading: ['Convo waiting for a model', 'Click to stop'],
 };
 export const ORB_STATES = Object.keys(LABELS);
-const ACTIVE = new Set(['connecting', 'listening', 'hearing', 'thinking', 'speaking']);
+const ACTIVE = new Set(['connecting', 'loading', 'listening', 'hearing', 'thinking', 'speaking']);
 const DICTATING = new Set(['dictating-latched', 'dictating-ptt']);
 // While the press that started latched dictation is still down, the label says what releasing does.
 const HELD_LATCHED_HINT = 'Release to keep listening hands-free; keep holding for push-to-talk';
@@ -36,6 +37,7 @@ export function orbView(snapshot) {
     let id;
     if (s.dictating) id = s.dictationMode === 'ptt' ? 'dictating-ptt' : 'dictating-latched';
     else if (s.error) id = 'error';
+    else if (s.loading) id = 'loading';
     else if (s.busy || s.state === 'connecting') id = 'connecting';
     else if (!s.active) id = s.devIdle ? 'idle' : 'ready';
     else if (s.state === 'speaking' || s.playing) id = 'speaking';
@@ -45,7 +47,8 @@ export function orbView(snapshot) {
     const continuous = id === 'dictating-latched' && !!s.continuous;
     const [name, labelHint] = continuous ? CONTINUOUS : LABELS[id];
     const hint = id === 'dictating-latched' && s.holding ? HELD_LATCHED_HINT : labelHint;
-    const detail = id === 'error' && s.error ? ` ${String(s.error).slice(0, 140)}` : continuous && !s.holding ? `; ${CONTINUOUS[2]}` : '';
+    const detail = id === 'error' && s.error ? ` ${String(s.error).slice(0, 140)}` : id === 'loading' ? ` ${String(s.loading).slice(0, 140)}` : continuous && !s.holding ? `; ${CONTINUOUS[2]}` : '';
+
     return { id, hold: !!s.policyHold && id === 'speaking', press: !!s.pressing && !DICTATING.has(id), capture: !!s.capturing && !DICTATING.has(id),
              pressed: id !== 'ready' && id !== 'idle' && id !== 'error',
              label: continuous && !s.holding ? `${name} — ${hint}.` : `${name}. ${hint}.`, title: `${name} · ${hint}${detail}` };

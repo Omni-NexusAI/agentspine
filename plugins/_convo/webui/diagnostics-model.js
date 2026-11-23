@@ -184,7 +184,8 @@ export function turnView(turn, server = [], browser = {}, clock = null, floors =
         gate: gateView(last(chosen, 'policy.gate'), floors),
         speculation: speculationView(server),
         context: context && Number.isFinite(context.ctx_used) && Number.isFinite(context.ctx_window)
-            ? { used: context.ctx_used, window: context.ctx_window, ratio: context.ctx_window > 0 ? context.ctx_used / context.ctx_window : 0, over: context.ctx_used > context.ctx_window }
+            ? { used: context.ctx_used, window: context.ctx_window, ratio: context.ctx_window > 0 ? context.ctx_used / context.ctx_window : 0, over: context.ctx_used > context.ctx_window,
+                leftOut: Number.isFinite(context.ctx_left_out) ? context.ctx_left_out : 0 }
             : null,
     };
 }
@@ -317,3 +318,82 @@ export function formatMs(ms, uncertainty = null) {
     return Number.isFinite(uncertainty) && uncertainty > 0 ? `${text} ±${Math.round(uncertainty)} ms` : text;
 }
 export const probability = value => (Number.isFinite(value) ? value.toFixed(2) : '—');
+
+// ---- "What the model saw / wrote" (`inspect_turns`): each kept turn's requests as text. The server never sends audio: a clip is its length.
+const PASS_LABELS = { first: 'First answer', again: 'Asked again', 'tool follow-up': 'After the tool', early: 'Early reply (before the decision)' };
+const REMOVED_LABELS = { header: 'Hidden header lines', markup: 'Tool-call markup', control: 'Control word or stage direction' };
+const text = value => (value === null || value === undefined ? '' : String(value));
+export function requestText(request) {
+    if (!request || typeof request !== 'object') return '';
+    const lines = [];
+    if (request.system) lines.push('SYSTEM:\n' + text(request.system));
+    for (const message of Array.isArray(request.messages) ? request.messages.slice(-80) : []) lines.push(text(message?.role || '?').toUpperCase() + ':\n' + text(message?.text));
+    const tools = Array.isArray(request.tools) ? request.tools.map(text) : [];
+    lines.push('TOOLS OFFERED: ' + (tools.length ? tools.join(', ') + ` (${request.tool_mode === 'native' ? 'native' : 'described in the text'})` : 'none')
+               + (request.allow_tools ? '' : '; none may run this reply'));
+    if (Number(request.audio_s) > 0) lines.push(`AUDIO: ${Number(request.audio_s).toFixed(1)} s (not shown)`);
+    if (Number(request.context_clips) > 0) lines.push(`OVERHEARD CLIPS: ${Number(request.context_clips)}`);
+    const turn = request.tool_turn;
+    if (turn && typeof turn === 'object') lines.push(`TOOL RESULT (${text(turn.name)} ${text(turn.arguments)}):\n` + text(turn.result) + (turn.image ? '\n[a camera picture was sent; never kept]' : ''));
+    return lines.join('\n\n').slice(0, 200000);
+}
+export function figuresText(done) {
+    if (!done || typeof done !== 'object') return '';
+    const parts = [];
+    if (done.finish_reason) parts.push('finish: ' + text(done.finish_reason));
+    if (Number.isFinite(done.tool_calls)) parts.push('tool calls: ' + done.tool_calls);
+    if (Number.isFinite(done.reasoning_chars)) parts.push('thinking: ' + done.reasoning_chars + ' chars');
+    if (Number.isFinite(done.prompt_tokens)) parts.push('prompt: ' + done.prompt_tokens + ' tokens' + (Number.isFinite(done.cached_tokens) ? ` (${done.cached_tokens} cached)` : ''));
+    return parts.join(' · ');
+}
+export function inspectView(turns) {
+    return (Array.isArray(turns) ? turns : []).filter(item => item && typeof item.turn === 'string').map(item => ({
+        turn: item.turn, at: Number(item.at) || 0, audio: Number(item.audio_s) || 0, whisper: text(item.whisper),
+        spoken: (Array.isArray(item.spoken) ? item.spoken : []).map(text).join(' '),
+        tools: (Array.isArray(item.tools) ? item.tools : []).map(use => `${text(use?.name)}: ${use?.ok ? 'done' : 'failed'} · ${text(use?.result).slice(0, 200)}`),
+        passes: (Array.isArray(item.passes) ? item.passes : []).map((pass, index) => ({
+            key: item.turn + ':' + index, label: PASS_LABELS[pass?.kind] || text(pass?.kind) || 'Request',
+            saw: requestText(pass?.request), raw: text(pass?.raw), error: text(pass?.error), figures: figuresText(pass?.done),
+            filtered: pass?.filtered !== false, after: pass?.after === null || pass?.after === undefined ? null : text(pass.after),
+            heard: text(pass?.filters?.user_line), language: text(pass?.filters?.language),
+            control: pass?.filters?.control ? `[${text(pass.filters.control).toUpperCase()}]` + (pass.filters.control_reason ? ' ' + text(pass.filters.control_reason) : '') : '',
+            calls: (Array.isArray(pass?.proposals) ? pass.proposals : []).map(call => `${text(call?.name)} ${text(call?.arguments)}`),
+            removed: Object.entries(pass?.removed || {}).filter(([, value]) => text(value)).map(([name, value]) => ({ name, label: REMOVED_LABELS[name] || name, text: text(value) })),
+        })),
+    }));
+}
+
+// ---- memory (`memory_view`): the window, the summary chapters with what each covers, the standing notes and compaction runs
+export function memoryView(view) {
+    if (!view || typeof view !== 'object' || !Number.isFinite(view.window)) return null;
+    const chapters = (Array.isArray(view.chapters) ? view.chapters : []).map(item => ({
+        seq: item?.seq, label: `Chapter ${Number(item?.seq) + 1 || '?'}`, turns: Number(item?.turns) || 0,
+        covers: item?.first ? (item.first === item.last ? text(item.first) : `${text(item.first)} … ${text(item.last)}`) : '',
+        at: Number(item?.time) || 0, tokens: Number(item?.tokens) || 0, chars: Number(item?.chars) || 0, stale: !!item?.stale, summary: text(item?.summary) }));
+    const used = (Number(view.chapters_tokens) || 0) + (Number(view.standing_tokens) || 0) + (Number(view.verbatim_tokens) || 0);
+    const budget = view.budget || {};
+    return { window: view.window, used, ratio: view.window > 0 ? used / view.window : 0, chapters, chaptersTokens: Number(view.chapters_tokens) || 0,
+             chaptersMax: Number(budget.chapters_max) || 0, verbatimTurns: Number(view.verbatim_turns) || 0, verbatimTokens: Number(view.verbatim_tokens) || 0,
+             verbatimHigh: Number(budget.verbatim_high) || 0, standing: text(view.standing), standingTokens: Number(view.standing_tokens) || 0,
+             covered: Number(view.covered) || 0, older: !!view.summary_without_chapters,
+             compactions: (Array.isArray(view.compactions) ? view.compactions : []).slice().reverse().map(item => ({
+                 at: Number(item?.at) || 0, ok: !!item?.ok, kind: text(item?.kind) || 'compaction', text: memoryEventText(item) })) };
+}
+
+// One memory event (convo_inspect.compaction) in words: a compaction run, a kept chapter, a swap, a warm-up or a fallback.
+const FALLBACKS = {
+    slots_unknown: 'The model server did not say how many requests it holds at once: treated as one slot, requests not pinned',
+    utility_not_consented: 'No summaries written: the utility model is outside your network and you have not allowed it',
+    utility_unknown: 'No summaries written: Agent Zero’s utility model could not be read',
+};
+export function memoryEventText(item) {
+    const reason = text(item?.reason), slot = Number.isInteger(item?.slot) ? ` (slot ${item.slot})` : '';
+    switch (text(item?.kind)) {
+        case 'written': return 'A chapter was written; kept until a reply’s text is complete or a spare slot is warm';
+        case 'swap': return item?.ok ? `A chapter was swapped in${slot}` : 'A kept chapter no longer matched the turns; it will be written again';
+        case 'warm': return item?.ok ? `The new start was warmed up${slot}${Number.isFinite(item?.ms) ? ` in ${item.ms} ms` : ''}`
+            : `Warm-up ${reason === 'stopped' ? 'stopped: you started speaking' : 'failed'}${slot}; the next reply reads the start itself`;
+        case 'fallback': return FALLBACKS[reason] || `Fallback (${reason || 'unknown'})`;
+        default: return item?.ok ? 'A chapter was written and swapped in' : `Compaction deferred (${reason || 'unknown'}); the turns stay word for word`;
+    }
+}

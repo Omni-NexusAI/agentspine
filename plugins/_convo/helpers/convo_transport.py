@@ -166,8 +166,16 @@ class Sidecar:
             response.raise_for_status()
             return response.json()
 
+    async def slots(self, role):
+        """The conversation model server's slots as the gateway found them (sidecar/app.py `/slots`): {kind, slots}."""
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False) as client:
+            response = await client.post(self.url + "/slots", json={"role": role}, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
     async def answer(self, payload):
-        async with httpx.AsyncClient(timeout=httpx.Timeout(65, connect=5), follow_redirects=False, trust_env=False) as client:
+        # Long enough for a router to load the model this request names (the gateway allows 180 s for the first token).
+        async with httpx.AsyncClient(timeout=httpx.Timeout(190, connect=5), follow_redirects=False, trust_env=False) as client:
             async with client.stream("POST", self.url + "/answer", json=payload, headers=self.headers) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():

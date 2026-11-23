@@ -19,7 +19,7 @@ export const defaults = {
   "activation_names": [],
   "hotkey": "Ctrl+Shift+Space",
   "sidecar": {
-    "managed": false,
+    "managed": true,
     "url": "http://convo-runtime:8090",
     "token_env": "CONVO_SIDECAR_TOKEN",
     "remote": false
@@ -68,7 +68,8 @@ export const defaults = {
       "capabilities": {
         "audio_output": true,
         "cloning": true
-      }
+      },
+      "tuning": {"profile_id": "", "overrides": {}}
     }
   },
   "compaction": {
@@ -86,8 +87,18 @@ export const defaults = {
   "speculative_reply": false,
   "main_listen_decision": false,
   "continuation_seconds": 7,
-  "first_clause_speech": false,
+  "first_clause_speech": true,
   "recent_remarks_seconds": 0,
+  "answer_tokens": 1024,
+  "summary_writer": "conversation",
+  "utility_summary_consent": false,
+  "barge_in_seconds": 1.0,
+  "end_of_turn_seconds": 0.9,
+  "noise_gate_db": -50,
+  "voice_name": "",
+  "voice_profile": "",
+  "show_diagnostic_events": false,
+  "show_rejected_responses": false,
   "policy_gate": {
     "respond_min": 0.3,
     "ambient_respond_min": 0.9,

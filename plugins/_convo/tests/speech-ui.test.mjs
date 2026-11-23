@@ -311,13 +311,15 @@ test('Your audio.cpp port is offered, and nothing changes until you confirm one 
     }
 });
 
-test('Managed audio.cpp shows why it cannot speak while the runtime is off; the inline switch is the existing setting', async () => {
+test('Managed audio.cpp shows why it cannot speak while Convo’s own runtime is off; the switch lives on its own card, never hidden', async () => {
     const f = await setupFixture({ ...AUDIOCPP, connection: 'managed', backend: 'managed_audio' });
-    assert.match(f.store.speechReason(), /Manage runtime/);
-    f.store.config.sidecar.managed = true;
+    assert.equal(f.store.config.sidecar.managed, true);                                   // Convo's own runtime is the default
     assert.equal(f.store.speechReason(), '');
-    const html = await readWebui('speech-output-field.html');
-    assert.match(html, /x-show="\$store\.convoSetup\.show\('tts', 'runtime'\)"[\s\S]*?x-model="\$store\.convoSetup\.config\.sidecar\.managed"/);
+    f.store.config.sidecar.managed = false;
+    assert.match(f.store.speechReason(), /Run Convo’s own runtime/);
+    const speech = await readWebui('speech-output-field.html'), runtime = await readWebui('runtime-field.html');
+    assert.doesNotMatch(speech, /x-model="\$store\.convoSetup\.config\.sidecar\.managed"/);     // no switch behind the speech choice
+    assert.match(runtime, /data-convo-field="runtime-managed"[^>]*x-model="\$store\.convoSetup\.config\.sidecar\.managed"/);
 });
 
 test('Kokoro off says so, and other host speech found only in the browser is listed but cannot be chosen', async () => {

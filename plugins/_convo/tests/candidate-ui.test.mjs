@@ -30,6 +30,8 @@ async function fixture(t, {respond} = {}) {
         './view-helpers.js':await import('../webui/view-helpers.js'),   // pure and import-free: the real modules
         './orb.js':await import('../webui/orb.js'),
         './dictation.js':await import('../webui/dictation.js'),
+        './sound-setup.js':await import('../webui/sound-setup.js'),
+        './plain-text.js':await import('../webui/plain-text.js'),
         '/plugins/_whisper_stt/webui/whisper-stt-store.js':{store:{initRuntime:async()=>{},getSelectedDevice:()=>({})}},
     };
     const modules=new Map();
@@ -195,7 +197,7 @@ test('BP3c: a stale answer (the epoch moved on) is dropped silently',async t=>{
 test('BP3c: any other refusal is still reported as the outage it is, and ducks',async t=>{
     const f=await fixture(t,{respond:event=>event==='convo.candidate'?refused({}):null});
     f.mic.onStart();f.mic.onProbe('p1');await settle(10);
-    assert.match(f.store.error,/Turn policy unavailable/);
+    assert.match(f.store.error,/couldn't check this speech/);
     assert.equal(f.ducks().at(-1),true);
     await f.store.stop();
 });
@@ -219,7 +221,7 @@ test('BP3c: a completed turn that stays busy is reported as not answered, and re
     f.mic.onTurn('final-wave');await settle(80);
     assert.equal(f.sent().filter(s=>s.final).length,4);                  // the first try and the three retries of this test's schedule
     assert.match(f.store.error,/still busy with an earlier turn, so this one was not answered/);
-    assert.doesNotMatch(f.store.error,/policy unavailable/);
+    assert.doesNotMatch(f.store.error,/couldn't check this speech|classifier didn't answer/);
     assert.equal(f.ducks().at(-1),false);
     await f.store.stop();
 });

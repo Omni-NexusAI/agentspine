@@ -3,7 +3,7 @@ import { SPEECH_CONTROLS, SPEECH_GROUPS, SPEECH_PROVIDERS, TTS_BACKENDS, adoptPr
 import { NETWORK_HINT, credentialReferenceProblem } from '/plugins/_convo/webui/connection-rules.js';
 
 const STATUS = { ready: 'Verified', unverified: 'Not verified', unavailable: 'Unavailable', error: 'Error', checking: 'Checking…' };
-const MANAGED_OFF = 'Convo’s managed runtime is off. Turn on “Manage runtime” below and save to use it; switching it on never downloads or loads a model.';
+const MANAGED_OFF = 'Convo’s own runtime is off. Turn on “Run Convo’s own runtime” under Convo runtime below and save to use it; switching it on never downloads or loads a model.';
 
 // The speech output card (speech-output-field.html in Connections, speech-voice-field.html in Voice & Audio): a provider editor
 // in the style of Agent Zero's model settings. Methods only (see compose in setup-store.js); `this` is the shared settings store,
@@ -255,8 +255,8 @@ export const speechSetup = {
     },
     speechTuningText() {
         const tuning = this.speechServer()?.tuning;
-        return tuning ? `Tuning: ${tuning.label} — your server’s current selection. Change it in your server’s own Voice Studio.`
-                      : 'Tuning is your server’s own selection; Test connection shows which one it uses.';
+        return tuning ? `Speaks with your server’s Realtime profile (${tuning.label}) unless you choose one in Sound → Voice; Convo never changes your server’s own selection.`
+                      : 'Speaks with your server’s Realtime profile unless you choose one in Sound → Voice; Test connection shows which one it uses.';
     },
     // Use the model the server already has loaded: a draft edit only, nothing is sent to the server.
     speechUseServerModel() { const model = this.speechServer()?.model; if (model) this.speechUpdate({ model }); },

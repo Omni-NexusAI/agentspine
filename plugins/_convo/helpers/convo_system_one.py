@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import sys
+from array import array
 import importlib
 import io
 import json
@@ -19,13 +21,17 @@ from collections.abc import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from .convo_contract import DECIDER_KINDS, AddressRefused, ContractError, classifier_url, local_host, validate_audio
+from .convo_policy import CONVERSATION
 from .convo_classifier_catalog import DEFAULT_DECIDER_URL
 
 
-# The wording of these questions was measured, not guessed (UI_BACKEND_CYCLE_RESULTS_20261015.md, "Speech gate"): short, plain sentences
+# The wording of these questions was measured, not guessed: short, plain sentences
 # describing what the speaker is doing, with the cues a listener uses, read the decision model far better than verbose policy prose, and
 # the state is one plain sentence rather than a JSON document. The attention classes are the vocabulary of convo_policy.ATTENTION.
 QUESTIONS = {
+    # Re-measured 2026-11-08 (.runtime/convo-live-test/analyze_wording_20261108.py): a wording that counts statements, answers and
+    # comments as addressed made acknowledgements read as addressed far more often (31-42% of "mm-hmm" answered against 4%) and
+    # lifted television and other speakers too, so this wording stays.
     'attention': {'type': 'choice', 'instructions': 'What is the speaker doing in this audio?',
                   'criteria': {'addressed': 'Asks the assistant a question, gives it a request or command, or tells it to stop or wait; it does not name or speak to another person',
                                'backchannel': 'A very short acknowledgement such as mm-hmm, yeah, okay or right',
@@ -40,6 +46,7 @@ QUESTIONS = {
                           'criteria': {'yes': 'Yes, the assistant is called by name to get its attention', 'no': 'No'}},
 }
 HEARD_LIMIT = 300      # characters of the assistant's last spoken reply the model is told about
+WINDOW = 0.02          # seconds per level reading when measuring how long the speech itself lasted
 # After a question, only a short clip is read as its answer. Measured (three synthetic voices, 163 sentences, shipped floor .15): told the
 # assistant had just asked something, the model read 78% of unfinished thoughts, 93% of acknowledgements and 40% of talk to someone else
 # as addressed (24% / 8% / 24% without), because anything said after a question looks like its answer. Answers to a question are short;
@@ -67,16 +74,36 @@ def _questions(names):
 
 def _last_heard(recent):
     """What the user most recently heard the assistant say, bounded, or ''. A reply such as "Yes, please." means nothing without it.
-    Only delivered speech counts: a reply that was generated but never played is not something the user is answering."""
-    for turn in reversed(recent if isinstance(recent, (list, tuple)) else ()):
-        text = turn.get('assistant') if isinstance(turn, Mapping) else None
-        if isinstance(text, str) and text.strip():
-            return ' '.join(text.split())[-HEARD_LIMIT:]
-    return ''
+    Only delivered speech counts: a reply that was generated but never played is not something the user is answering. And only when
+    nothing the user said came after it: when the latest turn is still unanswered (its reply not yet heard) or was answered with
+    silence, the user's own words are the last thing said, not the assistant's. Measured 2026-11-17 on the recorded corpus (d1-omni-600M,
+    the shipped wording): told what the assistant had said, the model read 53-75% of real requests as not for it, against 1-13%
+    read plainly, so a question asked while an earlier answer was still coming read as an acknowledgement."""
+    turns = [turn for turn in (recent if isinstance(recent, (list, tuple)) else ()) if isinstance(turn, Mapping)]
+    text = turns[-1].get('assistant') if turns else None
+    return ' '.join(text.split())[-HEARD_LIMIT:] if isinstance(text, str) and text.strip() else ''
 
 
 def _is_question(reply):
     return reply.rstrip(' "\'').endswith('?')
+
+
+def _voiced(frames, rate, channels):
+    """How long the speech itself lasts in a PCM16 clip, in seconds (first to last loud moment), without the endpoint's quiet. The
+    classifier still hears the whole clip: trimming the quiet changed nothing resolvable on the corpus (2026-11-08), and the gate
+    floors were fitted with it."""
+    channels = max(1, channels)
+    samples = array('h')
+    samples.frombytes(frames[:len(frames) - len(frames) % 2])
+    if sys.byteorder == 'big':
+        samples.byteswap()
+    step = max(1, int(rate * WINDOW)) * channels
+    peaks = [max(max(chunk), -min(chunk)) for chunk in (samples[i:i + step] for i in range(0, len(samples), step)) if len(chunk)]
+    floor = max(64, max(peaks, default=0) // 10)      # 20 dB under the loudest moment, and above digital near-silence
+    loud = [index for index, peak in enumerate(peaks) if peak >= floor]
+    if not loud:
+        return None
+    return (loud[-1] - loud[0] + 1) * step / (rate * channels)
 
 
 def _state_text(context, transcript, seconds=None):
@@ -91,6 +118,8 @@ def _state_text(context, transcript, seconds=None):
     short = len(transcript.split()) <= QUESTION_CONTEXT_WORDS if transcript is not None else seconds is not None and seconds <= QUESTION_CONTEXT_SECONDS
     if heard and _is_question(heard) and not short:
         heard = ''
+    # Only what the assistant last said: measured, more about earlier turns made talk to someone else read as a request
+    # (test_nothing_about_earlier_turns_reaches_the_model_but_what_the_assistant_last_said). The conversation model has the history.
     return text + (' The assistant had just said: ' + json.dumps(heard, ensure_ascii=False) + '.' if heard else '')
 
 
@@ -101,6 +130,15 @@ class PolicyUnavailable(ContractError):
 class PolicyBusy(PolicyUnavailable):
     """The selected backend is still finishing an earlier call. A native worker cannot be interrupted by cancelling its
     caller, so after a classifier timeout it stays busy until that call returns; a completed turn waits for it, briefly."""
+
+
+# How long Convo waits for one classifier answer (`api/realtime.py` CLASSIFIER_DEADLINE; a test keeps the two equal). A later
+# answer is never used, so a backend whose call Convo cannot cancel (a native worker) gives the call up by then: a call that hangs
+# costs one decision instead of keeping the classifier busy for the turns after it. Measured 2026-11-17: twice in 346 calls a request
+# to the decision server never finished connecting, and the decision plugin's 20 s socket bound kept the classifier busy for over
+# 10 s, so the next question went unjudged. Convo still waits CLASSIFIER_RELEASE_WAIT for a call to let go, so ending a little
+# after this bound is safe.
+CALL_SECONDS = 1.5
 
 
 def _registry(create=False):
@@ -280,12 +318,15 @@ async def policy(payload, *, config):
     ambient = ambient or context.get('mode') in ('ambient', 'name')
     if state.get('remote') and ambient and current.get('remote_ambient_consent') is not True:
         raise PolicyUnavailable('Remote ambient policy requires explicit Convo consent')
-    sdk, audio, seconds = entry['sdk'], None, None
+    sdk, audio, seconds, voiced = entry['sdk'], None, None, None
     if payload.get('audio') is not None:
         validate_audio(payload['audio'], current['max_audio_seconds'])
         with wave.open(io.BytesIO(base64.b64decode(payload['audio'], validate=True)), 'rb') as wav:
-            audio = sdk.AudioInput(wav.readframes(wav.getnframes()), wav.getframerate(), wav.getnchannels())
-            seconds = wav.getnframes() / wav.getframerate()
+            frames, rate, channels = wav.readframes(wav.getnframes()), wav.getframerate(), wav.getnchannels()
+            seconds = wav.getnframes() / rate
+            if context.get('candidate_final') is True:
+                voiced = _voiced(frames, rate, channels)            # how long the user actually spoke (the short-acknowledgement rule)
+            audio = sdk.AudioInput(frames, rate, channels)
     transcript = payload.get('transcript') if audio is None else None
     if transcript is not None and (not isinstance(transcript, str) or not 0 < len(transcript) <= 24000):
         raise ContractError('Invalid bounded policy transcript')
@@ -294,7 +335,9 @@ async def policy(payload, *, config):
         raise ContractError('Policy images must be decoded SDK RGB inputs, never paths or URLs')
     if audio is None and transcript is None and not images:
         raise ContractError('Policy needs a completed text or media observation')
-    text = _state_text(context, transcript, seconds)
+    # Over the assistant's reply, the speech is read without its last words (convo_policy.OVERLAP: that line makes nearly anything
+    # read as an acknowledgement).
+    text = _state_text({} if context.get('overlap') else context, transcript, seconds)
     if len(text) > 16000:
         raise ContractError('Complete policy context exceeds limit')
     request = sdk.DecisionRequest(_questions(context.get('names')), text=text, images=images, audio=audio)
@@ -310,6 +353,9 @@ async def policy(payload, *, config):
     if not isinstance(answers, Mapping) or set(answers) != set(QUESTIONS):
         raise PolicyUnavailable('System One returned missing or unexpected policy answers')
     chosen = {key: _choice(answers[key], question, sdk) for key, question in QUESTIONS.items()}
+    ack = None
+    if voiced is not None and voiced <= CONVERSATION['backchannel_seconds']:
+        ack = await _acknowledgement(entry, sdk, answers, context, transcript, seconds, images, audio, text)
     attention, confidence = chosen['attention']
     explicit = chosen['explicit_request'][0] == 'yes' and chosen['explicit_request'][1] >= .9
     speech = 'speak' if attention == 'addressed' else 'clarify' if attention == 'unclear' else 'silent'
@@ -328,7 +374,30 @@ async def policy(payload, *, config):
             'attention': attention,
             'attention_probabilities': {name: float(answers['attention'].probabilities[name]) for name in QUESTIONS['attention']['criteria']},
             'explicit_probability': float(answers['explicit_request'].probabilities['yes']),
-            'name_probability': float(answers['addressed_by_name'].probabilities['yes'])}
+            'name_probability': float(answers['addressed_by_name'].probabilities['yes']),
+            **({'speech_seconds': round(voiced, 3)} if voiced is not None else {}),
+            **({'ack_respond': round(ack, 4)} if ack is not None else {})}
+
+
+async def _acknowledgement(entry, sdk, answers, context, transcript, seconds, images, audio, text):
+    """For a short finished turn: the chance it is for the assistant read WITHOUT the assistant's last words, when it looks like an
+    acknowledgement, or None. Measured 2026-11-08 (.runtime/convo-live-test, 456 corpus clips and 32 statements): told what the
+    assistant had just said, d1-omni-600M reads nearly everything after it as an acknowledgement ("Should I do it?" as surely as
+    "mm-hmm"); without that line it tells short questions from acknowledgements, but reads fewer acknowledgements as one. So the
+    reading with the context only nominates, and the plain one decides (convo_policy.conversation_verdict). One more call, only then."""
+    probabilities = answers['attention'].probabilities
+    plain = _state_text({}, transcript, seconds)
+    if text == plain:                                    # nothing about the assistant was said: this reading is already the plain one
+        return float(probabilities['addressed'] + probabilities['unclear']) if probabilities['backchannel'] >= probabilities['side_conversation'] else None
+    if probabilities['backchannel'] < CONVERSATION['backchannel_min']:
+        return None
+    try:
+        second = await entry['consumer'].evaluate_request(sdk.DecisionRequest(_questions(context.get('names')), text=plain, images=images, audio=audio))
+        _choice(second['attention'], QUESTIONS['attention'], sdk)
+    except Exception:
+        return None                                      # no second reading: the turn is answered (never dropped on a failed check)
+    again = second['attention'].probabilities
+    return float(again['addressed'] + again['unclear'])
 
 
 # ---- The classifier's decision source (settings `decider.*`): the toggle "Use System One's decider" (`system_one`) or Convo's own

@@ -153,9 +153,9 @@ class CardConnectionTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
         saved = self.setup.read()
         self.setup.save(saved['config'], saved['revision'], {'conversation': 'saved-key-0123456789'})
         self.assertEqual(self.setup.read()['key_bound'], {'conversation': 'http://127.0.0.1:8080/v1'})
-        moved = {'provider': '', 'url': 'http://desktop-i96ld4g:8098/v1'}
+        moved = {'provider': '', 'url': 'http://desktop-example:8098/v1'}
         result = self.setup.key_rebind('conversation', moved)
-        self.assertEqual(result['key_bound'], {'conversation': 'http://desktop-i96ld4g:8098/v1'})
+        self.assertEqual(result['key_bound'], {'conversation': 'http://desktop-example:8098/v1'})
         self.assertNotIn('saved-key-0123456789', json.dumps(result))
         self.assertEqual(result['config']['roles']['conversation']['url'], 'http://127.0.0.1:8080/v1')   # no setting changed
         with self.assertRaises(ValueError):

@@ -55,7 +55,9 @@ class Decision(Scenario):
     def setUp(self):
         importlib.import_module('plugins._convo.helpers.convo_metrics').LOG.reset()
 
-    def reply(self, deltas, *, decision=SPEAK_PLAIN, config=LISTEN, **options):
+    def reply(self, deltas, *, decision=SPEAK_PLAIN, config=LISTEN, mode='ambient', **options):
+        """[LISTEN] is offered only outside a conversation the user started (ambient or name listening)."""
+        config = {**config, 'ambient_enabled': True} if mode != 'active' else config
         importlib.import_module('plugins._convo.helpers.convo_metrics').LOG.reset()
         async def scenario(h):
             await h.candidate('q', h.audio('question'), final=True)
@@ -63,7 +65,7 @@ class Decision(Scenario):
             return {'text': ''.join(p.get('text', '') for _, p in h.events('text.delta', 'q')), 'spoken': [t for _, t in h.spoken], 'errors': h.events('error', 'q'),
                     'journal': [(r['kind'], r['payload'].get('text')) for r in h.journal() if r['kind'].startswith('assistant')], 'marks': marks('q'),
                     'systems': [a['system'] for a in h.answers], 'accepted': h.accepted_turns(), 'delivered': h.journal('assistant.delivered')}
-        facts, _ = self.play(scenario, model_deltas=deltas, config=config, classifier={'question': script(decision, .2)}, **options)
+        facts, _ = self.play(scenario, model_deltas=deltas, config=config, classifier={'question': script(decision, .2)}, mode=mode, **options)
         return facts
 
     def test_the_model_is_told_it_may_stay_quiet_only_when_the_setting_is_on(self):
@@ -115,11 +117,11 @@ class Decision(Scenario):
                 yield item
         ScriptedSidecar.answer = answer
         try:
-            facts, _ = self.play(scenario, config=LISTEN, classifier={'question': script(SPEAK, .2)})
+            facts, _ = self.play(scenario, config={**LISTEN, 'ambient_enabled': True}, classifier={'question': script(SPEAK, .2)}, mode='ambient')
         finally:
             ScriptedSidecar.answer = original
         self.assertEqual(facts['systems'], [True, False])
-        self.assertEqual(facts['spoken'], [SENTENCE])                                       # the second answer, once
+        self.assertEqual([text.strip() for text in facts['spoken']], [SENTENCE.strip()])    # the second answer, once
         self.assertEqual(facts['marks'], ['model.listen_overridden'])
         self.assertEqual(facts['errors'], [])
 
@@ -129,9 +131,11 @@ class Decision(Scenario):
         self.assertEqual(facts['text'].strip(), 'Sure, I will look that up for you right now.')
         self.assertEqual(len(facts['errors']), 1)
 
-    def test_with_a_held_parallel_reply_the_token_still_only_suppresses(self):
-        facts = self.reply([('[LISTEN]', .1)], config={**LISTEN, 'speculative_reply': True})
-        self.assertEqual((facts['text'], facts['spoken'], facts['marks']), ('', [], ['model.listen']))
+    def test_a_conversation_the_user_started_never_offers_the_token(self):
+        """Active listening (where a held parallel reply runs): the model is never told it may stay quiet, so its answer is spoken."""
+        facts = self.reply([(SENTENCE, .1)], config={**LISTEN, 'speculative_reply': True}, mode='active')
+        self.assertNotIn('LISTEN', facts['systems'][0])
+        self.assertEqual(([text.strip() for text in facts['spoken']], facts['marks']), ([SENTENCE.strip()], []))
 
 
 if __name__ == '__main__':

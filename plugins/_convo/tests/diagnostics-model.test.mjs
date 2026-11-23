@@ -63,7 +63,7 @@ test('marks of one turn from the page and the server line up on one axis, with t
     assert.deepEqual(view.steps.filter(step => step.cross).map(step => [step.id, step.uncertainty]), [['audible', 20], ['playback', 20]]);
     assert.ok(view.steps.filter(step => !step.cross).every(step => step.uncertainty === null));   // one-clock steps are exact
     assert.deepEqual([view.final, view.disposition, view.outcome, view.short, view.at], [true, 'admit', 'Answered', 'turn-a', 1000]);
-    assert.deepEqual(view.context, { used: 9000, window: 16384, ratio: 9000 / 16384, over: false });
+    assert.deepEqual(view.context, { used: 9000, window: 16384, ratio: 9000 / 16384, over: false, leftOut: 0 });
     assert.deepEqual(view.speculation.state, 'none');
     assert.deepEqual(view.issues, []);
 });
@@ -232,4 +232,49 @@ test('times read as words: milliseconds, seconds and the clock uncertainty', () 
     assert.equal(formatMs(130, 20), '130 ms ±20 ms');
     assert.equal(formatMs(undefined), '—');
     assert.equal(model.probability(.456), '0.46');
+});
+
+test('a kept turn reads as text: every request with its kind, the raw output, what each filter took out, and never audio', () => {
+    const [view] = model.inspectView([{ turn: 't', at: 5, audio_s: 1.5, whisper: '', spoken: ['One.', 'Two.'], tools: [{ name: 'web_search', ok: true, result: 'r' }],
+        passes: [{ kind: 'first', request: { system: 'rules', messages: [], tools: [], allow_tools: false, audio_s: 1.5 },
+                   raw: '[SILENT] noise', removed: { header: '', markup: '', control: '[SILENT] noise' }, filters: { control: 'silent', control_reason: 'noise' },
+                   done: { finish_reason: 'stop', tool_calls: 0, reasoning_chars: 3, prompt_tokens: 900, cached_tokens: 800 }, after: '', filtered: true },
+                 { kind: 'early', request: { system: 's' }, raw: 'x', removed: {}, filters: {}, done: {}, after: null, filtered: false },
+                 { kind: 'tool follow-up', request: { system: 's', tool_turn: { name: 'web_search', arguments: '{"query":"q"}', result: 'Results', image: true } }, raw: '', removed: {}, filters: {}, done: {}, after: '' }] }]);
+    assert.deepEqual(view.passes.map(pass => pass.label), ['First answer', 'Early reply (before the decision)', 'After the tool']);
+    assert.equal(view.passes[0].control, '[SILENT] noise');
+    assert.deepEqual(view.passes[0].removed.map(item => [item.label, item.text]), [['Control word or stage direction', '[SILENT] noise']]);
+    assert.equal(view.passes[0].figures, 'finish: stop · tool calls: 0 · thinking: 3 chars · prompt: 900 tokens (800 cached)');
+    assert.match(view.passes[0].saw, /TOOLS OFFERED: none; none may run this reply/);
+    assert.match(view.passes[0].saw, /AUDIO: 1\.5 s \(not shown\)/);
+    assert.equal(view.passes[1].after, null);
+    assert.ok(view.passes[2].saw.includes('TOOL RESULT (web_search {"query":"q"}):\nResults\n[a camera picture was sent; never kept]'));
+    assert.equal(view.spoken, 'One. Two.');
+    assert.deepEqual(model.inspectView(null), []);
+});
+
+test('the memory view: chapters with what they cover, their time and size, the standing notes and compaction runs newest first', () => {
+    const view = model.memoryView({ window: 24000, budget: { chapters_max: 3000, verbatim_high: 8400 }, chapters_tokens: 300, standing_tokens: 20, verbatim_tokens: 1680,
+        chapters: [{ seq: 0, turns: 1, first: 'a', last: 'a', time: 1, tokens: 300, stale: true, summary: 'S' }], standing: 'N', verbatim_turns: 3, covered: 1,
+        compactions: [{ at: 1, ok: true }, { at: 2, ok: false, reason: 'TimeoutError' }] });
+    assert.equal(view.used, 2000);
+    near(view.ratio, 2000 / 24000, 1e-9);
+    assert.deepEqual([view.chapters[0].label, view.chapters[0].covers, view.chapters[0].stale], ['Chapter 1', 'a', true]);
+    assert.deepEqual(view.compactions.map(item => item.ok), [false, true]);
+    assert.match(view.compactions[0].text, /TimeoutError/);
+    assert.equal(model.memoryView({}), null);
+});
+
+test('memory events: a kept chapter, swaps, warm-ups (done, stopped by speech) and fallbacks each say what happened', () => {
+    const text = model.memoryEventText;
+    assert.match(text({ kind: 'written', ok: true }), /kept until/);
+    assert.equal(text({ kind: 'swap', ok: true, slot: 1 }), 'A chapter was swapped in (slot 1)');
+    assert.match(text({ kind: 'swap', ok: false }), /written again/);
+    assert.equal(text({ kind: 'warm', ok: true, ms: 420 }), 'The new start was warmed up in 420 ms');
+    assert.match(text({ kind: 'warm', ok: false, reason: 'stopped' }), /you started speaking/);
+    assert.match(text({ kind: 'fallback', reason: 'slots_unknown' }), /one slot/);
+    assert.match(text({ kind: 'fallback', reason: 'utility_not_consented' }), /outside your network/);
+    assert.match(text({ ok: true }), /written and swapped in/);         // a run from before kinds existed
+    const view = model.memoryView({ window: 1, compactions: [{ at: 1, ok: true, kind: 'warm', ms: 5 }] });
+    assert.equal(view.compactions[0].kind, 'warm');
 });

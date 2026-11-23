@@ -562,7 +562,11 @@ class EnhancedMicrophoneInput {
   }
 
   async toggle() {
-    const hasPermission = await this.requestPermission();
+    // No permission probe while this recorder already holds a live microphone: the probe opens a second capture, and on Android
+    // every microphone opened or closed can move the sound between the call and the media stream.
+    let holding = false;
+    try { holding = !!this.stream?.getAudioTracks?.().some((track) => track.readyState === "live"); } catch {}
+    const hasPermission = holding || (await this.requestPermission());
     if (!hasPermission) return;
 
     if (this.status === Status.INACTIVE || this.status === Status.ACTIVATING) {

@@ -7,7 +7,7 @@ import { COMPONENT, ENTRY_POINTS, readWebui, settingsFiles, settingsMarkup } fro
 
 const fixture = name => readFile(new URL('./fixtures/' + name, import.meta.url), 'utf8');
 const CARDS = ['settings-banner.html', 'conversation-model-field.html', 'classifier-model-field.html', 'speech-output-field.html',
-               'speech-voice-field.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
+               'runtime-field.html', 'speech-voice-field.html', 'sound-panel.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
 
 test('Both entry points embed the one shell, and the shell composes every card exactly once', async () => {
     for (const entry of ENTRY_POINTS) assert.match(await readWebui(entry), /<x-component path="\/plugins\/_convo\/webui\/settings-controls\.html">/, entry);
@@ -93,5 +93,7 @@ test('The Connections cards share one field structure and style source, with no 
 });
 
 test('Every card can render on its own: it loads the shared settings store itself', async () => {
-    for (const card of CARDS) assert.match(await readWebui(card), /^<html><head><script type="module">import \{ store \} from '\/plugins\/_convo\/webui\/setup-store\.js';<\/script><\/head><body>/, card);
+    // The sound panel edits per-device values (its own store, convoSound, created by convo-store.js), not the shared draft.
+    for (const card of CARDS.filter(card => card !== 'sound-panel.html')) assert.match(await readWebui(card), /^<html><head><script type="module">import \{ store \} from '\/plugins\/_convo\/webui\/setup-store\.js';<\/script><\/head><body>/, card);
+    assert.match(await readWebui('sound-panel.html'), /^<html><head><script type="module">import \{ sound \} from '\/plugins\/_convo\/webui\/convo-store\.js';<\/script><\/head><body>/);
 });

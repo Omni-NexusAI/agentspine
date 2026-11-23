@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DOUBLE_TALK_MS, EchoGuard, HUMAN_FLOOR_MAX_RMS, HUMAN_FLOOR_MIN_RMS, LEGACY_VOICED_RMS } from '../webui/echo-guard.js';
+import { claps as clapsOf, keyboard as keyboardOf, voiced as voiceOf } from './signals.mjs';
 
 const RATE = 48000;
 const INPUT_SAMPLES = 1920;                                  // one 40 ms analysis frame at 48 kHz
@@ -18,11 +19,12 @@ function tone(frequency, phase = 0, amplitude = 0.2) {
 // A guard plus a log of everything it released and withheld.
 function configure(mode) {
     const guard = new EchoGuard({ inputRate: RATE, mode, nativeAec: true });
-    guard.log = { released: [], dropped: 0, metrics: [], steps: [] };
+    guard.log = { released: [], dropped: 0, comfort: 0, metrics: [], steps: [] };
     guard.feed = (mic, reference) => {
         const results = guard.ingest(mic, reference);
         for (const step of results) {
             guard.log.released.push(...step.released); guard.log.dropped += step.dropped; guard.log.steps.push(step);
+            guard.log.comfort += step.frames.reduce((n, f, i) => n + (step.comfort[i] ? f.length : 0), 0);
             if (step.metric) guard.log.metrics.push(step.metric);
         }
         return results;
@@ -210,8 +212,9 @@ test('Conservation: every capture sample is released, withheld as dropped time, 
         guard.feed(frameOf(mic, frame), frameOf(reference, frame));
     }
     const released = guard.log.released.reduce((n, f) => n + f.length, 0);
-    assert.equal(released + guard.log.dropped + guard._pendingSamples, mic.length);
-    assert.ok(released > 0 && guard.log.dropped > 0, 'the scenario exercises both outcomes');
+    // Comfort noise stands in for withheld time once the user's speech over the reply is confirmed; frames waiting for voice are held.
+    assert.equal(released + guard.log.dropped + guard.log.comfort + guard._pendingSamples + guard._dtQueueSamples, mic.length);
+    assert.ok(released > 0 && guard.log.dropped > 0 && guard.log.comfort > 0, 'the scenario exercises every outcome');
 });
 
 test('Arbitrary block sizes (128-sample worklet quanta, odd lengths, no reference) give the same decisions as whole frames', () => {
@@ -335,3 +338,72 @@ test('Diagnostics say when the guard is withholding, and a held onset is release
     held.log.released.forEach((frame, i) => assert.ok(sameSamples(frame, mics[i]), `released frame ${i} is original and in order`));
     assert.equal(held.log.dropped, 0);
 });
+
+// ---- voicing and the coupled-state repair (2026-11): measured live, the user's voice over a reply latched `coupled` in ~0.24 s and
+// was then never released when the speaker was quiet or a headset was used. Synthetic voices (signals.mjs voiced) only.
+
+function run(mic, reference, { mode = 'adaptive', gateDb = -50 } = {}) {
+    const guard = new EchoGuard({ inputRate: RATE, mode, nativeAec: true, gateDb });
+    const steps = [];
+    for (let frame = 0; (frame + 1) * INPUT_SAMPLES <= mic.length; frame++)
+        steps.push(...guard.ingest(frameOf(mic, frame), reference ? frameOf(reference, frame) : null).map(step => ({ ...step, at: (frame + 1) * .04, state: guard._acousticState })));
+    return { guard, steps, firstRelease: steps.find(step => step.released.length)?.at ?? null, released: steps.reduce((n, step) => n + step.released.length, 0) };
+}
+const voiceAt = (seconds, rms, seed, f0) => voiceOf(seconds, RATE, { rms, seed, f0 });
+const pad = (signal, before, total) => { const out = new Float32Array(Math.round(total * RATE)); out.set(signal.subarray(0, out.length - Math.round(before * RATE)), Math.round(before * RATE)); return out; };
+
+test('Volume down / headset: the user\'s voice over a voiced reply is released within 0.6 s and never latches coupled', () => {
+    const playback = voiceAt(4, .1, 9, 115), user = pad(voiceAt(2, .05, 21, 195), 1, 4);
+    const r = run(user, playback);
+    assert.ok(r.firstRelease !== null && r.firstRelease - 1 <= .6, `released ${r.firstRelease} s (user began at 1 s)`);
+    assert.equal(r.steps.some(step => step.state === 'coupled'), false, 'two different voices do not make echo evidence');
+});
+
+test('coupled falls back to uncoupled after 240 ms of clean playback, and the user is then heard', () => {
+    const reference = deterministicNoise(INPUT_SAMPLES * 75, 0x7777), mic = new Float32Array(reference.length);
+    mic.set(roomEcho(reference, Math.round(RATE * .08), .4).subarray(0, INPUT_SAMPLES * 25));          // 1 s: speakers on
+    // 0.4 s: headset plugged in, nothing reaches the microphone; then the user speaks over the reply.
+    mic.set(voiceAt(1.6, .05, 3, 180), INPUT_SAMPLES * 35);
+    const r = run(mic, reference);
+    assert.equal(r.steps[24].state, 'coupled', 'the echo made it coupled');
+    assert.equal(r.steps[34].state, 'uncoupled', 'clean playback brought it back');
+    assert.ok(r.firstRelease !== null && r.firstRelease - 1.4 <= .6, `released ${r.firstRelease} s (user began at 1.4 s)`);
+});
+
+test('Echo alone (a voiced reply, delayed, attenuated and lightly filtered, with room noise) is withheld with the speakers on', () => {
+    for (const db of [-10, -20]) {
+        const playback = voiceAt(4, .1, 9, 115), gain = 10 ** (db / 20), mic = new Float32Array(playback.length);
+        const delay = Math.round(RATE * .06);
+        for (let i = delay; i < mic.length; i++) mic[i] = gain * (.7 * playback[i - delay] + .3 * (playback[i - delay - 1] ?? 0));
+        const room = deterministicNoise(mic.length, 0x5151);
+        for (let i = 0; i < mic.length; i++) mic[i] += room[i] * .02;
+        assert.equal(run(mic, playback).released, 0, `${db} dB`);
+    }
+});
+
+test('Claps and typing during a reply the microphone does not hear are never released as speech', () => {
+    const playback = voiceAt(4, .1, 9, 115);
+    assert.equal(run(clapsOf(4, RATE), playback).released, 0, 'claps');
+    assert.equal(run(keyboardOf(4, RATE), playback).released, 0, 'typing');
+});
+
+test('Each released frame carries its voicing verdict and raw level; the gate setting reaches voicing live', () => {
+    const r = run(voiceAt(1, .05, 4, 150), null);
+    const step = r.steps.find(item => item.released.length);
+    assert.equal(step.voiced.length, step.released.length); assert.equal(step.levels.length, step.released.length);
+    assert.ok(r.steps.slice(5).every(item => item.voiced.every(Boolean)), 'a voice is voiced');
+    assert.ok(r.steps.every(item => Number.isFinite(item.level)));
+    const guard = new EchoGuard({ inputRate: RATE });
+    assert.equal(guard.gateDb, -66, 'the class has no gate of its own; the session passes its setting');
+    guard.configure({ mode: 'adaptive', nativeAec: false, gateDb: -30 }); assert.equal(guard.gateDb, -30);
+    guard.setGate(-45); assert.equal(guard.gateDb, -45);
+});
+
+test('Double-talk state ends with playback: the next reply starts with no confirmed speech carried over', () => {
+    const playback = concat2(voiceAt(2, .1, 9, 115), new Float32Array(RATE));
+    const user = pad(voiceAt(1, .05, 21, 195), .5, 3);
+    const r = run(user, playback);
+    assert.ok(r.firstRelease !== null);
+    assert.equal(r.guard._doubleTalkActive, false); assert.equal(r.guard._doubleTalkSamples, 0);
+});
+function concat2(a, b) { const out = new Float32Array(a.length + b.length); out.set(a); out.set(b, a.length); return out; }

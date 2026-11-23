@@ -135,5 +135,30 @@ class NewSettings(unittest.TestCase):
             self.assertNotIn(leak, text)
 
 
+
+class SoundAndVoice(unittest.TestCase):
+    """The sound panel's defaults (the panel keeps its own per device), who the assistant is, and the developer history views."""
+    def test_defaults_keep_todays_behaviour(self):
+        self.assertEqual({key: DEFAULTS[key] for key in ('barge_in_seconds', 'end_of_turn_seconds', 'noise_gate_db', 'voice_name',
+                                                         'voice_profile', 'show_diagnostic_events', 'show_rejected_responses')},
+                         {'barge_in_seconds': 1.0, 'end_of_turn_seconds': 0.9, 'noise_gate_db': -50, 'voice_name': '',
+                          'voice_profile': '', 'show_diagnostic_events': False, 'show_rejected_responses': False})
+
+    def test_bounds_are_enforced(self):
+        good = validate_settings({'barge_in_seconds': .4, 'end_of_turn_seconds': 2.0, 'noise_gate_db': -66, 'voice_name': 'J.A.R.V.I.S',
+                                  'voice_profile': 'jarvis', 'show_diagnostic_events': True, 'show_rejected_responses': True})
+        self.assertEqual((good['voice_name'], good['voice_profile']), ('J.A.R.V.I.S', 'jarvis'))
+        for path, value in (('barge_in_seconds', .3), ('end_of_turn_seconds', .4), ('end_of_turn_seconds', 2.5), ('noise_gate_db', -2),
+                            ('noise_gate_db', -70), ('voice_name', 'two' + chr(10) + 'lines'), ('voice_name', 'x' * 65), ('voice_profile', '../agent0'),
+                            ('voice_profile', 'a b'), ('show_diagnostic_events', 1), ('show_rejected_responses', 'yes')):
+            with self.subTest(path=path, value=value), self.assertRaises(ContractError):
+                validate_settings(with_value(path, value))
+
+    def test_the_browser_sees_the_sound_and_history_settings_but_not_the_profile_path(self):
+        public = public_settings(validate_settings({'voice_name': 'Jarvis'}))
+        for key in ('barge_in_seconds', 'end_of_turn_seconds', 'noise_gate_db', 'voice_name', 'show_diagnostic_events', 'show_rejected_responses'):
+            self.assertIn(key, public)
+
+
 if __name__ == '__main__':
     unittest.main()

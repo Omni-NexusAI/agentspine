@@ -143,7 +143,21 @@ def normalize(value):
     result is validated again. Every settings writer stores this, never an unnormalized copy."""
     from . import convo_classifier_catalog, convo_model_catalog, speech_providers
     return validate_settings(speech_providers.normalize(convo_classifier_catalog.normalize(
-        convo_model_catalog.normalize(validate_settings(value)))))
+        convo_model_catalog.normalize(validate_settings(_own_runtime(value))))))
+
+
+def _own_runtime(value):
+    """With Convo's own runtime on, the external gateway's remote consent and a public gateway address are not in effect (the
+    runtime is local and overrides both); they are reset so the hidden fields can never make a save fail."""
+    from .convo_contract import local_host
+    from urllib.parse import urlsplit
+    sidecar = value.get('sidecar') if isinstance(value, dict) else None
+    if not isinstance(sidecar, dict) or sidecar.get('managed') is not True:
+        return value
+    url = sidecar.get('url') if isinstance(sidecar.get('url'), str) else ''
+    host = urlsplit(url).hostname or '' if url else ''
+    keep = url if host and local_host(host) else 'http://convo-runtime:8090'
+    return {**value, 'sidecar': {**sidecar, 'remote': False, 'url': keep}}
 
 
 def reject_credentials(value):

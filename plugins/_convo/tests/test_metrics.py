@@ -189,7 +189,9 @@ class VoicePathMarks(unittest.TestCase):
             return {'first_audible': h.first_audible('q'), 'state_sent': h.states('q')[-1][0]}
         facts = self.play(scenario, classifier={'question': script(SPEAK, .2)}, model_deltas=[('A complete answer.', .3)], tts_delay=.25)
         self.assertEqual(self.names('q'), ['candidate.received', 'policy.start', 'policy.done', 'policy.gate', 'admitted', 'state.sent', 'reply.start',
-                                           'ctx.estimate', 'answer.first_delta', 'speech.request', 'audio.first', 'reply.done', 'playback.started',
+                                           'ctx.estimate', 'answer.first_delta', 'speech.request', 'speech.language', 'speech.sent', 'audio.first',
+                                           'speech.requests',
+                                           'reply.done', 'playback.started',
                                            'playback.completed'])
         marks = {m['name']: m for r in LOG.records(500) if r['turn'] == 'q' for m in r['marks']}
         received = marks['candidate.received']['t']
@@ -197,6 +199,10 @@ class VoicePathMarks(unittest.TestCase):
         self.assertAlmostEqual(marks['answer.first_delta']['t'] - received, .5, places=3)                        # .2 classifier + .3 model
         self.assertEqual(marks['state.sent']['disposition'], 'admit')
         self.assertEqual((marks['candidate.received']['sequence'], marks['candidate.received']['final']), (1, True))
+        # what the speech request carried: how much text, in which language and by which path; never the words
+        self.assertEqual((marks['speech.sent']['chars'], marks['speech.sent']['path']), (len('A complete answer.'), 'wav'))
+        self.assertIn('language', marks['speech.sent'])
+        self.assertIn('language', marks['speech.language'])
         self.assertEqual(marks['ctx.estimate']['ctx_window'], 16384)                                             # the configured window
         self.assertTrue(4096 + 2048 < marks['ctx.estimate']['ctx_used'] < 16384)                                  # audio + response reserves and the request
         self.assertEqual((marks['policy.gate']['gate'], marks['policy.gate']['mode']), ('fixed', 'active'))
@@ -230,8 +236,10 @@ class VoicePathMarks(unittest.TestCase):
             await h.settle()
         self.play(scenario, classifier={'slow': script(SPEAK, 2.0), 'broken': script(SPEAK, .1, fail=True)})
         counts = LOG.summary()['counts']
-        # A completed turn is asked twice (BP3d), so each of these finals records two failed calls and one retry between them.
-        self.assertEqual((counts.get('policy.timeout'), counts.get('policy.error'), counts.get('policy.retry'), counts.get('disposition.admit')), (2, 2, 2, None))
+        # A completed turn is asked twice (BP3d), so each of these finals records two failed calls and one retry between them. In a
+        # conversation the user started it is then answered without a classifier reading (policy.unjudged), never lost.
+        self.assertEqual((counts.get('policy.timeout'), counts.get('policy.error'), counts.get('policy.retry'), counts.get('disposition.admit')), (2, 2, 2, 2))
+        self.assertEqual([self.names(turn).count('policy.unjudged') for turn in ('slow', 'broken')], [1, 1])
         self.assertEqual(self.names('slow').count('policy.error'), 0)               # a timeout is not also an error
         self.assertEqual(self.names('slow').count('policy.start'), 2)
         self.assertEqual(self.names('slow').count('policy.retry'), 1)
@@ -258,16 +266,17 @@ class VoicePathMarks(unittest.TestCase):
         self.assertAlmostEqual(final['p_respond'], .65, places=3)
         self.assertEqual((probe['final'], probe['mode'], probe['p_explicit'], probe['disposition']), (False, 'active', .4, 'withhold'))
 
-    def test_an_over_full_context_is_recorded_before_the_reply_is_refused(self):
+    def test_an_over_full_context_is_recorded_and_the_turn_is_still_answered(self):
+        # No turn is ever refused for size (convo_memory): the estimate is recorded for the developer view and the reply goes ahead.
         async def scenario(h):
             await h.candidate('q', h.audio('question'), final=True)
             await h.settle()
-            self.assertIsNone(h.first_audible('q'))
+            self.assertIsNotNone(h.first_audible('q'))
         self.play(scenario, classifier={'question': script(SPEAK, .2)}, config={'audio_token_reserve': 16000})
         names = self.names('q')
         context = [m for r in LOG.records(500) if r['turn'] == 'q' for m in r['marks'] if m['name'] == 'ctx.estimate'][0]
         self.assertGreater(context['ctx_used'], context['ctx_window'])
-        self.assertLess(names.index('ctx.estimate'), names.index('reply.error'))
+        self.assertNotIn('reply.error', names)
 
     def test_a_probe_is_never_retried_so_its_trouble_is_one_mark(self):
         async def probe(h):

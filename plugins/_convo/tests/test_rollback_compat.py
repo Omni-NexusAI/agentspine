@@ -27,7 +27,8 @@ HASHES = {'convo_contract.py': '4c8c84c4acab1688e74c38f4a55f2f8b66309b4ad87b3f1c
           'convo_policy.py': 'd593fc9d2356af939409817440b7568002f0ad04168be61a255f4e78645dd0ba',
           'speech_providers.py': '47e4f2b4ca7303106de89a6da6aef8699b5d9d233a574deff0dce0a754a3bb58'}
 NEW_KEYS = ('voice_message_draft', 'decider', 'roles.conversation.provider', 'roles.conversation.key_source', 'roles.conversation.api_base',
-            'roles.tts.provider', 'roles.tts.connection', 'roles.tts.key_source', 'roles.tts.provider_saved')
+            'roles.tts.provider', 'roles.tts.connection', 'roles.tts.key_source', 'roles.tts.provider_saved',
+            'summary_writer', 'utility_summary_consent')
 
 
 def at(config, path):
@@ -40,6 +41,7 @@ def everything_set():
     """A configuration this version can write, with every new setting away from its default."""
     return current.validate_settings({
         'voice_message_draft': 'continuous',
+        'summary_writer': 'utility', 'utility_summary_consent': True,
         'decider': {'source': 'convo', 'kind': 'd1_llama_cpp', 'url': 'http://host.docker.internal:9931', 'model': 'd1-omni-600M'},
         'roles': {
             'conversation': {'provider': 'openrouter', 'key_source': 'convo', 'api_base': 'https://openrouter.ai/api/v1', 'remote': True,

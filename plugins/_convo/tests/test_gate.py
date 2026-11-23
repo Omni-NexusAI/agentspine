@@ -330,6 +330,30 @@ class Profile(unittest.TestCase):
             validate_settings({'policy_gate': 'strict'})
 
 
+class ARequestOfTheUsersOwn(unittest.TestCase):
+    """`verified`: the evidence work needs before it starts. Live 2026-11-18: a plainly spoken "delegate that to the main chat" scored
+    0.99 as a request but was read as talk to someone else (0.80), and the old rule took the lower of the two."""
+
+    def test_a_typed_reading_counts_on_its_own_whatever_the_attention_class(self):
+        # as the consumer builds it: the confidence is the lower of the attention reading (.80) and the explicit one (.994)
+        heard_as_side_talk = typed(explicit=.994, confidence=.80, side_conversation=.80, addressed=.19)
+        self.assertLess(heard_as_side_talk.confidence, .9)
+        self.assertEqual(heard_as_side_talk.attention, 'side_conversation')
+        self.assertTrue(policy.verified(heard_as_side_talk))
+        self.assertTrue(policy.verified(typed(explicit=.9, addressed=.9)))
+        self.assertFalse(policy.verified(typed(explicit=.89, addressed=.99)))
+        self.assertFalse(policy.verified(typed(explicit=.2, addressed=.99, confidence=.99)))     # sure it was for the assistant, but no request
+
+    def test_an_untyped_classifier_is_believed_only_when_explicit_and_confident(self):
+        self.assertTrue(policy.verified(Decision('speak', 'none', .95, True)))
+        self.assertFalse(policy.verified(Decision('speak', 'none', .7, True)))
+        self.assertFalse(policy.verified(Decision('speak', 'delegate', .99, False)))
+
+    def test_a_turn_nobody_judged_carries_no_evidence(self):
+        self.assertFalse(policy.verified(Decision()))
+        self.assertFalse(policy.verified(Decision.parse({'speech': 'speak', 'action': 'none', 'confidence': 0.0})))
+
+
 class Reporting(unittest.TestCase):
     def test_a_typed_classifier_reports_a_calibrated_gate_with_its_constants(self):
         report = policy.gate_report(PROFILE, typed=True)

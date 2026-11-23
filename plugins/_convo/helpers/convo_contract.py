@@ -117,7 +117,7 @@ DEFAULTS = {
     "spoken_updates": "completion",
     "activation_names": [],
     "hotkey": "Ctrl+Shift+Space",
-    "sidecar": {"url": "http://convo-runtime:8090", "token_env": "CONVO_SIDECAR_TOKEN", "remote": False, "managed": False},
+    "sidecar": {"url": "http://convo-runtime:8090", "token_env": "CONVO_SIDECAR_TOKEN", "remote": False, "managed": True},   # Convo runs its own gateway
     # provider: an Agent Zero provider id ('' = the endpoint `url` exactly as entered). key_source "provider" uses Agent Zero's
     # own key for that provider when it holds one (Convo's write-only key otherwise); "convo" always uses Convo's key. api_base
     # overrides the provider's own address. Speech: provider is a speech catalog id ('' = derived from `backend`), connection says
@@ -127,7 +127,9 @@ DEFAULTS = {
     "roles": {
         "conversation": {"provider": "", "key_source": "provider", "api_base": "", "url": "http://host.docker.internal:8080/v1", "model": "", "token_env": "", "remote": False, "capabilities": {"audio_input": True, "cancellation": True, "tool_calls": True}},
         "classifier": {"provider": "", "key_source": "provider", "api_base": "", "context_window": 8192, "kind": "auto", "url": "", "model": "", "token_env": "", "remote": False, "capabilities": {"audio_input": True, "cancellation": True}},
-        "tts": {"backend": "openai", "provider": "", "connection": "", "key_source": "provider", "accepts_instructions": False, "url": "http://convo-audio:8080/v1", "model": "", "voice": "", "token_env": "", "remote": False, "capabilities": {"audio_output": True, "cloning": True}},
+        "tts": {"backend": "openai", "provider": "", "connection": "", "key_source": "provider", "accepts_instructions": False, "url": "http://convo-audio:8080/v1", "model": "", "voice": "", "token_env": "", "remote": False, "capabilities": {"audio_output": True, "cloning": True},
+                # Advanced synthesis controls for your own audio.cpp server (convo_synthesis): a profile and overrides, applied per reply.
+                "tuning": {"profile_id": "", "overrides": {}}},
     },
     "compaction": {"trigger": 0.70, "target": 0.50, "recent_exchanges": 6, "context_tokens": 16384, "output_reserve": 2048},
     "direct_timeout": 30,
@@ -141,8 +143,25 @@ DEFAULTS = {
     "speculative_reply": False,       # start the main model on a completed utterance while the classifier decides; held until admitted
     "main_listen_decision": False,    # the main model may answer exactly [LISTEN] when the audio was not meant for it (suppress only)
     "continuation_seconds": 7,        # a following fragment within this gap is joined to the unanswered one (0 = off; memory only)
-    "first_clause_speech": False,     # speak the first clause early and synthesise the next phrase while the first one plays
+    "first_clause_speech": True,      # speak the first full sentence, then the rest as one request (False = the whole reply at once)
     "recent_remarks_seconds": 0,      # keep recently ignored speech in memory as context for a later admitted turn (0 = off, max 60)
+    "answer_tokens": 1024,            # the longest spoken answer the conversation model may write (thinking is asked off for voice)
+    # Who writes the summary chapters (convo_summarizer): "conversation" (the conversation model, from its own cached start) or
+    # "utility" (Agent Zero's utility model: only when it runs on your own machines, or with utility_summary_consent).
+    "summary_writer": "conversation",
+    "utility_summary_consent": False,  # consent for a utility model outside your network to receive the conversation
+    "barge_in_seconds": 1.0,         # your confirmed speech over a reply after which it stops, whatever the classifier says
+    # The sound panel (browser): the silence that ends your turn, and the one speech threshold in dBFS (quieter audio is muted and
+    # never counts as speech; -66 = off). The panel keeps its own values per microphone and speaker; these are the defaults.
+    "end_of_turn_seconds": 0.9,
+    "noise_gate_db": -50,
+    # Who the assistant is: the name shown in the panel ('' = the profile's title) and the Agent Zero profile it speaks as
+    # ('' = the chat's own profile). Delegated work always goes to the chat, with that chat's profile.
+    "voice_name": "",
+    "voice_profile": "",
+    # Developer view only, both off by default: journal rows that are not turns, and generated text that was never delivered.
+    "show_diagnostic_events": False,
+    "show_rejected_responses": False,
     # Where the typed speech gate acts (convo_policy.GateProfile; a test keeps this equal to GATE_DEFAULTS). Measured for one decision model.
     "policy_gate": {"respond_min": 0.30, "ambient_respond_min": 0.90, "interrupt_min": 0.60, "ignore_min": 1.0, "name_min": 0.90,
                     "clarify_min": 0.30, "clarify_elsewhere_max": 0.50},
@@ -332,6 +351,29 @@ def validate_settings(value):
     for key, limit in (("continuation_seconds", 15), ("recent_remarks_seconds", 60)):
         if type(result[key]) not in (float, int) or not math.isfinite(result[key]) or not 0 <= result[key] <= limit:
             raise ContractError(key + " must be a number from 0 to " + str(limit))
+    if type(result["answer_tokens"]) is not int or not 256 <= result["answer_tokens"] <= 4096:
+        raise ContractError("answer_tokens must be a whole number from 256 to 4096")
+    if not isinstance(result["summary_writer"], str) or result["summary_writer"] not in ("conversation", "utility"):
+        raise ContractError("summary_writer must be one of: conversation, utility")
+    if type(result["utility_summary_consent"]) is not bool:
+        raise ContractError("utility_summary_consent must be boolean")
+    for key, low, high in (("barge_in_seconds", 0.4, 2.0), ("end_of_turn_seconds", 0.5, 2.0), ("noise_gate_db", -66, -3)):
+        if type(result[key]) not in (float, int) or not math.isfinite(result[key]) or not low <= result[key] <= high:
+            raise ContractError("%s must be a number from %s to %s" % (key, low, high))
+    for key in ("show_diagnostic_events", "show_rejected_responses"):
+        if type(result[key]) is not bool:
+            raise ContractError(key + " must be boolean")
+    name = result["voice_name"]
+    if not isinstance(name, str) or len(name) > 64 or any(ord(ch) < 32 for ch in name):
+        raise ContractError("The voice name must be at most 64 characters on one line")
+    profile = result["voice_profile"]
+    if not isinstance(profile, str) or len(profile) > 64 or any(not (ch.isascii() and (ch.isalnum() or ch in "_.-")) for ch in profile):
+        raise ContractError("The voice profile must be an Agent Zero profile name")
+    try:
+        from .convo_synthesis import validate_tuning
+        result["roles"]["tts"]["tuning"] = validate_tuning(result["roles"]["tts"].get("tuning"))
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
     if not 1 <= result["max_audio_seconds"] <= 45 or not 1 <= result["audio_token_reserve"] <= c["context_tokens"]:
         raise ContractError("Configure a measured audio-token reserve and bounded audio turns")
     if not (0.1 <= c["target"] < c["trigger"] <= 0.9) or c["recent_exchanges"] < 6 or c["context_tokens"] <= c["output_reserve"]:
@@ -461,7 +503,8 @@ def public_settings(config):
     return {key: copy.deepcopy(config[key]) for key in (
         "enabled", "ambient_enabled", "remote_ambient_consent", "transcription_enabled",
         "developer_mode", "ai_link_development_mode", "hotkey", "max_audio_seconds", "echo_guard", "activation_names",
-        "voice_message_draft") } | {
+        "voice_message_draft", "barge_in_seconds", "end_of_turn_seconds", "noise_gate_db", "voice_name",
+        "show_diagnostic_events", "show_rejected_responses") } | {
         "remote_processing": any(r.get("remote", False) for r in config["roles"].values()) or config["sidecar"].get("remote", False) or system_one.get('remote', False),
         "system_one": system_one,
         # Only the conversation model's own audio capability decides this. A classifier that cannot take audio

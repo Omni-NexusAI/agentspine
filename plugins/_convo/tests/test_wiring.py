@@ -24,6 +24,8 @@ EXPLICIT = {**ADDRESSED}
 PLAIN = {**ADDRESSED, 'explicit_request': False, 'explicit_probability': .1}
 
 
+LATE_MARK = importlib.import_module('plugins._convo.helpers.convo_history').LATE_MARK
+
 class SystemText(Scenario):
     def system_of(self, config=None, **options):
         async def scenario(h):
@@ -80,11 +82,48 @@ class SystemText(Scenario):
         self.assertEqual(result[1], ['q'])
 
     def test_listen_and_overheard_lines_still_follow_the_rules(self):
-        system = self.system_of(config={'main_listen_decision': True})
+        system = self.system_of(config={'main_listen_decision': True, 'ambient_enabled': True}, mode='ambient')     # never offered in a conversation the user started
         rules_end = system.index('\nPersona and style data')
         self.assertIn('[LISTEN]', system[:rules_end])
         self.assertLess(system.index(style.OVERRIDE), system.index('[LISTEN]'))
 
+
+
+class StableStart(Scenario):
+    """The start of every request stays byte-identical between chapter swaps, so the model server reuses its cache (change 5)."""
+
+    def test_consecutive_turns_share_the_start_and_differ_only_after_it(self):
+        async def scenario(h):
+            await h.candidate('a', h.audio('first'), final=True)
+            await h.settle()
+            await h.candidate('b', h.audio('second'), final=True)
+            await h.settle()
+            return [a['system'] for a in h.answers]
+        note = {**SPEAK, 'context_note': 'The user wants the quarterly budget spreadsheet reviewed'}
+        later = {**SPEAK, 'context_note': 'Which budget spreadsheet were we reviewing'}
+        systems, _ = self.play(scenario, classifier={'first': script(note, .2), 'second': script(later, .2)})
+        stable = [system.split(LATE_MARK, 1)[0] for system in systems]
+        self.assertEqual(stable[0], stable[1])
+        self.assertNotEqual(systems[0], systems[1])
+        for text in ('USER:', 'Current local date'):
+            self.assertNotIn(text, stable[0])
+
+    def test_the_gateway_sends_the_per_reply_part_after_the_history(self):
+        app = importlib.import_module('plugins._convo.sidecar.app')
+        stable, late = app.split_system('Rules.' + LATE_MARK + 'Begin with USER:.')
+        self.assertEqual((stable, late), ('Rules.', 'Begin with USER:.'))
+        parts = app.with_late([{'type': 'input_audio', 'input_audio': {'data': 'x', 'format': 'wav'}}], late)
+        self.assertEqual(parts[0]['type'], 'text')
+        self.assertIn('not said by the user', parts[0]['text'])
+        self.assertEqual(parts[1]['type'], 'input_audio')
+        self.assertTrue(app.with_late('Hello', late).endswith('Hello'))
+        self.assertEqual(app.with_late('Hello', ''), 'Hello')
+        self.assertEqual(app.split_system('No marker.'), ('No marker.', ''))
+        import ast, pathlib
+        source = (pathlib.Path(app.__file__).parents[1] / 'api' / 'realtime.py').read_text(encoding='utf-8')
+        defined = next(node.value.value for node in ast.parse(source).body if isinstance(node, ast.Assign)
+                       and getattr(node.targets[0], 'id', '') == 'LATE_MARK')
+        self.assertEqual((app.LATE_MARK, defined), (LATE_MARK, LATE_MARK))
 
 class RelevantContext(Scenario):
     def test_a_matching_earlier_exchange_is_added_bounded_and_labelled(self):
@@ -99,8 +138,10 @@ class RelevantContext(Scenario):
         systems, _ = self.play(scenario, classifier={'first': script(note, .2), 'second': script(later, .2)})
         self.assertNotIn('quarterly budget', systems[0])                              # nothing to match on the first turn
         self.assertIn('quarterly budget spreadsheet', systems[1])
-        block = systems[1].split('\nMemory data: ', 1)[1].split('\n', 1)[1]
-        self.assertTrue(block.startswith('Relevant conversation context'))
+        # This reply's context comes after the part every request shares (api/realtime.LATE_MARK), last in the per-reply text.
+        late = systems[1].split(LATE_MARK, 1)[1]
+        block = late[late.index('Relevant conversation context'):]
+        self.assertNotIn('quarterly budget', systems[1].split(LATE_MARK, 1)[0])
         self.assertLessEqual(len(block), 1600)
 
     def test_nothing_is_added_when_nothing_matches_or_there_is_no_request_text(self):
@@ -145,7 +186,7 @@ class Delegation(Scenario):
             await h.settle()
             return [j['prompt'] for j in h.jobs()], h.events('error', 't')
         note = {**SPEAK, 'context_note': 'Write the weekly report about the budget'}
-        prompts, errors = self.play(scenario, proposal={**DELEGATE_TASK, 'arguments': {'task': 'Write the weekly budget report'}},
+        prompts, errors = self.play(scenario, mode='ambient', config={'ambient_enabled': True}, proposal={**DELEGATE_TASK, 'arguments': {'task': 'Write the weekly budget report'}},
                                     classifier={'first': script(note, .2), 'ask': script(DELEGATE, .2)})[0]
         self.assertEqual(len(prompts), 1)
         self.assertTrue(prompts[0].startswith('Write the weekly budget report'))
@@ -161,7 +202,7 @@ class Delegation(Scenario):
             await h.settle()
             return h.jobs(), len(h.events('error', 't'))
         note = {**SPEAK, 'context_note': 'budget report numbers'}
-        (jobs, errors), _ = self.play(scenario, proposal={**DELEGATE_TASK, 'arguments': {'task': 'budget report ' + big[:15900]}},
+        (jobs, errors), _ = self.play(scenario, mode='ambient', config={'ambient_enabled': True}, proposal={**DELEGATE_TASK, 'arguments': {'task': 'budget report ' + big[:15900]}},
                                       classifier={'first': script(note, .2), 'ask': script(DELEGATE, .2)})
         self.assertEqual((jobs, errors), ([], 1))
 
@@ -244,11 +285,18 @@ class Notices(RealtimeBase):
 
 
 class PersonaRefresh(RealtimeBase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        # These tests check the refresh itself at each response; the product checks at most every PERSONA_REFRESH seconds.
+        refresh = patch.object(self.module, 'PERSONA_REFRESH', 0)
+        refresh.start(); self.addCleanup(refresh.stop)
+
     async def run_turn(self, name='t'):
         await self.handler.process('convo.turn', {**self.ids, 'turn_id': name, 'transcript': 'Question'}, 'browser')
         await self.handler.connections['browser']['task']
 
-    async def test_a_cached_persona_is_used_for_this_response(self):
+    async def test_a_cached_persona_is_found_in_the_background_and_used_from_the_next_response(self):
+        # Reading the host prompt means building it (seconds, on Convo's persona thread): the response never waits for that check.
         state = self.handler.connections['browser']
         systems = []
         original = state['sidecar'].answer
@@ -260,8 +308,24 @@ class PersonaRefresh(RealtimeBase):
         async def cached(target, style_text, cache):
             return 'Brisk voice'
         with patch.object(self.host, 'persona_cached', create=True, side_effect=cached):
-            await self.run_turn()
-        self.assertIn('Brisk voice', systems[0])
+            await self.run_turn('t1')
+            await state['persona_task']
+            await self.run_turn('t2')
+        self.assertIn('Calm voice', systems[0])
+        self.assertIn('Brisk voice', systems[1])
+        self.assertEqual(state['persona'], 'Brisk voice')
+
+    async def test_the_response_boundary_never_waits_for_the_prompt_check(self):
+        state = self.handler.connections['browser']
+        gate = asyncio.Event()
+        async def slow_cached(target, style_text, cache):
+            await gate.wait()                       # building the host prompt on the persona thread
+            return 'Brisk voice'
+        with patch.object(self.host, 'persona_cached', create=True, side_effect=slow_cached):
+            await asyncio.wait_for(self.run_turn(), 2)
+            self.assertEqual(state['persona'], 'Calm voice')
+            gate.set()
+            await state['persona_task']
         self.assertEqual(state['persona'], 'Brisk voice')
 
     async def test_a_missing_persona_never_blocks_the_turn_and_is_refreshed_in_the_background(self):
@@ -400,19 +464,19 @@ class ShortCommands(Scenario):
             typed(h)
             first, second = h.audio('part one', seconds=1.0), h.audio('part two', level=900, seconds=.6)
             await h.candidate('f1', first, final=True)
-            await h.until(2.0)
+            await h.until(1.2)                                                       # inside the unfinished thought's wait
             await h.candidate('f2', second, final=True)
             await h.settle()
             return [frame_count(a['audio']) for a in h.answers], frame_count(second), h.accepted_turns()
         (requests, two, accepted), _ = self.play(scenario, classifier={'part one': script(UNFINISHED, .2), 'part two': script(EXPLICIT, .2)})
-        self.assertEqual((requests, accepted), ([two], ['f2']))
+        self.assertEqual((requests, accepted), ([two], ['f1', 'f2']))             # f1's answer never started; f2 alone was answered
 
     def test_a_short_continuation_after_an_unfinished_utterance_is_joined(self):
         async def scenario(h):
             typed(h)
             first, second = h.audio('part one', seconds=1.0), h.audio('part two', level=900, seconds=.6)
             await h.candidate('f1', first, final=True)
-            await h.until(2.0)
+            await h.until(1.2)                                                       # inside the unfinished thought's wait
             await h.candidate('f2', second, final=True)
             await h.settle()
             return [frame_count(a['audio']) for a in h.answers], frame_count(first), frame_count(second)

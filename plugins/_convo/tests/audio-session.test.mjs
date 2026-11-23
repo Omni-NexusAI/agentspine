@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { AudioSession } from '../webui/audio.js';
+import { blocks, voiced } from './signals.mjs';
 
 async function withBrowser(settings, run) {
     const saved = { navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'), AudioContext: globalThis.AudioContext, AudioWorkletNode: globalThis.AudioWorkletNode };
@@ -75,8 +76,14 @@ test('echo_guard off keeps the previous capture path: the legacy worklet, no opt
         assert.equal(node.workletName, 'convo-capture'); assert.equal(node.args, 2, 'constructed without options, as before');
         assert.equal(log.connects.filter(([, to]) => to === 'capture').length, 1, 'only the microphone feeds it');
         assert.equal(audio.nativeAec(), true);
-        for (let n = 0; n < 12; n++) node.port.onmessage({ data: new Float32Array(2048).fill(.1) });
+        // Off computes the same voicing beside the legacy worklet (was: any block above .02 RMS counted, so a DC level admitted).
+        for (const block of blocks(voiced(1, 48000, { rms: .05 })).slice(0, 12)) node.port.onmessage({ data: block });
         assert.equal(audio.boundary.admitted, true);
+        const quiet = new AudioSession({ echoGuard: 'off', maximum: 20, onStart: () => {}, onTurn: () => {} });
+        await quiet.start();
+        for (let n = 0; n < 24; n++) log.nodes[1].port.onmessage({ data: new Float32Array(2048).fill(.1) });
+        assert.equal(quiet.boundary.admitted, false, 'a loud but unvoiced level is not speech');
+        quiet.close();
         assert.equal(audio.setEchoGuard('adaptive'), false, 'off is a different capture path and needs a restart');
         audio.close();
     });

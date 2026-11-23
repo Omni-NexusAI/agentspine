@@ -111,20 +111,26 @@ class Continuation:
     def holds(self, turn):
         return self.pending is not None and self.pending.turn == turn
 
-    def plan(self, encoded, arrived):
-        """How a completed fragment would join the pending one, or None (the pending audio is dropped when it is too old to join)."""
+    def plan(self, encoded, arrived, pre_roll=0.0):
+        """How a completed fragment would join the pending one, or None (the pending audio is dropped when it is too old to join).
+
+        `pre_roll`: seconds at the fragment's start that the browser kept from before the speech began (its pre-roll). They are
+        audio from the gap, not speech, so the gap and the fragment's own length (the "short command" test) are measured without them;
+        the joined audio keeps them (the real sound of the gap)."""
         pending = self.pending
         if pending is None or not self.enabled:
             return None
         rate, pcm = parse_wav(encoded)
         seconds = len(pcm) / (2 * rate)
-        gap = max(0.0, arrived - seconds - pending.arrived)
+        lead = min(max(0.0, float(pre_roll or 0.0)), seconds)
+        spoken = seconds - lead
+        gap = max(0.0, arrived - spoken - pending.arrived)
         if gap > self.horizon:
             self.clear()
             return None
-        silence = min(gap, MAX_SILENCE)
+        silence = max(0.0, min(gap, MAX_SILENCE) - lead)          # the pre-roll already fills that much of the gap
         joined = pending.seconds + silence + seconds
         if rate != pending.rate or pending.revisions + 1 > self.max_revisions or joined > self.limit:
             return None
         gap_bytes = b'\0\0' * int(round(silence * rate))
-        return Merge(build_wav(rate, pending.pcm + gap_bytes + pcm), pending.turn, pending.revisions + 1, gap, joined, seconds)
+        return Merge(build_wav(rate, pending.pcm + gap_bytes + pcm), pending.turn, pending.revisions + 1, gap, joined, spoken)

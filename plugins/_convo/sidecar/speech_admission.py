@@ -29,11 +29,47 @@ class SpeechAdmissionError(Exception):
 
 
 class DefinitiveRejection(Exception):
-    """Only raise after a complete bounded provider 4xx response was drained."""
-    def __init__(self, status_code):
-        if not 400 <= status_code < 500:
-            raise ValueError('A definitive rejection requires a 4xx response')
-        self.status_code = status_code
+    """Only raise after a complete bounded provider response was drained: any 4xx, or a 5xx whose body names a known terminal
+    outcome (`reason`, from DEFINITE_STATES), where the provider says its generation already ended."""
+    def __init__(self, status_code, reason=''):
+        if not (400 <= status_code < 500 or (500 <= status_code < 600 and reason in DEFINITE_STATES | LOCAL_TERMINAL)):
+            raise ValueError('A definitive rejection requires a 4xx response or a known terminal provider state')
+        self.status_code, self.reason = status_code, reason
+
+
+# 5xx answers that are nonetheless terminal: the speech server's own words that the generation finished before it could be streamed
+# (sidecar/audiocpp/supervisor.py, a phrase too short for two native PCM pieces). The engine is idle, so holding Convo's speech lock
+# on them would refuse every later reply. Anything else 5xx stays "outcome unknown".
+DEFINITE_STATES = frozenset({'native-stream-not-incremental'})
+# A complete 2xx answer Convo cannot use (a whole-phrase WAV that is not 16-bit or float mono): the provider finished, so it is
+# terminal too, reported as a refusal.
+LOCAL_TERMINAL = frozenset({'whole-phrase-format'})
+GENERATION_DONE ='audio.cpp generation completed before two native PCM events'
+
+
+def definite_state(body):
+    """The known terminal state a complete provider error body names, or ''."""
+    try:
+        detail = json.loads(body or b'null')
+    except (ValueError, TypeError, RecursionError):
+        return ''
+    detail = detail.get('detail') if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and detail.get('state') in DEFINITE_STATES:
+        return detail['state']
+    if detail == GENERATION_DONE:
+        return 'native-stream-not-incremental'
+    return ''
+
+
+def raise_for_provider(status_code, body):
+    """A complete non-2xx provider answer: DefinitiveRejection when it is terminal (any 4xx, or a known terminal 5xx), else
+    UncertainOutcome. Only a real transport loss or an unrecognised 5xx keeps the speech lock."""
+    if 400 <= status_code < 500:
+        raise DefinitiveRejection(status_code)
+    reason = definite_state(body) if 500 <= status_code < 600 else ''
+    if reason:
+        raise DefinitiveRejection(status_code, reason)
+    raise UncertainOutcome('provider_failure')
 
 
 class UncertainOutcome(Exception):
@@ -150,7 +186,12 @@ class Operation:
             except (OSError, ValueError, TypeError, OverflowError, RecursionError):
                 self._uncertain('admission_storage_failure')
                 raise SpeechAdmissionError(503, self.details('uncertain', 'Speech admission could not be reconciled', blocked=True)) from None
-            raise SpeechAdmissionError(error.status_code, self.details('rejected', 'Speech provider rejected the request', blocked=False)) from None
+            detail = self.details('rejected', 'Speech provider rejected the request'
+                                  + (' (' + error.reason + ')' if error.reason else ''), blocked=False)
+            if error.reason:
+                detail['provider_state'] = error.reason
+            _last[str(self.path)] = detail
+            raise SpeechAdmissionError(error.status_code, detail) from None
         except asyncio.CancelledError:
             self._uncertain('worker_cancelled')
             raise

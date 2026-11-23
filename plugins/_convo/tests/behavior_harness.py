@@ -25,6 +25,10 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
+
+async def _no_status(*args, **kwargs):
+    return ''
+
 if __package__:
     from .test_realtime import HostStub, WsStub
 else:  # pragma: no cover - direct execution
@@ -265,7 +269,11 @@ class Harness:
         self.service = types.SimpleNamespace(store=self.store, host=self.host, persona_cache={},
             dispatcher=types.SimpleNamespace(start=lambda: self.dispatches.append('wake'), cancel=lambda job: self.dispatches.append(('cancel', job))),
             compactor=Compactor(self.store, self.host))
-        base = {'enabled': True, 'roles': {'classifier': {'url': 'http://localhost/v1', 'model': 'classifier'}, 'conversation': {'model': 'conversation'}}}
+        # The scripted servers report no model status: a session never waits for a router to load (convo_models).
+        from plugins._convo.helpers import convo_models
+        self.models_patch = patch.object(convo_models, 'state', new=_no_status); self.models_patch.start()
+        base = {'enabled': True, 'sidecar': {'managed': False},           # the scripted gateway stands in for Convo's own
+                'roles': {'classifier': {'url': 'http://localhost/v1', 'model': 'classifier'}, 'conversation': {'model': 'conversation'}}}
         self.config = validate_settings(merge(base, {'system_one': system_one} if system_one else {}, config or {}))
         module_stub = types.ModuleType('helpers.ws'); module_stub.WsHandler = WsStub
         with patch.dict(sys.modules, {'helpers.ws': module_stub}):
@@ -316,12 +324,13 @@ class Harness:
     def ids(self):
         return {'session_id': self.session['id'], 'epoch': self.store.session(self.session['id'], 'browser')['epoch']}
 
-    async def candidate(self, turn, wav=None, sequence=1, final=False, epoch=None, transcript=None):
-        """One candidate message. Audio for direct-audio conversations; a transcript only for text-only ones."""
+    async def candidate(self, turn, wav=None, sequence=1, final=False, epoch=None, transcript=None, **fields):
+        """One candidate message. Audio for direct-audio conversations; a transcript only for text-only ones. `fields`: what the browser
+        adds about the speech (overlap, voiced_s, heard)."""
         ids = self.ids()
         if epoch is not None:
             ids['epoch'] = epoch
-        message = {**ids, 'turn_id': turn, 'sequence': sequence, 'final': final}
+        message = {**ids, 'turn_id': turn, 'sequence': sequence, 'final': final, **fields}
         if wav is not None:
             message['audio'] = wav
         if transcript is not None:
@@ -437,7 +446,7 @@ class Harness:
         try:
             await self.handler.on_disconnect('browser')
         finally:
-            self.patch.stop(); self.store.close(); self.tmp.cleanup()
+            self.patch.stop(); self.models_patch.stop(); self.store.close(); self.tmp.cleanup()
 
 
 # --------------------------------------------------------------------------- baseline report

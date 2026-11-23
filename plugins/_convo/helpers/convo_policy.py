@@ -15,8 +15,7 @@ ATTENTION = ("addressed", "backchannel", "side_conversation", "unfinished", "unc
 EPSILON = 1e-9    # threshold checks are inclusive and must not depend on float noise in a sum of decimals
 
 # Defaults of the typed gate. They mirror DEFAULTS["policy_gate"] in convo_contract (a test keeps the two equal) and were
-# measured, not borrowed: see "Speech gate" in UI_BACKEND_CYCLE_RESULTS_20261015.md and GATE_JUDGMENT_20261016.md for the model, the speech and the
-# sample sizes. They belong to ONE wording of the attention question (convo_system_one.QUESTIONS): change either and re-measure both.
+# measured, not borrowed. They belong to ONE wording of the attention question (convo_system_one.QUESTIONS): change either and re-measure both.
 # Measured with the sweep scripts under .runtime/convo-live-test and tests/calibrate_gate.py on the d1-omni-600M decision model over 225 labelled
 # synthetic sentences in three voices (two OS voices and one neural voice), 675 completed clips (with the endpoint's trailing quiet) and 1350
 # probes, chosen on all of them pooled; the held-out check is a separate 114-sentence judgment corpus in two OS voices:
@@ -178,6 +177,91 @@ class PolicyGate:
         return replace(decision, speech="clarify", action="none")
 
 
+# A conversation the user started (active listening) presumes that what they say is meant for the assistant. Convo has no turn-taking
+# model fine-tuned for this (Speakrail and the Codacus harness each train one), so the general decision model is asked what it can
+# judge and the presumption decides the rest: a finished turn is answered unless the classifier is confident it was not for the
+# assistant, either a short acknowledgement or talk to someone else that no check during the speech contradicted. An unfinished
+# thought is answered too, a moment later (UNFINISHED_WAIT), and joined if more follows first. Starting points, re-measured per
+# decision model on real voices like the gate floors above.
+CONVERSATION = {"backchannel_min": .60, "backchannel_seconds": 1.2, "ack_respond_max": .25, "side_min": .90, "probe_respond_min": .50}
+UNFINISHED_WAIT = 1.5      # seconds after an unfinished thought ends before its answer is heard, for the rest of it to arrive
+
+
+# Speech over the assistant's reply, once the browser's echo guard has confirmed it is the user's own voice (the reply is already
+# ducked): read without the assistant's last words (that line makes nearly anything read as an acknowledgement, measured 2026-11-08),
+# a request, a question or "stop" yields; a confident acknowledgement or talk to someone else lets the reply go on; anything else
+# keeps it ducked and asks again. A safety yield ends the reply after `barge_in_seconds` of confirmed voice whatever the reading
+# (twice that after a confident "go on"), so a classifier that cannot tell never keeps talking over the user. Starting points from
+# the corpus's plain readings of finished clips; not yet measured on real overlapped speech.
+OVERLAP = {"yield_min": .50, "continue_min": .70, "continue_respond_max": .25}
+
+
+def overlap_disposition(decision, *, voiced=None, safety=1.0, continuing=False):
+    """('admit' | 'continue' | 'listen', reason) for speech over the assistant's reply. `voiced`: seconds of the user's confirmed voice
+    so far; `continuing`: the previous reading of this speech was a confident 'continue'."""
+    if decision.calibrated:
+        respond = decision.respond_mass
+        elsewhere = decision.probability("backchannel") + decision.probability("side_conversation")
+        if respond + EPSILON >= OVERLAP["yield_min"]:
+            verdict = "admit"
+        elif elsewhere + EPSILON >= OVERLAP["continue_min"] and respond < OVERLAP["continue_respond_max"]:
+            verdict = "continue"
+        else:
+            verdict = "listen"
+    elif decision.speech in ("speak", "clarify") and decision.confidence >= .85:
+        verdict = "admit"
+    elif decision.speech == "silent" and decision.confidence >= .85:
+        verdict = "continue"
+    else:
+        verdict = "listen"
+    if verdict != "admit" and voiced is not None and voiced + EPSILON >= safety * (2 if verdict == "continue" or continuing else 1):
+        return "admit", "safety"
+    return verdict, "request" if verdict == "admit" else ""
+
+
+def respond_evidence(decision):
+    """How strongly one reading says the speech is for the assistant (0 to 1), for weighing the checks made while it went on."""
+    if decision.calibrated:
+        return decision.respond_mass
+    return decision.confidence if decision.speech in ("speak", "clarify") else 0.0
+
+
+def conversation_verdict(decision, *, seconds=None, peak=0.0, ack_respond=None):
+    """Active listening, a finished turn, before the gate: ('admit', '') or ('ignore', why). `seconds` is how long the speech itself
+    lasted (without the endpoint's trailing quiet) when known; `peak` the strongest respond_evidence of the checks during it;
+    `ack_respond` the chance a short turn that looked like an acknowledgement is for the assistant, read without the assistant's last
+    words (convo_system_one._acknowledgement; absent when it did not look like one)."""
+    if decision.calibrated:
+        if (seconds is not None and seconds <= CONVERSATION["backchannel_seconds"]
+                and ack_respond is not None and ack_respond + EPSILON < CONVERSATION["ack_respond_max"]):
+            return "ignore", "backchannel"
+        if (decision.probability("side_conversation") + EPSILON >= CONVERSATION["side_min"]
+                and peak + EPSILON < CONVERSATION["probe_respond_min"]):
+            return "ignore", "for_someone_else"
+        return "admit", ""
+    # A classifier without probabilities: only its own confident "not for the assistant" leaves a turn unanswered.
+    if decision.speech == "silent" and decision.action == "none" and decision.confidence >= .9:
+        return "ignore", "not_addressed"
+    return "admit", ""
+
+
+def presumed(decision):
+    """The gate's decision for a turn the conversation presumes is for the assistant: spoken to (a question stays a question)."""
+    return decision if decision.speech in ("speak", "clarify") else replace(decision, speech="speak")
+
+
+def reads_as_request(decision, *, peak=0.0):
+    """Whether the classifier itself heard a request in a finished turn: the gate passed it on its own (`decision` is the gate's,
+    before the conversation's presumption), work was asked for explicitly, or a check made while the user spoke read it as for the
+    assistant. Only such a turn takes over an answer the user has not heard yet; one answered only because the conversation presumes
+    speech is for the assistant (an acknowledgement, a remark, a misread request, or a turn no classifier could judge) waits for that
+    answer and is answered after it instead. Waiting costs a misread request a delay, never the request; taking over cost the user
+    the answer they were waiting for (2026-11-17: "Perfect, thank you", read .001 for the assistant, cancelled a reply as it began)."""
+    if decision.speech in ("speak", "clarify") or (decision.action in {"direct", "delegate"} and decision.explicit_request):
+        return True
+    return peak + EPSILON >= CONVERSATION["probe_respond_min"]
+
+
 def candidate_disposition(decision, *, final, profile=None):
     """Observation is not a turn. Partial speech needs explicit interruption evidence.
 
@@ -231,7 +315,21 @@ def gate_report(profile, *, typed):
         "A System One decision backend returns the probabilities a calibrated gate needs.")}
 
 
-DIRECT_TOOLS = frozenset({"web_search", "camera_context", "memory_read"})
+EXPLICIT_MIN = .9      # the chance, by the classifier's reading of the user's audio, that they made a request
+
+
+def verified(decision):
+    """Whether the user's own audio carries a request, as the classifier heard it: the one piece of evidence a model's tool call
+    cannot supply for itself. A typed classifier gives that probability directly, and it is read on its own. Folding in "was it
+    said to the assistant" (the reading that is weakest right after the assistant has spoken) refused a plainly spoken request
+    whose explicit reading was 0.99 (2026-11-18). An untyped classifier is believed only when explicit and confident; a turn
+    nobody judged carries no evidence."""
+    if decision.calibrated:
+        return decision.explicit_probability + EPSILON >= EXPLICIT_MIN
+    return bool(decision.explicit_request and decision.confidence >= .9)
+
+
+DIRECT_TOOLS = frozenset({"web_search", "camera_context", "memory_read", "recall_conversation"})
 
 
 def route_tool(name, decision):

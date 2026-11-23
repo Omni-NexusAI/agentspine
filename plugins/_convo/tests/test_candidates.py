@@ -92,6 +92,7 @@ class CandidateTests(RealtimeTests):
 
     async def test_uncertain_policy_ducks_without_cancelling(self):
         state, reply = await self.active_reply()
+        state['mode'] = 'ambient'           # in a conversation the user started an unsure final is presumed for the assistant
         state['sidecar'].decision = {'speech':'clarify','action':'none','confidence':.4}
         await self.candidate(); await state['candidate_task']
         self.assertFalse(reply.done())
@@ -125,14 +126,27 @@ class CandidateTests(RealtimeTests):
         self.assertFalse(any(e[2]['type'] == 'candidate.admitted' for e in self.handler.sent))
         self.assertEqual(self.store.events('a'), [])
 
-    async def test_policy_failure_is_explicit_degraded_and_no_bypass(self):
+    async def test_policy_failure_never_cancels_the_reply_or_reaches_another_classifier(self):
+        """A probe the classifier cannot judge degrades and the reply plays on. A finished turn it cannot judge, in a conversation the
+        user started, is not lost: it waits for the reply in progress and is answered after it, with no classifier reading."""
         state, reply = await self.active_reply()
-        async def failed(payload): raise ValueError('unavailable')
+        calls = []
+        async def failed(payload):
+            calls.append(payload)
+            raise ValueError('unavailable')
         state['sidecar'].policy = failed
-        await self.candidate(); await state['candidate_task']
-        self.assertFalse(reply.done())
-        self.assertTrue(any(e[2].get('state') == 'degraded' for e in self.handler.sent))
-        self.assertEqual(self.store.events('a'), [])
+        await self.candidate(sequence=1, final=False); await state['candidate_task']
+        self.assertEqual([e[2].get('state') for e in self.handler.sent if e[2].get('type') == 'candidate.state'], ['considering', 'degraded'])
+        await self.candidate(sequence=2); await state['candidate_task']
+        self.assertFalse(reply.done())                                         # the reply in progress was never cancelled
+        final = [e[2] for e in self.handler.sent if e[2].get('type') == 'candidate.state' and e[2].get('turn_id') == 'candidate'][-1]
+        self.assertEqual((final['state'], final.get('reason'), final.get('after_reply')), ('admit', 'unjudged', True))
+        self.assertFalse(any(e[2]['type'] == 'candidate.admitted' for e in self.handler.sent))
+        self.assertEqual(self.store.events('a'), [])                           # answered only once that reply has been heard
+        self.assertEqual(len(calls), 3)                                        # the probe once, the final twice (one retry); nothing else
+        notices = [e[2] for e in self.handler.sent if e[2].get('type') == 'notice' and e[2].get('kind') == 'info']
+        self.assertEqual(len(notices), 1)                                      # the user is told once why
+        self.assertIn('the conversation model decided whether to answer', notices[0]['message'])
 
     async def test_invalid_candidate_audio_never_classified(self):
         state = self.handler.connections['browser']
@@ -170,6 +184,7 @@ class CandidateTests(RealtimeTests):
 
     async def test_final_clarification_respects_cooldown_and_never_tools(self):
         state, reply = await self.active_reply()
+        state['mode'] = 'ambient'           # the cooldown silences only outside a conversation the user started
         state['sidecar'].decision={'speech':'clarify','action':'delegate','confidence':.8,'explicit_request':False}
         await self.candidate(); await state['candidate_task']; await state['task']
         self.assertTrue(reply.cancelled())

@@ -82,7 +82,7 @@ for the waveform. The model's state is one plain sentence (the audio is the late
 thing the user said; what the assistant last said that the user heard, bounded and
 quoted; recognized text only for a text-only conversation, quoted as data) rather
 than a JSON document: that framing was measured against the earlier one and read
-the decision model far better (see `UI_BACKEND_CYCLE_RESULTS_20261015.md`). After a reply
+the decision model far better. After a reply
 that ended in a question, that line is dropped unless the answer is short (up to 3 s of audio):
 told the assistant had just asked something, the model read nearly any speech as the answer.
 The sentence carries nothing about earlier classified turns: a line such as "the previous speech was ignored as a
@@ -95,7 +95,7 @@ The decision model reads only the first ~23 tokens of every criterion descriptio
 a different tail changed the answer by 0, a trimmed tail changed it, because the cut falls mid-clause). The
 side-conversation cue therefore must not spend its words on "naming someone" (that made requests that begin with the
 assistant's name the worst-read class) and a broadcast cue past the cut never reached the model. The wording and the
-gate floors fitted to it are one measured unit (`GATE_JUDGMENT_20261016.md`).
+gate floors fitted to it are one measured unit.
 
 `plugins/convo_d1_decider` is the development provisioner that registers a served
 d1-omni-style decision model (a `/v1/systemone` server such as llama-server) as backend

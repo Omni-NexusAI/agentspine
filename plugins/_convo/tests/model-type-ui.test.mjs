@@ -916,7 +916,7 @@ test('Test connection sits on the card (not in Advanced) on all three cards, wit
 });
 
 test('Test connection uses a key typed but not saved, and an answer survives typing a model name but not a new address', async () => {
-    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-i96ld4g:8098/v1', 'roles.conversation.key_source': 'convo' } });
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo' } });
     f.store.setKey('conversation', 'typed-key');
     let release; f.server.hold.connection_test = new Promise(resolve => { release = resolve; });
     const testing = f.store.discover('conversation', true);
@@ -927,7 +927,7 @@ test('Test connection uses a key typed but not saved, and an answer survives typ
     assert.equal(f.store.config.roles.conversation.model, 'Gemma-12b');
     f.server.hold.connection_test = new Promise(resolve => { release = resolve; });
     const again = f.store.discover('conversation', true);
-    f.role().api_base = 'http://100.96.86.99:8098/v1';                                  // a new address: that answer is not shown
+    f.role().api_base = 'http://100.64.0.20:8098/v1';                                  // a new address: that answer is not shown
     f.store.choices.conversation = {};
     release(); await again;
     assert.equal(f.store.choices.conversation.verification, undefined);
@@ -937,7 +937,7 @@ test('Test connection uses a key typed but not saved, and an answer survives typ
 });
 
 test('A server on your network lists its own models while you type; the list is fetched once and the reason shows when it fails', async () => {
-    const f = await rig({ config: { 'roles.conversation.provider': 'llama_cpp', 'roles.conversation.api_base': 'http://desktop-i96ld4g:8098/v1' } });
+    const f = await rig({ config: { 'roles.conversation.provider': 'llama_cpp', 'roles.conversation.api_base': 'http://desktop-example:8098/v1' } });
     f.server.models = ['Gemma-12b-Q4-QAT', 'qwen3-omni'];
     assert.deepEqual(await f.store.conversationSearch('g'), ['Gemma-12b-Q4-QAT', 'qwen3-omni']);
     assert.deepEqual(await f.store.conversationSearch('ge'), ['Gemma-12b-Q4-QAT', 'qwen3-omni']);
@@ -973,13 +973,13 @@ test('Where "localhost" goes and a remembered certificate are said in words', as
     const f = await rig();
     f.store.network = { in_docker: true, this_computer: 'host.docker.internal', translated: true };
     assert.match(f.store.thisComputerText('https://127.0.0.1:18201/v1'), /reaches 127\.0\.0\.1 through host\.docker\.internal/);
-    assert.equal(f.store.thisComputerText('https://100.75.98.97:18201/v1'), '');
+    assert.equal(f.store.thisComputerText('https://100.64.0.10:18201/v1'), '');
     f.store.network = { in_docker: true, this_computer: '', translated: false };
     assert.match(f.store.thisComputerText('http://localhost:8890/v1'), /container itself/);
     f.store.network = { in_docker: false, this_computer: '', translated: false };
     assert.equal(f.store.thisComputerText('http://localhost:8890/v1'), '');
-    f.store.certificates = { classifier: { sha256: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB', names: ['DJsLaptop', '127.0.0.1'], subject: 'DJsLaptop', expires: '2027-10-31' } };
-    assert.equal(f.store.certificateNote('classifier'), 'Private certificate remembered · DJsLaptop · DJsLaptop, 127.0.0.1 · SHA-256 AB:CD:EF:01:23:45:67:89… · valid until 2027-10-31');
+    f.store.certificates = { classifier: { sha256: 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB', names: ['MyLaptop', '127.0.0.1'], subject: 'MyLaptop', expires: '2027-10-31' } };
+    assert.equal(f.store.certificateNote('classifier'), 'Private certificate remembered · MyLaptop · MyLaptop, 127.0.0.1 · SHA-256 AB:CD:EF:01:23:45:67:89… · valid until 2027-10-31');
     assert.equal(f.store.certificateNote('tts'), '');
     await f.store.certificateForget('classifier', 'https://127.0.0.1:18201/v1');
     assert.deepEqual([f.sent('tls_forget')[0].url, f.store.certificateNote('classifier')], ['https://127.0.0.1:18201/v1', '']);

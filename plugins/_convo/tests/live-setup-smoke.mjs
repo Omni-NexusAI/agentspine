@@ -98,7 +98,7 @@ try {
     await page.waitFor(`${S}.ui.classifier.checking === false && !!${S}.ui.classifier.check`, 120000);
     const router = await page.eval(`(() => ({ state: ${S}.ui.classifier.check.state, message: ${S}.ui.classifier.check.message }))()`);
     const note = await text(`${CLASSIFIER} [data-convo-field="classifier-certificate-note"]`);
-    check('the router is reached over HTTPS and its private certificate is remembered without a click', /Private certificate remembered/.test(note) && /DJsLaptop/.test(note), note.slice(0, 120));
+    check('the router is reached over HTTPS and its private certificate is remembered without a click', /Private certificate remembered · \S/.test(note), note.slice(0, 120));
     check('without its key the router is reported as refusing the key', router.state === 'refused' && /refused the key/.test(router.message), JSON.stringify(router));
     await page.click(`${CLASSIFIER} [data-convo-field="classifier-certificate-forget"]`);
     await sleep(800);

@@ -69,6 +69,10 @@ class SetupHarness:
         self.secret_patch.start(); self.addCleanup(self.secret_patch.stop)
         self.http_patch = patch.object(self.setup, '_get', new=AsyncMock(side_effect=AssertionError('unexpected HTTP')))
         self.http = self.http_patch.start(); self.addCleanup(self.http_patch.stop)
+        # The tool and image probe's POST (Test connection on the conversation card): never reaches a network in tests.
+        import httpx
+        self.post_patch = patch.object(self.setup, '_post', new=AsyncMock(side_effect=httpx.ConnectError('no network in tests')))
+        self.post = self.post_patch.start(); self.addCleanup(self.post_patch.stop)
         self.initial = {'native':{'voice':'preserve'}, 'future_top':{'enabled':True}, 'convo':{
             'enabled':True, 'sidecar':{'managed':True}, 'style':'existing persona', 'future_option':{'keep':17},
             'roles':{'conversation':{'url':'http://127.0.0.1:8080/v1','model':'local-model'},

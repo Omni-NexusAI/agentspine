@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadModule, hostStubs } from './vm-loader.mjs';
-import { describeEvent, wrapTab, mergeEvents, nearBottom, STICK_PX } from '../webui/view-helpers.js';
+import { storeFixture } from './store-fixture.mjs';
+import { describeEvent, foldTurns, notAnsweredText, wrapTab, mergeEvents, nearBottom, STICK_PX } from '../webui/view-helpers.js';
 
 const tick = (ms = 5) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -169,7 +170,15 @@ test('Bookkeeping is hidden, delivered speech and real activity are shown, and n
         [8, 'activity', 'Reply interrupted', '']]);
     assert.ok(!shown.some(([, , label]) => /generated|not delivered/.test(label)));   // an undelivered draft is never shown as speech
     f.store.settings.developer_mode = true;
-    assert.equal(f.store.visibleEvents.length, 9);
+    // Developer mode alone: the same entries; bookkeeping rows and undelivered text need their own settings.
+    assert.deepEqual(Array.from(f.store.visibleEvents, event => [event.key ?? event.seq, f.store.eventLabel(event)]), [
+        [1, 'You'], [3, 'Convo'], [5, 'Background task queued'], [7, 'Background task completed'], [8, 'Reply interrupted']]);
+    f.store.settings.show_diagnostic_events = true; f.store.settings.show_rejected_responses = true;
+    // With both: the same folded entries (a playback start belongs to its turn and is no row of its own), the reply nothing
+    // of which was delivered listed as generated only, and the bookkeeping rows.
+    assert.deepEqual(Array.from(f.store.visibleEvents, event => [event.key ?? event.seq, f.store.eventLabel(event)]), [
+        [1, 'You'], [2, 'Convo · generated, not delivered'], [3, 'Convo'], [5, 'Background task queued'], [6, 'job running'],
+        [7, 'Background task completed'], [8, 'Reply interrupted'], [9, 'context compacted']]);
     assert.equal(f.store.eventLabel(f.store.events[1]), 'Convo · generated, not delivered');
 });
 
@@ -214,4 +223,136 @@ test('Tab wraps inside the dialog and leaves ordinary navigation alone', () => {
     assert.equal(dialog.focused, 'close');
     const empty = { querySelectorAll: () => [], contains: () => false };
     event = key(); assert.equal(wrapTab(event, empty, null), true); assert.equal(event.prevented, true);
+});
+
+// ---- one "You" and one "Convo" entry per turn (foldTurns) --------------------------------------------------------------------
+const ev = (seq, turn, kind, payload = {}, extra = {}) => ({ seq, session: 's', turn, kind, payload, ...extra });
+const plainOf = value => JSON.parse(JSON.stringify(value));
+const shown = (entries, jobs = []) => entries.map(entry => [entry.key ?? entry.seq, describeEvent(entry, jobs).role, describeEvent(entry, jobs).label, describeEvent(entry, jobs).text]);
+
+test('A reply heard in three phrases is one Convo entry, spoken text joined as delivered, placed at its first reply event', () => {
+    const events = [
+        ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.playback_started', { phrase_id: 'a' }),
+        ev(3, 't1', 'assistant.delivered', { text: 'First sentence.', phrase_id: 'a' }), ev(4, 't1', 'user.transcript', { text: 'What is up?', source: 'model' }),
+        ev(5, 't1', 'assistant.delivered', { text: ' Second one,', phrase_id: 'b' }), ev(6, 't1', 'assistant.generated', { text: 'First sentence. Second one, and a third.' }),
+        ev(7, 't1', 'assistant.delivered', { text: ' and a third.', phrase_id: 'c' }),
+        ev(8, 't2', 'user.accepted', { transcript: 'typed words' }), ev(9, 't2', 'assistant.generated', { text: 'Generated, never heard.' }),
+        ev(10, '', 'segment.opened', {})];
+    assert.deepEqual(shown(foldTurns(events)), [
+        [1, 'user', 'You', 'What is up?'],                                              // the newest transcript of the turn
+        [3, 'assistant', 'Convo', 'First sentence. Second one, and a third.'],          // no separator added: the phrases carry their own
+        [8, 'user', 'You', 'typed words'],
+        [10, 'activity', 'Voice joined this chat', '']]);                             // a reply nothing of which was heard: no speech bubble
+    assert.equal(events[0].payload.transcript, undefined);                            // the journal itself is never changed
+    const reply = foldTurns(events.slice(0, 3));                                        // before the rest arrived: one phrase, same place
+    assert.deepEqual(shown(reply).at(-1), [3, 'assistant', 'Convo', 'First sentence.']);
+    assert.equal(shown(foldTurns([ev(1, 't', 'user.accepted', {})]))[0][3], '[Audio input; no verbatim transcript]');
+    const early = foldTurns([ev(1, 't', 'user.accepted', {}), ev(2, 't', 'assistant.generated', { text: 'All of it.' }), ev(3, 't', 'assistant.delivered', { text: 'All of it.' })]);
+    assert.deepEqual(shown(early).at(-1), [2, 'assistant', 'Convo', 'All of it.']);  // generated first: the entry sits at that event
+});
+
+test('A reply is labelled interrupted when the journal says so, or when less was heard than generated and the user went on', () => {
+    const base = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'Half of' }), ev(3, 't1', 'assistant.generated', { text: 'Half of the answer.' })];
+    assert.equal(foldTurns(base)[1].label, 'Convo');                                     // still the newest turn: it may yet be heard
+    assert.equal(foldTurns([...base, ev(4, 't2', 'user.accepted', {})])[1].label, 'Convo · interrupted');
+    const said = foldTurns([...base.slice(0, 2), ev(3, 't1', 'turn.interrupted', { reason: 'interrupted' })]);
+    assert.deepEqual(shown(said).slice(1), [[2, 'assistant', 'Convo · interrupted', 'Half of'], [3, 'activity', 'Reply interrupted', '']]);
+    const whole = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'All  of\nit.' }), ev(3, 't1', 'assistant.generated', { text: 'All of it.' }), ev(4, 't2', 'user.accepted', {})];
+    assert.equal(foldTurns(whole)[1].label, 'Convo');                                    // whitespace is not a missing part
+});
+
+test('Phrases are spoken trimmed: the panel joins them as the history does, and a reply heard in full is never called interrupted', () => {
+    // As journaled live (2026-11-17): each phrase without the space that separated it from the next.
+    const turn = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'Octopuses have blue blood.' }),
+                  ev(3, 't1', 'assistant.delivered', { text: 'Two hearts pump it.' }),
+                  ev(4, 't1', 'assistant.generated', { text: 'Octopuses have blue blood. Two hearts pump it.' }), ev(5, 't2', 'user.accepted', {})];
+    const entry = foldTurns(turn)[1];
+    assert.equal(entry.text, 'Octopuses have blue blood. Two hearts pump it.');
+    assert.equal(entry.label, 'Convo');                                                  // a later turn exists, and nothing is missing
+});
+
+test('Turns are folded per session and turn; events without a turn are never folded together', () => {
+    const events = [ev(1, 'x', 'user.accepted', {}), { seq: 2, session: 'other', turn: 'x', kind: 'user.accepted', payload: { transcript: 'other session' } },
+                    { seq: 3, kind: 'user.accepted', payload: {} }, { seq: 4, kind: 'assistant.delivered', payload: { text: 'loose' } }, { seq: 5, kind: 'user.transcript', payload: { text: 'orphan' } }];
+    assert.deepEqual(shown(foldTurns(events)).map(row => row.slice(0, 3)), [[1, 'user', 'You'], [2, 'user', 'You'], [3, 'user', 'You'], [4, 'assistant', 'Convo']]);
+});
+
+test('Developer mode: the same entries plus a secondary line, the reply never delivered listed as such, and not-answered speech', () => {
+    const events = [
+        ev(1, 't1', 'user.accepted', {}, { time: 100 }), ev(2, 't1', 'user.transcript', { text: 'Tell me a story', source: 'whisper' }, { time: 101 }),
+        ev(3, 't1', 'assistant.delivered', { text: 'Once upon a time' }, { time: 102 }), ev(4, 't1', 'assistant.generated', { text: 'Once upon a time there was a fox.' }, { time: 103 }),
+        ev(5, 't1', 'turn.interrupted', { reason: 'interrupted' }, { time: 104 }), ev(6, 't2', 'user.accepted', {}, { time: 110 }),
+        ev(7, 't2', 'assistant.generated', { text: 'Never spoken.' }, { time: 111 }), ev(8, '', 'context.compacted', {}, { time: 120 })];
+    const notes = [{ turn: 'gone', reason: 'for_someone_else', at: 105 }, { turn: 't2', reason: 'waiting_for_more', at: 112 }, { turn: 'late', reason: 'odd_new_reason', at: 999 }];
+    const entries = foldTurns(events, { developer: true, notes });
+    assert.deepEqual(entries.map(entry => [entry.key ?? entry.seq, entry.label ?? entry.kind, entry.detail ?? '']), [
+        [1, 'You', 'Transcript: Whisper'],
+        [3, 'Convo · interrupted', '1 phrase heard · not heard: “there was a fox.”'],
+        [5, 'turn.interrupted', ''],
+        ['n:gone', 'You · not answered', 'Not answered: talk to someone else'],          // no journal entry of its own: placed by time
+        [6, 'You', 'Not answered: waiting for you to finish'],                            // its own entry carries the reason
+        [7, 'Convo · generated, not delivered', 'Generated, never delivered: nothing of it was heard'],
+        [8, 'context.compacted', ''],
+        ['n:late', 'You · not answered', 'Not answered: odd new reason']]);
+    assert.equal(foldTurns(events, { notes }).some(entry => entry.kind === 'turn.note' || entry.detail), false);   // never outside developer mode
+    assert.equal(notAnsweredText('backchannel'), 'Not answered: an acknowledgement');
+    const reworded = foldTurns([ev(1, 't', 'user.accepted', {}), ev(2, 't', 'assistant.delivered', { text: 'Done' }), ev(3, 't', 'assistant.generated', { text: '<tool>x</tool> Done' })], { developer: true });
+    assert.equal(reworded[1].detail, '1 phrase heard · 15 more characters generated than heard');
+});
+
+test('The panel keys entries by their first event, counts new entries (not journal rows) for "new", and shows details only to developers', async () => {
+    const turn = (n, seq) => [ev(seq, 't' + n, 'user.accepted', { transcript: 'q' + n }), ev(seq + 1, 't' + n, 'assistant.delivered', { text: 'a' }),
+                              ev(seq + 2, 't' + n, 'assistant.delivered', { text: 'b' }), ev(seq + 3, 't' + n, 'assistant.generated', { text: 'ab' })];
+    const f = await fixture({ events: turn(1, 1) });
+    await f.store.mountPanel();
+    const element = scroller(f.store, { clientHeight: 20, rowHeight: 100, scrollTop: 0 });
+    f.store.bindTranscript(element); await tick();
+    assert.deepEqual(Array.from(f.store.visibleEvents, entry => entry.key), [1, 2]);
+    element.scrollTop = 0; f.store.onScroll(element);                                   // the reader scrolled up
+    f.server.events.push(ev(5, 't1', 'assistant.delivered', { text: 'c' }));             // a phrase more for a turn already shown: no new entry
+    await f.store.history();
+    assert.equal(f.store.unseen, 0);
+    f.server.events.push(...turn(2, 6));                                                  // a new turn, four journal rows: two entries
+    await f.store.history();
+    assert.equal(f.store.unseen, 2);
+    assert.equal(f.store.eventDetail(f.store.visibleEvents[1]), '');
+    f.store.settings.developer_mode = true;
+    assert.equal(f.store.eventDetail(f.store.visibleEvents[1]), '3 phrases heard');
+    const html = await (await import('node:fs/promises')).readFile(new URL('../webui/main.html', import.meta.url), 'utf8');
+    assert.match(html, /<template x-for="event in \$store\.convo\.visibleEvents" :key="event\.key \?\? event\.seq">/);
+    assert.match(html, /<p class="convo-detail" x-show="\$store\.convo\.eventDetail\(event\)" x-text="\$store\.convo\.eventDetail\(event\)"><\/p>/);
+});
+
+test('Not-answered notes belong to the chat they were heard in: another chat starts without them', async () => {
+    const f = await fixture({ events: journal(3), developer: true });
+    await f.store.mountPanel();
+    f.store.notAnswered = [{ turn: 'gone', reason: 'backchannel', at: 1 }];
+    assert.equal(f.store.visibleEvents.some(entry => entry.kind === 'turn.note'), true);
+    f.store.target = 'b';
+    await f.store.history();
+    assert.deepEqual(plainOf(f.store.notAnswered), []);
+    assert.equal(f.store.visibleEvents.some(entry => entry.kind === 'turn.note'), false);
+});
+
+test('The draft follows one turn and gives way once that turn\'s words are in the history; a new turn starts a new draft', async () => {
+    const journal = [];
+    const f = await storeFixture({ api: (_url, payload) => (payload.action === 'history' ? { events: journal.slice(), jobs: [], more: false } : undefined) });
+    await f.store.start();
+    const send = event => f.handlers['convo.event']({ data: { session_id: 's', epoch: 0, ...event } });
+    send({ type: 'text.delta', turn_id: 't1', text: 'Hello ' }); send({ type: 'text.delta', turn_id: 't1', text: 'there.' });
+    assert.equal(f.store.draft, 'Hello there.');
+    journal.push(ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.generated', { text: 'Hello there.' }));
+    await f.store.history();
+    assert.equal(f.store.draft, 'Hello there.');                                        // generated only: nothing heard yet, the draft stays
+    journal.push(ev(3, 't1', 'assistant.delivered', { text: 'Hello there.' }));
+    await f.store.history();
+    assert.equal(f.store.draft, '');                                                     // heard: the history shows it now
+    send({ type: 'text.delta', turn_id: 't1', text: ' (late)' });
+    assert.equal(f.store.draft, '');                                                     // that turn's words are not drafted again
+    send({ type: 'text.delta', turn_id: 't2', text: 'Next' });
+    send({ type: 'text.delta', turn_id: 't3', text: 'Other' });
+    assert.equal(f.store.draft, 'Other');                                                // a new turn replaces an old draft, never appends to it
+    send({ type: 'text.delta', text: ' and more' });                                     // a server that sends no turn id: appended as before
+    assert.equal(f.store.draft, 'Other and more');
+    await f.store.stop();
 });

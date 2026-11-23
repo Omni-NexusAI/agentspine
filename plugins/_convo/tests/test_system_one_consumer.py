@@ -144,7 +144,7 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
     async def test_what_the_assistant_last_said_is_bounded_and_quoted(self):
         self.register()
         long_reply='x'*5000+' Would you like me to look that up?'
-        recent=[{'transcript':'old question','assistant':'Old answer.'},{'input':'audio','assistant':long_reply,'heard_phrases':['a']},{'input':'audio'}]
+        recent=[{'transcript':'old question','assistant':'Old answer.'},{'input':'audio','assistant':long_reply,'heard_phrases':['a']}]
         await bridge.policy({'audio':wav(),'context':{'recent':recent}},config=self.config)
         text=self.calls[0].text
         self.assertIn('The assistant had just said: "',text)
@@ -152,6 +152,20 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(len(text),500)
         self.assertNotIn('old question',text)
         self.assertNotIn('Old answer',text)
+
+    async def test_while_the_users_latest_turn_is_unanswered_the_speech_is_read_without_the_assistants_earlier_words(self):
+        """Measured 2026-11-17 on the recorded corpus: told what the assistant had said, the decision model read 53-75% of real requests
+        as not for it (1-13% read plainly). When the user has spoken since (their latest turn's answer not yet heard, or answered with
+        silence), the assistant's earlier words are not what they are answering, so nothing is said about them."""
+        self.register()
+        earlier = {'input': 'audio', 'assistant': 'The capital of Japan is Tokyo.', 'heard_phrases': ['a']}
+        for latest in ({'input': 'audio'}, {'input': 'audio', 'held': 'silent'}, {'input': 'audio', 'superseded': 'x'}):
+            self.calls.clear()
+            await bridge.policy({'audio': wav(), 'context': {'recent': [earlier, latest]}}, config=self.config)
+            self.assertNotIn('The assistant had just said', self.calls[0].text, latest)
+        self.calls.clear()
+        await bridge.policy({'audio': wav(), 'context': {'recent': [earlier]}}, config=self.config)
+        self.assertIn('The assistant had just said: "The capital of Japan is Tokyo."', self.calls[0].text)
 
     async def test_a_question_is_context_only_for_a_short_answer(self):
         """Measured: told the assistant had just asked something, the decision model read nearly any speech as the answer. That is
@@ -253,6 +267,40 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls[0].text, self.calls[1].text)
         self.assertNotIn('ignored', self.calls[1].text)
         self.assertNotIn('keys', self.calls[1].text)
+
+    async def test_speech_over_the_reply_is_read_without_the_assistants_last_words(self):
+        """Measured 2026-11-08: told what the assistant had just said, d1-omni-600M reads nearly anything after it as an acknowledgement."""
+        self.register()
+        await bridge.policy({'audio': wav(), 'context': {'overlap': True, 'recent': [{'assistant': 'Sure. The build finished.'}]}}, config=self.config)
+        self.assertNotIn('The assistant had just said', self.calls[0].text)
+        await bridge.policy({'audio': wav(), 'context': {'recent': [{'assistant': 'Sure. The build finished.'}]}}, config=self.config)
+        self.assertIn('The assistant had just said', self.calls[1].text)
+
+    async def test_a_short_turn_that_reads_as_an_acknowledgement_is_read_again_without_the_context(self):
+        self.register()
+        self.selected = {**self.selected, 'attention': 'backchannel', 'explicit_request': 'no'}
+        result = await bridge.policy({'audio': wav(), 'context': {'candidate_final': True, 'recent': [{'assistant': 'Sure.'}]}}, config=self.config)
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('The assistant had just said', self.calls[0].text)
+        self.assertNotIn('The assistant had just said', self.calls[1].text)                 # the plain reading decides
+        self.assertAlmostEqual(result['ack_respond'], .03 / 4 * 2, places=6)                # addressed + unclear, read plainly
+        self.assertLessEqual(result['speech_seconds'], .02)                                  # measured in 20 ms steps
+
+    async def test_without_a_line_about_the_assistant_the_one_reading_is_used(self):
+        self.register()
+        self.selected = {**self.selected, 'attention': 'backchannel', 'explicit_request': 'no'}
+        result = await bridge.policy({'audio': wav(), 'context': {'candidate_final': True, 'recent': []}}, config=self.config)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn('ack_respond', result)
+
+    async def test_a_long_turn_or_a_probe_is_read_once_and_carries_no_acknowledgement_reading(self):
+        self.register()
+        self.selected = {**self.selected, 'attention': 'backchannel', 'explicit_request': 'no'}
+        long_clip = wav(samples=b'4' * 24000)                                      # 1.5 s
+        result = await bridge.policy({'audio': long_clip, 'context': {'candidate_final': True, 'recent': [{'assistant': 'Sure.'}]}}, config=self.config)
+        self.assertEqual((len(self.calls), 'ack_respond' in result), (1, False))
+        probe = await bridge.policy({'audio': wav(), 'context': {'candidate_final': False, 'recent': [{'assistant': 'Sure.'}]}}, config=self.config)
+        self.assertEqual((len(self.calls), 'ack_respond' in probe, 'speech_seconds' in probe), (2, False, False))
 
     async def test_the_attention_vocabulary_is_the_one_the_gate_reads(self):
         from plugins._convo.helpers.convo_policy import ATTENTION
@@ -446,6 +494,19 @@ class ConsumerTests(unittest.IsolatedAsyncioTestCase):
             if backend._worker_future is None:break
             await asyncio.sleep(.005)
         self.assertEqual(len(self.calls),1)
+
+
+class DeadlineContract(unittest.TestCase):
+    """Backends are told the deadline Convo waits for (2026-11-17: a decision call that hung kept the classifier busy for over 10 s
+    under the decision plugin's former fixed 20 s, so the next question went unjudged)."""
+
+    def test_backends_are_told_the_deadline_convo_waits_for(self):
+        stub = types.ModuleType('helpers.ws')
+        stub.WsHandler = type('WsHandler', (), {})
+        with patch.dict(sys.modules, {'helpers.ws': stub}):
+            realtime = importlib.import_module('plugins._convo.api.realtime')
+        self.assertEqual(bridge.CALL_SECONDS, realtime.CLASSIFIER_DEADLINE)
+        self.assertGreater(realtime.CLASSIFIER_RELEASE_WAIT, 0)        # a call ending a little after the bound is still waited for
 
 
 if __name__ == '__main__':unittest.main()

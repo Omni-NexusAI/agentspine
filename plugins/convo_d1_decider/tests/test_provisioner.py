@@ -11,8 +11,11 @@ import os
 import shutil
 import sys
 import tempfile
+import socket
+import time
 import types
 import unittest
+import urllib.error
 import wave
 from pathlib import Path
 from unittest.mock import patch
@@ -67,7 +70,7 @@ class Base(unittest.TestCase):
         host.start(); self.addCleanup(host.stop)
         own = patch.object(provisioner, '_own_config_path', lambda: self.folder / 'convo_d1_decider' / 'config.json')
         own.start(); self.addCleanup(own.stop)
-        provisioner._state.update(registration=None, calls=0, last_ms=None, last_error='')
+        provisioner._state.update(registration=None, calls=0, last_ms=None, last_error='', last_failure=None)
         provisioner._resolved.update(key=None, value=None)
         self.addCleanup(provisioner.unregister)
 
@@ -452,6 +455,71 @@ class ModelCallTests(Base):
     def test_a_fixed_address_obeys_the_same_rule(self):
         with self.assertRaises(provisioner.DeciderUnavailable):
             provisioner.D1HttpModel('http://example.com:9931')
+
+
+class CallBoundTests(Base):
+    """Every live call is bounded by Convo's classifier deadline. Measured 2026-11-17: under the former fixed 20 s, a request that
+    never finished connecting kept the classifier busy (the SDK's worker lease) for over 10 s, and the next question went unjudged."""
+
+    def request(self):
+        sdk = provisioner.load_sdk()
+        return sdk.DecisionRequest({'attention': {'type': 'choice', 'instructions': 'Who?', 'criteria': {'a': 'A', 'b': 'B'}}},
+                                   text='state', audio=sdk.AudioInput(b'\x01\x00' * 160, 16000, 1))
+
+    def test_a_live_call_is_bounded_by_convos_classifier_deadline_read_for_every_call(self):
+        self.decider('convo', 'http://localhost:9940')
+        provisioner.ensure_registered()
+        consumer = provisioner._state['registration']['consumer']
+        convo = provisioner._convo('convo_system_one')            # the module the provisioner reads through
+        seen = []
+
+        def urlopen(request, timeout):
+            seen.append(timeout)
+            return Answer()
+
+        with patch('urllib.request.urlopen', urlopen):
+            asyncio.run(consumer.evaluate_request(self.request()))
+            with patch.object(convo, 'CALL_SECONDS', .75):
+                asyncio.run(consumer.evaluate_request(self.request()))
+            provisioner.D1HttpModel('http://localhost:9940', timeout=7).system_one('s', {'attention': {}})   # an explicit bound wins
+            self.convo = 'disabled'                                                  # without Convo: this plugin's own default
+            provisioner.D1HttpModel('http://localhost:9940').system_one('s', {'attention': {}})
+        self.assertEqual(seen, [convo_one.CALL_SECONDS, .75, 7, provisioner.DEFAULT_CALL_SECONDS])
+
+    def test_a_call_the_server_never_answers_ends_at_the_bound_and_frees_the_classifier_at_once(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)          # takes connections, never answers
+        server.bind(('127.0.0.1', 0))
+        server.listen(8)
+        self.addCleanup(server.close)
+        self.decider('convo', 'http://127.0.0.1:%d' % server.getsockname()[1])
+        provisioner.ensure_registered()
+        consumer = provisioner._state['registration']['consumer']
+        with patch.object(provisioner._convo('convo_system_one'), 'CALL_SECONDS', .4):
+            started = time.perf_counter()
+            with self.assertRaises(Exception):
+                asyncio.run(consumer.evaluate_request(self.request()))
+            took = time.perf_counter() - started
+        self.assertLess(took, 2.0)                                               # about the bound, not the former 20 s
+        failure = provisioner.status()['last_failure']
+        self.assertEqual(failure['stage'], 'answer')                             # connected, never answered
+        self.assertGreaterEqual(failure['ms'], 300)
+        with patch('urllib.request.urlopen', lambda request, timeout: Answer()):
+            answers = asyncio.run(consumer.evaluate_request(self.request()))     # free at once: not "still busy"
+        self.assertEqual(answers['attention'].value, 'a')
+
+    def test_a_failure_is_recorded_by_where_it_stopped_and_never_by_its_text(self):
+        model = provisioner.D1HttpModel('http://localhost:9940')
+        cases = [(urllib.error.URLError(TimeoutError('secret detail')), 'connect'),           # no connection, or the request not sent
+                 (urllib.error.URLError(ConnectionRefusedError('secret detail')), 'connect'),
+                 (TimeoutError('secret detail'), 'answer'),                                     # connected, no answer in time
+                 (urllib.error.HTTPError('http://localhost:9940', 503, 'secret detail', {}, None), 'http'),
+                 (OSError('secret detail'), 'other')]
+        for error, stage in cases:
+            with patch('urllib.request.urlopen', side_effect=error):
+                with self.assertRaises(Exception):
+                    model.system_one('s', {'attention': {}})
+            self.assertEqual(provisioner.status()['last_failure']['stage'], stage, error)
+            self.assertNotIn('secret', json.dumps(provisioner.status()))
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 """Lazy singleton. Importing the plugin never loads a model or starts a service."""
 from __future__ import annotations
 
+import copy
 import importlib
 import asyncio
 import threading
@@ -35,6 +36,45 @@ def settings():
     from .managed_runtime import resolve
     config = resolve(config)
     return config
+
+
+def settings_stamp():
+    """A cheap revision of everything `settings()` reads that can change mid-session: the settings file (every Convo writer
+    replaces it atomically, so its modification time, size and inode move) and the plugin's on/off toggle. One stat per file."""
+    from helpers import plugins
+    from . import setup_store
+    stamp = []
+    try:
+        stat = setup_store.config_path().stat()
+        stamp.append((stat.st_mtime_ns, stat.st_size, stat.st_ino))
+    except OSError:
+        stamp.append(None)
+    stamp.append(plugins.get_toggle_state("_convo"))
+    return tuple(stamp)
+
+
+class SettingsCache:
+    """One voice session's view of the saved settings: `read()` again only when `stamp()` changed or after `max_age` seconds (keys
+    and the managed gateway's state are read with them), else a copy of the last read. A failed read raises, so the caller keeps
+    the session's own copy (a file caught mid-write never fails a reply), and the next call reads again."""
+    def __init__(self, read=None, stamp=None, max_age=30.0, clock=None):
+        import time
+        self.read, self.stamp = read or settings, stamp or settings_stamp
+        self.max_age, self.clock = max_age, clock or time.monotonic
+        self.value, self.key, self.at = None, None, float('-inf')
+        self.reads = 0
+
+    def __call__(self):
+        try:
+            key = self.stamp()
+        except Exception:
+            key = object()                     # unknown: read again
+        if self.value is not None and key == self.key and self.clock() - self.at < self.max_age:
+            return copy.deepcopy(self.value)
+        self.reads += 1
+        value = self.read()
+        self.value, self.key, self.at = value, key, self.clock()
+        return copy.deepcopy(value)
 
 
 class Service:
@@ -89,10 +129,13 @@ class Service:
     def studio_admission_status(self):
         return studio_admission.status(self.studio_admission_path())
 
-    def register_connection(self, handler, sid):
+    def register_connection(self, handler, sid, *, replacing=None):
+        """`replacing`: a re-attach's old connection id; that one connection still finishing its own cleanup does not refuse the
+        conversation's move (any other retiring connection, and OFF, still do)."""
         with self.connection_lock:
             self._ensure_retirement()
-            if self.disabled or self.retiring_connections:
+            others = [key for key in self.retiring_connections if replacing is None or key != (id(handler), replacing)]
+            if self.disabled or others:
                 raise ValueError('Convo was disabled during session setup')
             self.connections[(id(handler), sid)] = (asyncio.get_running_loop(), handler, sid)
 
@@ -175,6 +218,17 @@ class Service:
             self.connections.clear()
             retiring = list(self.retiring_connections.items())
         self.dispatcher.pause()
+        whisper = getattr(self, 'whisper', None)
+        if whisper is not None:
+            try:
+                whisper.stop()                 # Convo's Whisper worker process runs only while a voice session uses it
+            except Exception:
+                pass
+        try:
+            from . import convo_inspect
+            convo_inspect.clear()              # developer capture (conversation text and audio, memory only) ends with the plugin
+        except Exception:
+            pass
         with self.store.lock:
             sessions = list(self.store.db.execute('SELECT id,owner FROM sessions WHERE active=1'))
             for row in sessions:
@@ -207,6 +261,15 @@ def service():
                 _instance.__class__ = Service
                 _instance.studio_busy = getattr(_instance, 'studio_busy', False)
                 _instance._ensure_retirement()
+        # The objects it owns were made by the previous module too: give them the refreshed classes as well (an update that added
+        # Store.held or Host.local_time otherwise failed until Agent Zero restarted). Only exact old-class instances, by name, so a
+        # host or store substituted on purpose is left alone.
+        with _instance.connection_lock:
+            if not _instance.connections:
+                for name, cls in (('store', Store), ('host', Host), ('dispatcher', Dispatcher), ('compactor', Compactor)):
+                    owned = getattr(_instance, name, None)
+                    if owned is not None and type(owned) is not cls and type(owned).__name__ == cls.__name__:
+                        owned.__class__ = cls
         control = lifecycle.state()
         with control.lock:
             if control.blocked or control.disabling:
@@ -217,6 +280,12 @@ def service():
                     raise ValueError('Convo connections are still releasing; retry after owning-loop cleanup')
                 _instance.disabled = False
             control.register('service', _instance.deactivate)
+        try:
+            # Content-free timing marks are also kept across restarts, through the store's one writer thread.
+            from . import convo_metrics
+            convo_metrics.LOG.sink = _instance.store.keep_mark
+        except Exception:
+            pass
         return _instance
 
 

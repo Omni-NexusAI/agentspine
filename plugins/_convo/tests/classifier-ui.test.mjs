@@ -181,7 +181,7 @@ test('Model search: a cloud provider through Agent Zero’s store at the moment 
     assert.deepEqual([g.host.searches.length, g.sent('discover').length, g.sent('discover')[0].role], [0, 1, 'classifier']);
     assert.deepEqual(plain(await g.store.classifierSearch('xy')), ['own-server-model']);
     assert.equal(g.sent('discover').length, 1);                                                      // typing reuses the list it fetched
-    const h = await rig({ config: { 'roles.classifier.provider': 'llama_cpp', 'roles.classifier.api_base': 'http://100.75.98.97:18201/v1' } });
+    const h = await rig({ config: { 'roles.classifier.provider': 'llama_cpp', 'roles.classifier.api_base': 'http://100.64.0.10:18201/v1' } });
     assert.deepEqual(plain(await h.store.classifierSearch('d1')), ['own-server-model']);              // llama.cpp on your tailnet: its own list
     assert.deepEqual([h.host.searches.length, h.sent('discover').length], [0, 1]);
     g.store.classifierSetProvider('jev');
@@ -390,7 +390,8 @@ test('The card renders on its own, with the Conversation card’s structure and 
     const own = section(html, 'data-convo-classifier="own"', 'data-convo-classifier="system-one"');
     const titles = [...own.matchAll(/class="field-title"[^>]*>([^<]+)</g)].map(match => match[1]);
     assert.deepEqual(titles, ['Provider', 'API base URL', 'Server URL', 'Model name', 'API key', 'API key', 'Context window (tokens)', 'Accepts audio input', 'Allow remote processing',
-                              'API base URL', 'Key source', 'Classifier type', 'Credential environment reference']);   // Agent Zero's order; then Advanced
+                              'API base URL', 'Key source', 'Classifier type', 'Credential environment reference',
+                              'Allow remote processing']);   // Agent Zero's order; then Advanced; then System One's decider's consent (shown only when it matters)
     assert.ok(own.indexOf('class="advanced-section') > own.indexOf('Allow remote processing'));
     assert.ok(html.indexOf('Use System One’s decider</div>') > html.indexOf('data-convo-classifier="system-one"'));   // the toggle is underneath
     assert.equal((own.match(/<select\b/g) || []).length, 3);                                        // provider, key source, type: one provider list

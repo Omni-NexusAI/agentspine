@@ -1,5 +1,9 @@
 """Owned Linux subprocess gateway; never installs dependencies or starts models.
 
+The gateway runs on Convo's own environment (`data/runtime-env`, the one-time setup that adds Voice Studio) when it exists, else on
+Agent Zero's own Python, which has everything the gateway needs (Starlette, uvicorn, httpx): nothing to install, so the gateway is
+up whenever Agent Zero runs and Convo is on.
+
 States: stopped, setup_required, starting, slow_start, ready, health_failed, startup_failed. A cold start imports a
 large dependency tree over a slow mount, so "not answering yet" is not a failure: `starting` becomes `slow_start`
 after SLOW_AFTER seconds and `health_failed` only after DEADLINE seconds without a healthy answer. A degraded but
@@ -37,9 +41,11 @@ LABELS = {
     'health_failed': 'Not responding (stop and start the owned runtime from Advanced)',
     'startup_failed': 'Exited during start',
 }
+GATEWAY_MODULES = ('starlette', 'uvicorn', 'httpx')
+READY_WAIT = 30.0     # seconds a voice start waits for a gateway that is starting
 REFUSALS = {
     'stopped': 'Convo runtime is stopped; enable Convo or start the owned runtime from Advanced',
-    'setup_required': 'Convo runtime setup is required; check plugin setup',
+    'setup_required': 'Convo’s runtime cannot start here: neither its own environment nor Agent Zero’s Python can run it (Linux with Starlette, uvicorn and httpx is required)',
     'starting': 'Convo runtime is still starting; retry in a moment',
     'slow_start': 'Convo runtime is still starting (a first start can take a few minutes); retry shortly',
     'health_failed': 'Convo runtime did not answer its health check; stop and start the owned runtime from Advanced',
@@ -105,8 +111,8 @@ class ManagedRuntime:
             if self._now() < self.retry_after:
                 return
             self.retry_after = self._now() + 30
-            executable = self.root / 'usr/plugins/_convo/data/runtime-env/bin/python'
-            if sys.platform != 'linux' or not executable.is_file():
+            executable = gateway_python(self.root)
+            if sys.platform != 'linux' or executable is None:
                 self.status = 'setup_required'
                 return
             self.token = secrets.token_urlsafe(32)
@@ -311,10 +317,30 @@ def resolve(config):
     return config
 
 
+def gateway_python(root):
+    """The interpreter the gateway runs on: Convo's own environment when set up, else Agent Zero's own Python when it can run
+    the gateway, else None."""
+    own = Path(root) / 'usr/plugins/_convo/data/runtime-env/bin/python'
+    if own.is_file():
+        return own
+    from importlib.util import find_spec
+    return Path(sys.executable) if sys.executable and all(find_spec(name) is not None for name in GATEWAY_MODULES) else None
+
+
 def require_ready(config):
     if config['sidecar'].get('managed'):
         manager = instance()
         state = manager.public()['state']
+        if state in ('stopped', 'startup_failed'):
+            try:
+                configure(config)               # always on: a voice start brings up a gateway that is not running
+            except Exception:
+                pass                            # the refusal below says what state it is in
+            state = manager.public()['state']
+        deadline = manager._now() + READY_WAIT
+        while state in ('starting', 'slow_start') and manager._now() < deadline:
+            manager._sleep(.5)
+            state = manager.public()['state']
         if state == 'health_failed':
             state = manager.confirm()['state']  # the user asked to start now: a bounded recheck, never a latch
         if state != 'ready':

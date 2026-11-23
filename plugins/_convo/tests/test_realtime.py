@@ -6,7 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from plugins._convo.helpers import convo_policy
 from plugins._convo.helpers.convo_contract import merge, validate_settings
@@ -51,13 +51,16 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         self.host = HostStub(); self.dispatches = []
         self.service = types.SimpleNamespace(store=self.store, host=self.host, persona_cache={},
             dispatcher=types.SimpleNamespace(start=lambda: self.dispatches.append('wake')), compactor=Compactor(self.store, self.host))
-        self.config = validate_settings({'enabled': True, 'roles': {'classifier': {'url':'http://localhost/v1','model':'classifier'}, 'conversation': {'model':'conversation'}}})
+        self.config = validate_settings({'enabled': True, 'sidecar': {'managed': False}, 'roles': {'classifier': {'url':'http://localhost/v1','model':'classifier'}, 'conversation': {'model':'conversation'}}})
         module_stub = types.ModuleType('helpers.ws'); module_stub.WsHandler = WsStub
         with patch.dict(sys.modules, {'helpers.ws': module_stub}):
             # Do not leave host stubs behind for any neighboring tests.
             self.module = importlib.import_module('plugins._convo.api.realtime')
         self.patch = patch.object(self.module, 'modules', return_value=(types.SimpleNamespace(__package__='plugins._convo.helpers', settings=lambda:self.config, service=lambda:self.service), convo_policy, types.SimpleNamespace(Sidecar=SidecarStub)))
         self.patch.start(); self.handler = self.module.Realtime()
+        # The stand-in servers report no model status: a session never waits for a router to load (convo_models).
+        models = patch.object(importlib.import_module('plugins._convo.helpers.convo_models'), 'state', new=AsyncMock(return_value=''))
+        models.start(); self.addCleanup(models.stop)
         response = await self.handler.process('convo.start', {'target':'a'}, 'browser')
         self.session = response['session']; self.ids = {'session_id':self.session['id'], 'epoch':self.session['epoch']}
 
@@ -157,6 +160,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nonexplicit_tool_proposal_never_queues_work(self):
         state = self.handler.connections['browser']
+        state['mode'] = 'ambient'          # where the classifier's explicit request authorises work (a conversation's model chooses)
         state['sidecar'].decision = {'speech':'speak','action':'delegate','confidence':.99,'explicit_request':False}
         state['sidecar'].proposal = {'type':'tool.proposal','name':'delegate_task','arguments':{'task':'Unapproved'}}
         await self.turn()

@@ -212,16 +212,18 @@ class Modalities(AcceptanceCase):
             self.assertIsNone(backend.requests[-1].audio)
             await h.candidate('a', h.audio('sound'), final=True)                      # audio is not transcoded for a text backend
             await h.settle()
-            self.assertEqual(h.last_state('a'), 'degraded')
-            self.assertEqual(h.accepted_turns(), ['t'])
+            self.assertEqual(len(backend.requests), 1)                                  # refused before inference: nothing of it reached the backend
+            # In a conversation the user started the turn is not lost: answered without a classifier reading (fixes A, 2026-11-17).
+            self.assertEqual((h.last_state('a'), h.accepted_turns()), ('admit', ['t', 'a']))
         self.drive(scenario, self.caps(TEXT), audio_conversation=False)
 
     def test_text_only_request_is_refused_by_an_audio_backend_with_no_text_mode(self):
         async def scenario(h, backend):
             await h.candidate('t', transcript='Hello there', final=True)
             await h.settle()
-            self.assertEqual(h.last_state('t'), 'degraded')
-            self.assertEqual((backend.requests, h.accepted_turns()), ([], []))
+            self.assertEqual(backend.requests, [])                                       # refused: never reached inference
+            # In a conversation the user started the turn is not lost: answered without a classifier reading.
+            self.assertEqual((h.last_state('t'), h.accepted_turns()), ('admit', ['t']))
         self.drive(scenario, self.caps(TEXT_AUDIO))
 
     def test_backend_limits_decide_support_and_convo_never_resamples_or_truncates(self):
@@ -294,17 +296,22 @@ class Decisions(AcceptanceCase):
                     await h.candidate('t', h.audio('ask'), final=True)
                     await h.settle()
                     self.assertEqual(len(h.jobs()), jobs)
-                self.drive(scenario, self.caps(TEXT_AUDIO), proposal=DELEGATE_TASK)
+                self.drive(scenario, self.caps(TEXT_AUDIO), proposal=DELEGATE_TASK, mode='ambient', config={'ambient_enabled': True})   # where the classifier authorises work
 
     def test_backend_failure_never_falls_back_to_the_http_classifier(self):
-        async def scenario(h, backend):
-            backend.failure = RuntimeError('model unavailable')
-            await h.candidate('f', h.audio('request'), final=True)
-            await h.settle()
-            self.assertEqual(h.last_state('f'), 'degraded')
-            self.assertEqual((h.accepted_turns(), h.answers), ([], []))
-            self.assertNotIn('policy', h.sidecar.calls)                                 # the legacy classifier was never consulted
-        self.drive(scenario, self.caps(TEXT_AUDIO))
+        """No other classifier is ever asked. In a conversation the user started the finished turn is still answered, by the conversation
+        model alone (no classifier reading); in ambient listening it is handed back."""
+        for mode, options, expected in (('active', {}, ('admit', ['f'])), ('ambient', {'config': {'ambient_enabled': True}}, ('degraded', []))):
+            with self.subTest(mode):
+                self.setUp()
+                async def scenario(h, backend, expected=expected):
+                    backend.failure = RuntimeError('model unavailable')
+                    await h.candidate('f', h.audio('request'), final=True)
+                    await h.settle()
+                    self.assertEqual((h.last_state('f'), h.accepted_turns()), expected)
+                    self.assertNotIn('policy', h.sidecar.calls)                         # the legacy classifier was never consulted
+                    self.assertEqual(len(backend.requests), 2)                           # the selected backend, asked once more; nothing else
+                self.drive(scenario, self.caps(TEXT_AUDIO), mode=mode, **options)
 
     def test_revoking_the_consumer_mid_inference_rejects_the_late_result(self):
         async def scenario(h, backend):
@@ -366,11 +373,40 @@ class Gate(AcceptanceCase):
             await h.settle()
             self.assertEqual(h.last_state('s'), 'ignore')
             self.assertEqual(h.accepted_turns(), [])
-        self.drive(scenario, self.caps(TEXT_AUDIO))
+        self.drive(scenario, self.caps(TEXT_AUDIO), mode='ambient', config={'ambient_enabled': True})                 # where the floors decide
+
+    def test_in_a_conversation_only_a_confident_other_or_a_short_acknowledgement_goes_unanswered(self):
+        """Active listening presumes speech is for the assistant (convo_policy.conversation_verdict)."""
+        SIDE = {'addressed': .02, 'side_conversation': .93, 'backchannel': .02, 'unfinished': .02, 'unclear': .01}
+        ACK = {'addressed': .05, 'side_conversation': .02, 'backchannel': .9, 'unfinished': .02, 'unclear': .01}
+        HIGH = {'addressed': .85, 'side_conversation': .05, 'backchannel': .04, 'unfinished': .03, 'unclear': .03}
+        # name: (probe distribution or None, final distribution, clip seconds, expected state, expected reason)
+        cases = {
+            'mostly elsewhere, not sure': (None, ELSEWHERE, .6, 'admit', None),
+            'confidently someone else': (None, SIDE, 2.0, 'ignore', 'for_someone_else'),
+            'someone else at the end, for the assistant while speaking': (HIGH, SIDE, 2.0, 'admit', None),
+            'a short acknowledgement': (None, ACK, .6, 'ignore', 'backchannel'),
+            'a long one is not an acknowledgement': (None, ACK, 2.0, 'admit', None),
+        }
+        for name, (probe, final, seconds, state, reason) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                async def scenario(h, backend, probe=probe, final=final, seconds=seconds, state=state, reason=reason):
+                    if probe is not None:
+                        backend.distribute(attention=probe)
+                        await h.candidate('s', h.audio('so far', seconds=.75), sequence=1, final=False)
+                        await h.settle()
+                    backend.distribute(attention=final)
+                    await h.candidate('s', h.audio('said', seconds=seconds), sequence=2, final=True)
+                    await h.settle()
+                    last = [p for _, p in h.events('candidate.state', 's')][-1]
+                    self.assertEqual((last['state'], last.get('reason')), (state, reason))
+                self.drive(scenario, self.caps(TEXT_AUDIO))
 
     def test_a_configured_gate_floor_reaches_the_live_loop(self):
-        """The same utterance (a .50 chance of being for the assistant), under the default floor and under a stricter configured one."""
-        for config, expected in (({}, 'admit'), ({'policy_gate': {'respond_min': .6, 'ambient_respond_min': .9}}, 'ignore')):
+        """The same utterance (a .50 chance of being for the assistant) in ambient listening, under the default floor and under a more
+        lenient configured one (in a conversation the user started the presumption decides instead)."""
+        for config, expected in (({}, 'ignore'), ({'policy_gate': {'ambient_respond_min': .45}}, 'admit')):
             with self.subTest(config=config):
                 self.setUp()
                 async def scenario(h, backend, expected=expected):
@@ -378,7 +414,7 @@ class Gate(AcceptanceCase):
                     await h.candidate('s', h.audio('maybe'), final=True)
                     await h.settle()
                     self.assertEqual(h.last_state('s'), expected)
-                self.drive(scenario, self.caps(TEXT_AUDIO), config=config)
+                self.drive(scenario, self.caps(TEXT_AUDIO), mode='ambient', config={'ambient_enabled': True, **config})
 
     def test_ambient_listening_needs_more_than_active_listening(self):
         for mode, expected in (('active', 'admit'), ('ambient', 'ignore')):
@@ -455,7 +491,7 @@ class Gate(AcceptanceCase):
             await h.settle()
             self.assertEqual(h.last_state('t'), 'admit')            # spoken to
             self.assertEqual(len(h.jobs()), 0)                      # but no work: the request was not explicit enough
-        self.drive(scenario, self.caps(TEXT_AUDIO), proposal=DELEGATE_TASK)
+        self.drive(scenario, self.caps(TEXT_AUDIO), proposal=DELEGATE_TASK, mode='ambient', config={'ambient_enabled': True})       # where the classifier authorises work
 
 
 if __name__ == '__main__':

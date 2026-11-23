@@ -162,7 +162,8 @@ class SidecarTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post('/answer', headers=self.headers, json={'role': role, 'system': 'Voice rules', 'history': [], 'audio': wav(), 'allow_tools': True})
         self.assertIn('tool.proposal', response.text)
         self.assertIn('input_audio', json.dumps(captured))
-        self.assertEqual(captured[0]['tools'][0]['function']['name'], 'delegate_task')
+        self.assertEqual([tool['function']['name'] for tool in captured[0]['tools']], ['web_search', 'memory_read', 'delegate_task'])
+        self.assertEqual(captured[0]['tool_choice'], 'auto')
 
     async def test_bad_text_only_request_is_rejected_without_network(self):
         response = await self.client.post('/answer', headers=self.headers, json={'role': {'url': 'http://localhost', 'model': 'test', 'capabilities': {}}, 'system': '', 'audio': wav()})

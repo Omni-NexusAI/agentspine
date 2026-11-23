@@ -156,7 +156,7 @@ async def _managed(role, result, options):
     from .convo_service import settings
     saved = settings()
     if not saved['sidecar'].get('managed'):
-        return {'state': 'unavailable', 'message': 'Convo’s managed runtime is off: turn on “Manage runtime” and save, then check again. Nothing was contacted.'}
+        return {'state': 'unavailable', 'message': 'Convo’s managed runtime is off: turn on “Run Convo’s own runtime” (Connections → Convo runtime) and save, then check again. Nothing was contacted.'}
     sidecar = Sidecar(saved['sidecar'])
     models = await sidecar.studio({'operation': 'models'})
     result['models'] = options(models, ('available', 'available_models', 'models', 'data'))

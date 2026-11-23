@@ -7,7 +7,7 @@ import { defaults, getPath, setPath } from '../webui/defaults.js';
 
 const plain = value => JSON.parse(JSON.stringify(value));
 const MIXINS = { 'webui/conversation-setup.js': 'conversationSetup', 'webui/classifier-setup.js': 'classifierSetup',
-                 'webui/speech-setup.js': 'speechSetup', 'webui/dictation-setup.js': 'dictationSetup' };
+                 'webui/speech-setup.js': 'speechSetup', 'webui/dictation-setup.js': 'dictationSetup', 'webui/synthesis-setup.js': 'synthesisSetup' };
 
 // A server with one saved settings file: setup_save replaces it, setup_patch is compare-and-set per path (as the real one).
 async function rig({ reactive = true, hold = null } = {}) {

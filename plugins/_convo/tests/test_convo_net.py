@@ -81,7 +81,7 @@ class ThisComputer(unittest.TestCase):
         with patch.object(net, 'in_docker', return_value=True), patch.object(net.socket, 'getaddrinfo', return_value=[()]):
             for host in ('localhost', '127.0.0.1', '127.0.1.1', '::1', '[::1]', 'LOCALHOST'):
                 self.assertEqual(net.connect_host(host), 'host.docker.internal', host)
-            for host in ('host.docker.internal', '192.168.0.33', '100.75.98.97', 'desktop-i96ld4g', 'example.com'):
+            for host in ('host.docker.internal', '192.168.1.20', '100.64.0.10', 'desktop-example', 'example.com'):
                 self.assertEqual(net.connect_host(host), host, host)     # every other address is used as typed
             self.assertEqual(net.network(), {'in_docker': True, 'this_computer': 'host.docker.internal', 'translated': True})
         net._alias.update(value=None, at=0.0)
@@ -102,19 +102,19 @@ class ThisComputer(unittest.TestCase):
                 return (await client.get(url)).status_code
         with patch.object(net, 'in_docker', return_value=True), patch.object(net.socket, 'getaddrinfo', return_value=[()]):
             self.assertEqual(asyncio.run(get('https://127.0.0.1:18201/v1/models')), 200)
-            self.assertEqual(asyncio.run(get('http://192.168.0.33:8890/v1/models')), 200)
+            self.assertEqual(asyncio.run(get('http://192.168.1.20:8890/v1/models')), 200)
         routed, direct = seen
         self.assertEqual((routed.url.host, routed.url.port, routed.url.path), ('host.docker.internal', 18201, '/v1/models'))
         self.assertEqual(routed.headers['Host'], '127.0.0.1:18201')                     # the typed address stays the identity
         self.assertEqual(routed.extensions.get('sni_hostname'), '127.0.0.1')            # and the certificate is checked against it
-        self.assertEqual((direct.url.host, direct.headers['Host']), ('192.168.0.33', '192.168.0.33:8890'))
+        self.assertEqual((direct.url.host, direct.headers['Host']), ('192.168.1.20', '192.168.1.20:8890'))
         self.assertNotIn('sni_hostname', direct.extensions)
 
     def test_urllib_requests_follow_the_same_rule(self):
         with patch.object(net, 'in_docker', return_value=True), patch.object(net.socket, 'getaddrinfo', return_value=[()]), \
                 patch.object(net, 'load_pins', return_value={}):
             self.assertEqual(net.for_urllib('http://localhost:9931/v1/systemone')[:2], ('http://host.docker.internal:9931/v1/systemone', {'Host': 'localhost:9931'}))
-            self.assertEqual(net.for_urllib('http://192.168.0.33:9931/v1/systemone'), ('http://192.168.0.33:9931/v1/systemone', {}, None))
+            self.assertEqual(net.for_urllib('http://192.168.1.20:9931/v1/systemone'), ('http://192.168.1.20:9931/v1/systemone', {}, None))
 
     def test_convos_own_services_never_use_it(self):
         source = (Path(net.__file__).resolve().parent / 'convo_transport.py').read_text(encoding='utf-8')
@@ -173,7 +173,7 @@ class Certificates(unittest.TestCase):
         self.assertIsNone(net.pin_for(moved))
 
     def test_only_https_on_your_own_network_is_ever_remembered(self):
-        for url in ('https://127.0.0.1:1/v1', 'https://192.168.0.33:18201/v1', 'https://100.75.98.97:18201/v1', 'https://desktop:1/v1'):
+        for url in ('https://127.0.0.1:1/v1', 'https://192.168.1.20:18201/v1', 'https://100.64.0.10:18201/v1', 'https://desktop:1/v1'):
             self.assertTrue(net.may_remember(url), url)
         for url in ('https://example.com/v1', 'https://8.8.8.8/v1', 'http://127.0.0.1:1/v1'):
             self.assertFalse(net.may_remember(url), url)
@@ -205,7 +205,7 @@ class Failures(unittest.TestCase):
         self.assertEqual((found['url'], found['label']), ('http://127.0.0.1:' + str(open_port) + '/v1', 'Use port ' + str(open_port)))
         self.assertIsNone(asyncio.run(net.suggestion('http://127.0.0.1:1/v1', ())))
         with patch.object(net, 'docker_alias', return_value='host.docker.internal'), patch.object(net, 'reachable', new=AsyncMock(return_value=True)):
-            private = asyncio.run(net.suggestion('http://192.168.0.33:8890/v1'))
+            private = asyncio.run(net.suggestion('http://192.168.1.20:8890/v1'))
         self.assertEqual(private['url'], 'http://127.0.0.1:8890/v1')                    # a server listening only on 127.0.0.1 here
         self.assertIsNone(asyncio.run(net.suggestion('http://203.0.113.9:8890/v1')))     # nothing is looked for elsewhere
 

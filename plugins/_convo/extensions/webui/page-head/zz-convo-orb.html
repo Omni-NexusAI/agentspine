@@ -18,7 +18,7 @@
 
 /* state colours (a hint, not the signal) */
 #microphone-button[data-convo=idle]{--co:#8e98a8}
-#microphone-button[data-convo=connecting],#microphone-button[data-convo=thinking]{--co:#c8aa72}
+#microphone-button[data-convo=connecting],#microphone-button[data-convo=loading],#microphone-button[data-convo=thinking]{--co:#c8aa72}
 #microphone-button[data-convo=listening],#microphone-button[data-convo=hearing]{--co:#69bdca}
 #microphone-button[data-convo=speaking]{--co:#aaa0d3}
 #microphone-button[data-convo=dictating-latched],#microphone-button[data-convo=dictation]{--co:#5fc4b0}
@@ -28,7 +28,7 @@
    the general light rule first, then each state, all with the same specificity) */
 body.light-mode #microphone-button[data-convo]{--co:#2f7a5a}
 body.light-mode #microphone-button[data-convo=idle]{--co:#5b6575}
-body.light-mode #microphone-button[data-convo=connecting],body.light-mode #microphone-button[data-convo=thinking]{--co:#8a6a1f}
+body.light-mode #microphone-button[data-convo=connecting],body.light-mode #microphone-button[data-convo=loading],body.light-mode #microphone-button[data-convo=thinking]{--co:#8a6a1f}
 body.light-mode #microphone-button[data-convo=listening],body.light-mode #microphone-button[data-convo=hearing]{--co:#1f7f90}
 body.light-mode #microphone-button[data-convo=speaking]{--co:#5d4fa8}
 body.light-mode #microphone-button[data-convo=dictating-latched],body.light-mode #microphone-button[data-convo=dictation]{--co:#2c7d6c}
@@ -36,7 +36,7 @@ body.light-mode #microphone-button[data-convo=dictating-ptt]{--co:#94590f}
 body.light-mode #microphone-button[data-convo=error]{--co:#b3342f}
 
 /* one glyph per state: the shape differs, so state survives without colour */
-#microphone-button[data-convo=ready] .g-mic,#microphone-button[data-convo=idle] .g-idle,#microphone-button[data-convo=connecting] .g-spin,
+#microphone-button[data-convo=ready] .g-mic,#microphone-button[data-convo=idle] .g-idle,#microphone-button[data-convo=connecting] .g-spin,#microphone-button[data-convo=loading] .g-spin,
 #microphone-button[data-convo=listening] .g-bars,#microphone-button[data-convo=hearing] .g-bars,#microphone-button[data-convo=thinking] .g-dots,
 #microphone-button[data-convo=speaking] .g-voice,#microphone-button[data-convo=dictating-latched] .g-pen,#microphone-button[data-convo=dictation] .g-pen,
 #microphone-button[data-convo=dictating-ptt] .g-ptt,#microphone-button[data-convo=error] .g-err{opacity:1}
@@ -56,7 +56,7 @@ body.light-mode #microphone-button[data-convo=error]{--co:#b3342f}
 .g-dots circle{opacity:.35;animation:co-dot 1.25s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
 .g-dots .d1{animation-delay:.16s}.g-dots .d2{animation-delay:.32s}
 #microphone-button[data-convo=thinking] .co-ring,#microphone-button[data-convo=connecting] .co-ring,#microphone-button[data-convo=dictating-latched] .co-ring,#microphone-button[data-convo=dictation] .co-ring{animation:co-pulse 1.6s ease-in-out infinite}
-#microphone-button[data-convo=connecting] .g-spin{animation:co-spin .9s linear infinite}
+#microphone-button[data-convo=connecting] .g-spin,#microphone-button[data-convo=loading] .g-spin{animation:co-spin .9s linear infinite}
 
 /* speaking: waves radiate and the core follows the existing output meter */
 .g-voice .w{opacity:0;animation:co-wave 1.35s ease-out infinite;transform-box:fill-box;transform-origin:left center}

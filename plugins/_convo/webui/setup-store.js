@@ -5,6 +5,7 @@ import { conversationSetup } from '/plugins/_convo/webui/conversation-setup.js';
 import { classifierSetup } from '/plugins/_convo/webui/classifier-setup.js';
 import { speechSetup } from '/plugins/_convo/webui/speech-setup.js';
 import { dictationSetup } from '/plugins/_convo/webui/dictation-setup.js';
+import { synthesisSetup } from '/plugins/_convo/webui/synthesis-setup.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const endpoint = '/plugins/_convo/conversation';
@@ -32,12 +33,13 @@ export function compose(core, ...mixins) {
 export const store = createStore('convoSetup', compose({
     config: null, revision: null, baseline: '', keys: {}, credentials: {}, readiness: [], decisionBackends: [], busy: false,
     providers: [], native: {}, deciderReference: null, classifierCatalog: null, inConfigModal: false,
+    profiles: [],                                       // agent profiles for "Speak as profile" (setup_read `profiles`: [{id, title}])
     stale: false, conflicts: [], theirs: null, revisionSeen: '',
     section: 'Connections', sections: ['Connections', 'Conversation', 'Voice & Audio'],   // tuning lives in the developer diagnostics panel
     roles: ['conversation', 'classifier', 'tts'], choices: {}, searches: {}, error: '', message: '',
     importDocument: null, importPreview: null, importPaths: [],
     network: {}, certificates: {}, keyBound: {},       // where Agent Zero runs, remembered certificates, the address each saved key is for
-    ui: { conversation: {}, classifier: {}, speech: {}, dictation: {} },  // each card's transient view state; its mixin holds methods only
+    ui: { conversation: {}, classifier: {}, speech: {}, dictation: {}, synthesis: {} },  // each card's transient view state; its mixin holds methods only
     get dirty() { return !!this.config && (JSON.stringify(this.config) !== this.baseline || Object.keys(this.keys).length > 0); },
     // System One's own decider as the server describes it (decider_reference), with its verdict `audio`.
     get decider() { return this.deciderReference || { installed: false, enabled: false, consumer_enabled: false, registered: [], reasons: [] }; },
@@ -63,6 +65,7 @@ export const store = createStore('convoSetup', compose({
         this.decisionBackends = result.decision_backends || [];
         this.providers = result.providers || []; this.native = result.native || {}; this.deciderReference = result.decider_reference || null;
         this.classifierCatalog = result.classifier_catalog || null;
+        this.profiles = Array.isArray(result.profiles) ? result.profiles.filter(item => item && typeof item.id === 'string').slice(0, 200) : [];
         this.takeFacts(result);
         this.keys = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
     },
@@ -86,6 +89,7 @@ export const store = createStore('convoSetup', compose({
         this.providers = result.providers || this.providers; this.native = result.native || this.native;
         this.deciderReference = result.decider_reference || this.deciderReference;
         this.classifierCatalog = result.classifier_catalog || this.classifierCatalog;
+        if (Array.isArray(result.profiles)) this.profiles = result.profiles.filter(item => item && typeof item.id === 'string').slice(0, 200);
         this.takeFacts(result);
         this.conflicts = [...conflicts, ...earlier]; this.stale = false; this.revisionSeen = ''; this.error = '';
         return conflicts;
@@ -197,6 +201,12 @@ export const store = createStore('convoSetup', compose({
 
     // ---- One connection's extras, the same on every card: where "localhost" goes, the certificate remembered for this server
     // (or a changed one), the address that answers after a refused connection, and the saved key's own address.
+    // Convo's runtime (its gateway), as the Connections card shows it: the readiness row in words.
+    runtimeRow() {
+        const row = (this.readiness || []).find(item => item?.id === 'runtime');
+        if (!this.config?.sidecar?.managed) return { state: 'unverified', label: 'Your gateway', detail: `Convo uses the gateway at ${this.config?.sidecar?.url || '(no address)'}; it is checked when a voice session starts.` };
+        return row ? { state: row.state, label: 'Status', detail: row.detail || row.state } : { state: 'unverified', label: 'Status', detail: 'Not checked yet.' };
+    },
     connectionResult(role) { return role === 'classifier' ? (this.ui?.classifier?.check || {}) : (this.choices[role] || {}); },
     thisComputerText(url) {
         let host = '';
@@ -289,4 +299,4 @@ export const store = createStore('convoSetup', compose({
             reset(this.config, defaults); this.keys = {};
         };
     },
-}, conversationSetup, classifierSetup, speechSetup, dictationSetup));
+}, conversationSetup, classifierSetup, speechSetup, dictationSetup, synthesisSetup));

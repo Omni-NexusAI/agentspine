@@ -4,13 +4,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-    BLOCK, SERVER_RATE, concat, delayed, fadeIn, framesFor, gainDb, mix, noise, replay, rmsOf, silence, speechLike, wavFrames,
+    BLOCK, SERVER_RATE, concat, delayed, fadeIn, framesFor, gainDb, mix, noise, replay, rmsOf, silence, speechLike, voiced, wavFrames,
 } from './signals.mjs';
 import { RATES as MEASURED_RATES, duckToggles, falseStarts, overlapDelay, roomLeak } from './echo-measure.mjs';
 
 const RATES = [16000, 44100, 48000];                      // what real capture devices report
 const SERVER_BOUND = SERVER_RATE * 20;                     // plugin max_audio_seconds=20 -> frames the server accepts (test_behavior_corpus.AudioBound)
 const block = rate => BLOCK / rate;                        // one worklet block, in seconds
+const longestZeroRun = samples => { let best = 0, run = 0; for (const value of samples) { run = value === 0 ? run + 1 : 0; best = Math.max(best, run); } return best; };
 
 test('Admission needs 450 ms of voiced audio, then probes follow every 750 ms; the turn ends 900 ms after the last voice', () => {
     for (const rate of RATES) {
@@ -18,7 +19,9 @@ test('Admission needs 450 ms of voiced audio, then probes follow every 750 ms; t
         assert.equal(r.starts.length, 1, rate);
         // whole blocks are counted, so the onset block may be only partly voiced: within one block either side of 450 ms
         assert.ok(r.starts[0] - 1 >= .45 - block(rate) && r.starts[0] - 1 <= .45 + 2 * block(rate), `admitted ${(r.starts[0] - 1).toFixed(3)} s after onset at ${rate}`);
-        assert.ok(r.probes[0].seconds >= .75 && r.probes[0].seconds <= .75 + 2 * block(rate), `first probe at ${r.probes[0].seconds.toFixed(3)} s at ${rate}`);
+        const spoken = r.probes[0].seconds - r.probes[0].preRolled;                        // the pre-roll leads the audio but is not speech
+        assert.ok(r.probes[0].preRolled >= .4 && r.probes[0].preRolled <= .4 + block(rate), `pre-roll ${r.probes[0].preRolled} at ${rate}`);
+        assert.ok(spoken >= .75 && spoken <= .75 + 2 * block(rate), `first probe at ${spoken.toFixed(3)} s at ${rate}`);
         for (let n = 1; n < r.probes.length; n++) {
             assert.ok(r.probes[n].seconds > r.probes[n - 1].seconds);                     // cumulative, never a window
             assert.ok(r.probes[n].seconds - r.probes[n - 1].seconds >= .75 - 1e-9);
@@ -26,7 +29,8 @@ test('Admission needs 450 ms of voiced audio, then probes follow every 750 ms; t
         assert.equal(r.turns.length, 1, rate);
         const [turn] = r.turns, voicedEnd = r.boundary.lastTurn.voicedAt / 1000;
         assert.ok(turn.at - voicedEnd >= .9 && turn.at - voicedEnd <= .9 + 2 * block(rate), `endpoint ${(turn.at - voicedEnd).toFixed(3)} s after the last voiced block at ${rate}`);
-        assert.ok(turn.seconds >= 3 && turn.seconds <= 3 + 1.2);                          // the utterance plus its trailing silence
+        const heard = turn.seconds - turn.last.preRolled;
+        assert.ok(heard >= 3 && heard <= 3 + 1.2);                                          // the utterance plus its trailing silence
     }
 });
 
@@ -93,11 +97,11 @@ test('Baseline: the fixed 0.02 RMS threshold opens a candidate on loud steady no
     }
 });
 
-test('Baseline: there is no pre-roll, so a soft onset loses its first words', () => {
+test('With the pre-roll off (0, the previous default), a soft onset loses its first words', () => {
     for (const rate of RATES) {
         const onset = 1;                                                                   // seconds; the sound begins here
-        const loud = replay(concat(silence(onset, rate), speechLike(3, rate), silence(2, rate)), rate);
-        const soft = replay(concat(silence(onset, rate), fadeIn(speechLike(3, rate), .8, rate), silence(2, rate)), rate);
+        const loud = replay(concat(silence(onset, rate), speechLike(3, rate), silence(2, rate)), rate, { preRoll: 0 });
+        const soft = replay(concat(silence(onset, rate), fadeIn(speechLike(3, rate), .8, rate), silence(2, rate)), rate, { preRoll: 0 });
         const lost = replay => replay.turns[0].startsAt - onset;                           // >0: audio from this long after the sound began
         assert.ok(lost(loud) < block(rate) + 1e-9, `an abrupt onset is kept to within one block (${lost(loud).toFixed(3)} s)`);
         assert.ok(lost(soft) > .1, `a soft onset loses ${lost(soft).toFixed(3)} s at ${rate}`);
@@ -108,7 +112,7 @@ test('Baseline: there is no pre-roll, so a soft onset loses its first words', ()
 test('BP3 option: a pre-roll keeps the sound that came before the first loud block, so a soft onset is not cut off', () => {
     for (const rate of RATES) {
         const onset = 1, signal = concat(silence(onset, rate), fadeIn(speechLike(3, rate), .8, rate), silence(2, rate));
-        const off = replay(signal, rate), kept = replay(signal, rate, { preRoll: .2 });
+        const off = replay(signal, rate, { preRoll: 0 }), kept = replay(signal, rate, { preRoll: .2 });
         const lostOff = off.turns[0].startsAt - onset, lostKept = kept.turns[0].startsAt - onset;
         assert.ok(lostOff - lostKept >= .2 - 1e-9 && lostOff - lostKept <= .2 + block(rate) + 1e-9, `${lostOff.toFixed(3)} s lost without, ${lostKept.toFixed(3)} s with, at ${rate}`);
         assert.ok(lostKept < .03 + block(rate), `a soft onset now starts within ${lostKept.toFixed(3)} s of the sound`);
@@ -163,16 +167,22 @@ test('BP9: speech over the echo is detected about half a second after it begins,
     }
     // What is uploaded: the user's speech, and silence where the echo was withheld; never the echo itself.
     const rate = 48000, lead = 1.5, at = 3.5, total = 9.5;
-    const playback = speechLike(5, rate, { rms: .1, seed: 9 });
-    const user = concat(silence(at, rate), speechLike(1.5, rate, { rms: .05, seed: 21, syllables: 3.1 }), silence(total - at - 1.5, rate));
+    // Voiced sources (the guard now decides with voicing; noise bursts are no longer taken for a person).
+    const playback = voiced(5, rate, { rms: .1, seed: 9, f0: 115 });
+    const user = concat(silence(at, rate), voiced(1.5, rate, { rms: .05, seed: 21, f0: 195, syllables: 3.1 }), silence(total - at - 1.5, rate));
     const mic = mix(user, roomLeak(playback, rate, { db: -10, total, start: lead }));
     const result = replay(mic, rate, { guard: 'adaptive', reference: concat(silence(lead, rate), playback, silence(total - lead - 5, rate)) });
     const [turn] = result.turns;
     assert.equal(result.turns.length, 1);
-    assert.ok(turn.startsAt >= at - .1 && turn.startsAt <= at + .1, `the turn starts with the user's speech (${turn.startsAt.toFixed(3)} s)`);
+    const speechAt = turn.startsAt + turn.last.preRolled;
+    assert.ok(speechAt >= at - .1 && speechAt <= at + .1, `the turn's speech starts with the user's speech (${speechAt.toFixed(3)} s)`);
     const samples = turn.chunks.reduce((all, chunk) => { all.push(...chunk); return all; }, []);
+    const opening = samples.slice(0, Math.round(turn.last.preRolled * rate));
+    assert.equal(opening.every(value => value === 0), true, 'the pre-roll during playback is the withheld time (silence), never the echo');
+    // Where the echo continued after the user stopped, the turn holds floor-level comfort noise: not the echo, and no digital silence.
     const tail = samples.slice(-Math.round(.5 * rate));
-    assert.equal(tail.every(value => value === 0), true, 'where the echo continued after the user stopped, the turn holds silence, not the echo');
+    assert.ok(rmsOf(Float32Array.from(tail)) <= .0015 + 1e-6, `comfort noise stays at the floor (${rmsOf(Float32Array.from(tail))})`);
+    assert.equal(longestZeroRun(tail), 0, 'no digital zeros where the user was talking over the reply');
 });
 
 test('BP9: a one-word interruption shorter than the 450 ms admission threshold is not detected (documented limit)', () => {
@@ -183,7 +193,7 @@ test('BP9: a one-word interruption shorter than the 450 ms admission threshold i
 });
 
 test('BP9: the guard is only as good as its reference: with no reference the leak is not recognised', () => {
-    const rate = 48000, playback = speechLike(3, rate, { rms: .1, seed: 9 });
+    const rate = 48000, playback = voiced(3, rate, { rms: .1, seed: 9, f0: 115 });   // a voice: noise would not be taken for speech at all
     const mic = mix(silence(5, rate), delayed(gainDb(playback, -10), .12, rate));
     assert.equal(replay(mic, rate, { guard: 'adaptive', reference: null }).starts.length, 1, 'no playback reference, no echo protection (the mic passes through)');
 });

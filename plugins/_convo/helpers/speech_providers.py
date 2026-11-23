@@ -293,7 +293,7 @@ def readiness_rows(config):
     elif connection == 'managed':
         notes.append('Convo’s own audio.cpp runtime with its Voice Studio voices.')
         if not (config.get('sidecar') or {}).get('managed'):
-            missing.append('Convo’s managed runtime is off: turn on “Manage runtime” (audio.cpp, Managed by Convo) and save')
+            missing.append('Convo’s managed runtime is off: turn on “Run Convo’s own runtime” (Connections → Convo runtime) and save')
     else:
         if 'url' in connection_fields(provider, connection) and not tts.get('url'):
             missing.append('a server URL' + (' (Unsloth Studio has no documented default address)' if provider == 'unsloth_studio' else ''))
@@ -367,7 +367,7 @@ def describe(convo_config):
             reason = '' if available else 'Native Kokoro is off or missing in this host. Turn it on in Plugins to use it.'
         elif name == 'managed_audio':
             available = bool(sidecar.get('managed'))
-            reason = '' if available else 'Convo’s managed runtime is off: turn on “Manage runtime” (audio.cpp, Managed by Convo) to use Convo-owned audio.'
+            reason = '' if available else 'Convo’s managed runtime is off: turn on “Run Convo’s own runtime” (Connections → Convo runtime) to use Convo-owned audio.'
         else:
             available, reason = True, ''
         descriptors.append({'id': name, 'label': spec['label'], 'kind': 'tts', 'owner': spec['owner'], 'settings_owner': spec['settings_owner'],
@@ -431,3 +431,19 @@ def validate_provider_saved(saved):
                 raise ValueError('Invalid saved speech provider value: ' + name + '.' + field)
         cleaned[name] = copy.deepcopy(values)
     return cleaned
+
+
+# The language names each speech provider's request accepts (`language`), or None when its request has no language field (nothing
+# is sent). audio.cpp's Qwen3 (external server or managed) and the OpenAI-compatible Qwen3 speech servers Convo is used with take
+# ten language names plus "Auto"; OpenAI's own speech API, Kokoro and servers that document no language field take none.
+QWEN3_LANGUAGES = ('Chinese', 'English', 'Japanese', 'Korean', 'German', 'French', 'Russian', 'Portuguese', 'Spanish', 'Italian', 'Auto')
+LANGUAGES = {'audiocpp': QWEN3_LANGUAGES, 'openai_compatible': QWEN3_LANGUAGES}
+
+
+def accepted_languages(tts):
+    """The names one speech role's requests may carry as `language` (convo_language maps a declared language onto them), or None."""
+    tts = tts or {}
+    if tts.get('backend') == 'host_kokoro':
+        return None
+    provider, _ = effective_provider(tts)
+    return LANGUAGES.get(provider)

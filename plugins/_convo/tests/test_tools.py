@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from concurrent.futures import Future
@@ -54,11 +55,136 @@ class DirectTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls['memory'], [('scope-a', 'favourite colour', 5, .7)])
         self.assertIn('memo: favourite colour', result)
 
-    async def test_memory_that_is_not_loaded_is_reported_not_initialised(self):
+    async def test_memory_that_is_not_loaded_is_loaded_on_first_use_off_the_voice_loop(self):
+        """Agent Zero loads an agent's memory on its first use (Memory.get); voice does the same, in a background thread."""
         self.patch(memory_loaded=False)
-        with self.assertRaisesRegex(ValueError, 'not loaded'):
+        memory = sys.modules['plugins._memory.helpers.memory'].Memory
+        threads = []
+
+        async def get(agent):
+            threads.append(threading.get_ident())
+            memory.index['scope-a'] = object()
+        memory.get = staticmethod(get)
+        result = await Host().direct('a', 'memory_read', {'query': 'x'})
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], threading.get_ident())                  # never on the voice loop's thread
+        self.assertEqual(self.calls['memory'], [('scope-a', 'x', 5, .7)])
+        self.assertIn('memo: x', result)
+
+    async def test_memory_that_cannot_be_loaded_is_reported_in_convos_words(self):
+        self.patch(memory_loaded=False)
+        memory = sys.modules['plugins._memory.helpers.memory'].Memory
+
+        async def get(agent):
+            raise RuntimeError('embedding model unavailable at http://internal')
+        memory.get = staticmethod(get)
+        with self.assertRaisesRegex(ValueError, '^Memory could not be loaded in time$'):
             await Host().direct('a', 'memory_read', {'query': 'x'})
         self.assertEqual(self.calls['memory'], [])
+
+    async def test_web_search_results_are_shown_as_agent_zeros_search_tool_shows_them(self):
+        self.patch()
+
+        async def search(query):
+            return {'results': [{'title': 'Title %d' % i, 'url': 'https://example.org/%d' % i, 'content': 'Snippet  %d\n' % i}
+                                for i in range(8)]}
+        sys.modules['helpers.searxng'].search = search
+        host = Host()
+        host.local_date = lambda: '17 November 2026'
+        result = await host.direct('a', 'web_search', {'query': 'q'})
+        header, _, body = result.partition('\n')
+        self.assertEqual(header, "Web search results, 17 November 2026 (Agent Zero's search engine):")   # dated, so read as fresh
+        blocks = body.split('\n\n')
+        self.assertEqual(len(blocks), 5)                                        # the top five, title / address / snippet
+        self.assertEqual(blocks[0], 'Title 0\nhttps://example.org/0\nSnippet 0')
+        self.assertNotIn('{', result)                                            # never the service's raw JSON
+
+    async def test_a_search_service_failure_is_reported_in_convos_words(self):
+        self.patch()
+
+        async def search(query):
+            raise ConnectionError('connection refused by 10.0.0.5:8888')
+        sys.modules['helpers.searxng'].search = search
+        with self.assertRaisesRegex(ValueError, '^The search service did not answer$'):
+            await Host().direct('a', 'web_search', {'query': 'q'})
+
+    async def test_a_search_with_no_results_goes_on_to_the_news_engines_and_other_loaded_engines(self):
+        """Live 2026-11-18: three searches came back empty because the default engines refused this address, while the news
+        engines and an engine SearXNG had loaded but did not ask answered the same words."""
+        self.patch()
+        asked = []
+        refused = [['google', 'Suspended: access denied'], ['brave', 'Suspended: too many requests'], ['duckduckgo', 'CAPTCHA']]
+
+        async def ask(params):
+            asked.append(dict(params))
+            if params.get('categories') == 'news':
+                return {'results': [{'title': 'Launch day', 'url': 'https://news.example/launch', 'content': 'It is out today.',
+                                     'engine': 'bing news', 'publishedDate': '2026-11-17T09:00:00'}]}
+            if params.get('engines'):
+                return {'results': [{'title': 'Guide', 'url': 'https://web.example/guide', 'content': 'Everything about it.', 'engine': 'bing'}]}
+            return {'results': [], 'unresponsive_engines': refused}
+
+        async def config():
+            return {'engines': [{'name': 'google', 'enabled': True, 'categories': ['general', 'web']},
+                                {'name': 'bing', 'enabled': False, 'categories': ['general', 'web'], 'language_support': True},
+                                {'name': 'wiby', 'enabled': False, 'categories': ['general', 'web'], 'language_support': False},
+                                {'name': 'bing news', 'enabled': True, 'categories': ['news']}]}
+        host = Host()
+        host._search_ask, host._search_config = ask, config
+        result = await host.direct('a', 'web_search', {'query': 'new game release'})
+        self.assertEqual(asked[0], {'q': 'new game release'})                    # first the ordinary search, as before
+        self.assertEqual(sorted((p.get('categories', ''), p.get('engines', '')) for p in asked[1:]), [('', 'bing'), ('news', '')])
+        self.assertIn('Launch day', result)
+        self.assertIn('(2026-11-17) It is out today.', result)                   # a dated result says its date
+        self.assertIn('Guide', result)
+        self.assertEqual((host.last_search['steps'][0], host.last_search['asked'], sorted(host.last_search['refused'])),
+                         ('general', 3, ['brave', 'duckduckgo', 'google']))
+        self.assertTrue(host.search_health().refused('google'))                  # remembered: not asked for by name for a while
+        self.assertIn('bing', host.search_health().answered())
+
+    async def test_engines_that_all_refuse_are_a_failed_search_not_an_empty_one(self):
+        self.patch()
+
+        async def ask(params):
+            return {'results': [], 'unresponsive_engines': [['google', 'CAPTCHA'], ['bing news', 'Suspended']]}
+        host = Host()
+        host._search_ask = ask
+        with self.assertRaisesRegex(ValueError, '^The search engines refused the request$'):
+            await host.direct('a', 'web_search', {'query': 'q'})
+        self.assertEqual(host.last_search['refused'], ['bing news', 'google'])
+        from plugins._convo.helpers import convo_tools
+        why = convo_tools.reason('web_search', ValueError('The search engines refused the request'))
+        self.assertIn('refused', why)
+        self.assertNotIn('google', why)                                          # in Convo's words; engine names stay in developer mode
+
+    async def test_a_search_that_worked_and_found_nothing_is_still_just_empty(self):
+        self.patch()
+
+        async def ask(params):
+            return {'results': [], 'unresponsive_engines': []}
+        host = Host()
+        host._search_ask = ask
+        self.assertEqual(await host.direct('a', 'web_search', {'query': 'q'}), '')
+
+    async def test_an_identical_search_within_moments_is_answered_from_memory(self):
+        self.patch()
+        host = Host()
+        await host.direct('a', 'web_search', {'query': 'library hours'})
+        await host.direct('a', 'web_search', {'query': 'Library  hours'})
+        self.assertEqual(self.calls['search'], ['library hours'])                # one request for both
+        self.assertTrue(host.last_search['cached'])
+
+    async def test_outside_docker_the_category_and_engines_go_into_the_query_through_agent_zeros_helper(self):
+        """Development mode: only Agent Zero's helper reaches SearXNG, so the ladder's choice is written in SearXNG's `!name` form."""
+        self.patch()
+        runtime = types.SimpleNamespace(is_dockerized=lambda: False)
+        patcher = patch.dict(sys.modules, {'helpers.runtime': runtime}); patcher.start(); self.addCleanup(patcher.stop)
+        host = Host()
+        await host._search_ask({'q': 'storm warning', 'categories': 'news', 'time_range': 'day'})
+        await host._search_ask({'q': 'storm warning', 'engines': 'bing,bing news'})
+        await host._search_ask({'q': 'storm warning'})
+        self.assertEqual(self.calls['search'], ['!news storm warning', '!bing !bing_news storm warning', 'storm warning'])
+        self.assertIsNone(await host._search_config())
 
     async def test_empty_query_is_refused_before_any_native_call(self):
         self.patch()

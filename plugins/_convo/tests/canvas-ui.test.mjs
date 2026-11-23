@@ -98,7 +98,7 @@ test('The panel: collapsible sections, words beside every graphic, no live regio
     const html = await read('../webui/diagnostics.html');
     const markup = html.slice(0, html.indexOf('<style>')), css = html.slice(html.indexOf('<style>'));
     const toggles = [...markup.matchAll(/class="convo-diag-toggle" :aria-expanded="String\(!!\$store\.convoDiagnostics\.sections\.(\w+)\)" :aria-controls="uid \+ '-(\w+)'"/g)];
-    assert.deepEqual(toggles.map(match => match[1]), ['live', 'turns', 'gate', 'speculation', 'rolling', 'context', 'tune']);
+    assert.deepEqual(toggles.map(match => match[1]), ['live', 'turns', 'gate', 'speculation', 'rolling', 'context', 'saw', 'memory', 'clips', 'tune']);
     for (const [, , id] of toggles) assert.match(markup, new RegExp(`:id="uid \\+ '-${id}'"`));
     assert.doesNotMatch(markup, /aria-live|role="log"/);                                      // meters and numbers are never announced
     assert.doesNotMatch(markup, /\stitle=|:title=|x-bind:title/);                             // nothing writes a title the host tooltip observer would chase
@@ -129,7 +129,7 @@ test('Tune holds every Advanced tunable and the decision-backend picker, saved t
                         'policy_gate.respond_min', 'policy_gate.ambient_respond_min', 'policy_gate.interrupt_min', 'policy_gate.ignore_min', 'policy_gate.name_min',
                         'policy_gate.clarify_min', 'policy_gate.clarify_elsewhere_max', 'speculative_reply', 'main_listen_decision', 'first_clause_speech',
                         'continuation_seconds', 'recent_remarks_seconds', 'compaction.context_tokens', 'compaction.output_reserve', 'audio_token_reserve',
-                        'max_audio_seconds'])
+                        'max_audio_seconds', 'barge_in_seconds', 'answer_tokens'])
         assert.ok(has(path), path);
     // The earlier HTTP classifier is edited on the Classifier card (Connections) now; Tune does not repeat it.
     assert.doesNotMatch(tuning, /convo-legacy-classifier|roles\[role\]|roles\.classifier|setKey\(/);

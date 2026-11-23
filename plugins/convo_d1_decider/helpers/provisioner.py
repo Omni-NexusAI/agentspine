@@ -13,8 +13,10 @@ plugin's own config.json or the default. Every source obeys the classifier's loc
 they are, a public address only with Convo's classifier remote consent and over HTTPS (with Convo off there is no consent, so
 public addresses are refused). A call to Convo's own decision classifier carries `Authorization: Bearer` when Convo resolves a
 key for it (`convo_setup.classifier_bearer`, in-process, per call; never stored or reported here). A bad address never blocks
-registration: the call is refused with a typed reason and Convo's turn is degraded. The two SDK files under helpers/core are
-copies of System One's canonical files and are loaded only when their SHA-256 matches the pin below."""
+registration: the call is refused with a typed reason and Convo's turn is degraded. Every live call is bounded by Convo's
+classifier deadline (`call_seconds`): Convo never uses a later answer, and the SDK keeps the backend busy until the call returns.
+The two SDK files under helpers/core are copies of System One's canonical files and are loaded only when their SHA-256 matches
+the pin below."""
 from __future__ import annotations
 
 import base64
@@ -57,7 +59,13 @@ REMOTE_RULE = ("A public decision server needs Convo's “Allow remote processin
                'the microphone audio')
 
 _lock = threading.RLock()
-_state = {'registration': None, 'calls': 0, 'last_ms': None, 'last_error': ''}
+_state = {'registration': None, 'calls': 0, 'last_ms': None, 'last_error': '', 'last_failure': None}
+# How long one live call may take when Convo does not say (Convo publishes its bound, `convo_system_one.CALL_SECONDS`: the
+# classifier deadline after which it never uses an answer). urllib's socket bound covers connecting, sending and the wait for the
+# answer, so a call that cannot connect, or that is never answered, ends about when Convo stops waiting for it instead of keeping
+# the backend busy (the SDK's worker lease) for the turns after it. Measured 2026-11-17: with the former fixed 20 s, one request
+# that never finished connecting kept Convo's classifier busy for over 10 s and the next question went unjudged.
+DEFAULT_CALL_SECONDS = 1.5
 _resolved = {'key': None, 'value': None}       # the last resolution, and the settings fingerprint it was made from
 
 
@@ -302,6 +310,37 @@ def convo_enabled_safely():
         return False
 
 
+def call_seconds():
+    """The bound for one live call: Convo's classifier deadline (`convo_system_one.CALL_SECONDS`) while Convo is on, else
+    DEFAULT_CALL_SECONDS. Read for every call, like the address."""
+    if convo_enabled_safely():
+        try:
+            value = float(_convo('convo_system_one').CALL_SECONDS)
+            if 0 < value <= 30:
+                return value
+        except Exception:
+            pass
+    return DEFAULT_CALL_SECONDS
+
+
+def _stage(error):
+    """Where a failed call stopped, from the error's type only (never its text): `http` (the server answered with an error status),
+    `connect` (no connection, or the request could not be sent: urllib wraps those in URLError), `answer` (connected, but no answer
+    within the bound) or `other`."""
+    if isinstance(error, urllib.error.HTTPError):
+        return 'http'
+    if isinstance(error, urllib.error.URLError):
+        return 'connect'
+    if isinstance(error, TimeoutError):
+        return 'answer'
+    return 'other'
+
+
+def _failed(error, started):
+    with _lock:
+        _state['last_failure'] = {'stage': _stage(error), 'ms': round((time.perf_counter() - started) * 1000, 1), 'at': round(time.time(), 1)}
+
+
 def classifier_bearer():
     """The Authorization value for Convo's own decision classifier ('' when none resolves), from Convo in-process for this one
     call (`convo_setup.classifier_bearer` over Convo's settings accessor). Never stored, cached, logged or reported."""
@@ -314,9 +353,10 @@ def classifier_bearer():
 class D1HttpModel:
     """The `system_one(state, questions, images=, audio=)` of a decision model, answered by a server's /v1/systemone (llama-server
     with d1-omni). The server is `url` when one is given, otherwise whatever `resolve` (default `resolve_endpoint`) answers at the
-    moment of each call; a call to Convo's own decision classifier (source `convo`) carries `bearer()` when it is not empty."""
+    moment of each call; a call to Convo's own decision classifier (source `convo`) carries `bearer()` when it is not empty. Each
+    call is bounded by `timeout` when one is given, else by Convo's classifier deadline (`call_seconds`, read per call)."""
 
-    def __init__(self, url=None, timeout=20.0, resolve=None, bearer=None):
+    def __init__(self, url=None, timeout=None, resolve=None, bearer=None):
         self.fixed = allowed_url(url) if url is not None else None
         self.resolve = resolve or resolve_endpoint
         self.bearer = bearer or classifier_bearer
@@ -341,14 +381,17 @@ class D1HttpModel:
             body['model'] = where['model']          # a router serving several decision models answers with the one named
         if audio is not None:
             body['files'] = ['data:audio/wav;base64,' + base64.b64encode(_wav(audio)).decode()]
+        bound = self.timeout if self.timeout is not None else call_seconds()
         started = time.perf_counter()
         try:
-            result = _open(base + '/v1/systemone', json.dumps(body).encode(), headers, self.timeout)
+            result = _open(base + '/v1/systemone', json.dumps(body).encode(), headers, bound)
         except urllib.error.HTTPError as error:
             _state['last_error'] = 'HTTP %s from the decision server' % error.code
+            _failed(error, started)
             raise
         except Exception as error:
             _state['last_error'] = type(error).__name__
+            _failed(error, started)
             raise
         with _lock:
             _state['calls'] += 1
@@ -370,7 +413,7 @@ def ensure_registered(only_with_convo=False):
         if _state['registration'] is None and not (only_with_convo and not convo_enabled()):
             sdk = load_sdk()
             client = sdk.LiquidD1Client(D1HttpModel(resolve=resolve_endpoint), audio_converter=lambda audio: audio)
-            _state.update(calls=0, last_ms=None, last_error='')
+            _state.update(calls=0, last_ms=None, last_error='', last_failure=None)
             _state['registration'] = _convo('convo_system_one').register_backend(BACKEND, client, sdk=sdk, config_provider=consumer_config, remote=False)
     return status()
 
@@ -390,4 +433,5 @@ def status():
     with _lock:
         return {'backend': BACKEND, 'registered_here': _state['registration'] is not None, 'source': where['source'], 'host': where['host'],
                 'base_url': where['base_url'], 'refused': where['refused'], 'refused_detail': where['detail'], 'calls': _state['calls'],
-                'last_ms': _state['last_ms'], 'last_error': _state['last_error']}
+                'last_ms': _state['last_ms'], 'last_error': _state['last_error'],
+                'last_failure': dict(_state['last_failure']) if _state['last_failure'] else None}

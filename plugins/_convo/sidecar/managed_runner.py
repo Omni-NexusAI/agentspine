@@ -15,11 +15,16 @@ def main():
     import uvicorn
     from .app import app, preview_speech
     from importlib.util import find_spec
-    if find_spec('gradio') is not None:
+    served = app
+    if find_spec('gradio') is not None and find_spec('fastapi') is not None:
+        # Voice Studio (the optional one-time setup) is a gradio app that mounts on FastAPI: the gateway is mounted inside it.
+        from fastapi import FastAPI
         from .gradio_studio import mount
-        mount(app, '/tmp/convo-studio', preview_speech)
+        served = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+        mount(served, '/tmp/convo-studio', preview_speech)
+        served.mount('/', app)
         app.state.studio_enabled = True
-    uvicorn.run(app, fd=descriptor, access_log=False,
+    uvicorn.run(served, fd=descriptor, access_log=False,
                 log_level='warning', timeout_graceful_shutdown=1)
 
 

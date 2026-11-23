@@ -3,6 +3,7 @@ spoken, recorded or run until the turn is admitted. Virtual clock, scripted prov
 import asyncio
 import importlib
 import unittest
+from unittest.mock import patch
 
 if __package__:
     from .behavior_harness import DELEGATE, LONG_REPLY, SILENT, SPEAK, SPEAK_PLAIN, UNCERTAIN, Harness, record, run_virtual, script
@@ -12,6 +13,12 @@ else:
     from test_behavior_corpus import DELEGATE_TASK, WEB_SEARCH, Scenario
 
 SPEC = {'speculative_reply': True}
+# A conversation model not declared tool-capable: the classifier's explicit request is what authorises work (a tool-capable one is
+# offered the tools on every turn of a conversation and chooses them itself).
+SPEC_NO_TOOLS = {**SPEC, 'roles': {'conversation': {'capabilities': {'tool_calls': False}}}}
+# A model without native tools is still offered them, described in writing (convo_tools.tool_mode); a conversation that offers no
+# tools at all is the case where a turn may not use one.
+OFFERS_NOTHING = patch.object(importlib.import_module('plugins._convo.helpers.convo_tools'), 'BASE', ())
 REPLY = [('The first sentence of this reply is deliberately long enough to be spoken. ', .3),
          ('The second sentence follows right after it for a short while. ', .3)]
 
@@ -77,17 +84,19 @@ class HeldReply(Scenario):
         self.assertEqual(facts['cancelled'], 1)                     # ... and was cancelled, not left running
         self.assertEqual(facts['marks'], ['spec.start', 'spec.discard'])
 
-    def test_a_classifier_that_fails_twice_never_promotes(self):
+    def test_a_classifier_that_fails_twice_lets_the_conversation_model_answer_with_the_held_reply(self):
+        """In a conversation the user started, a finished turn the classifier could not judge is answered without a reading, so the
+        reply already held for it (the same request: same audio, history and tools) is the one used, never a second model call."""
         async def scenario(h):
             await h.candidate('q', h.audio('question'), final=True)
             await h.advance(8)
-            return {'states': [s for _, s, *_ in h.states('q')], 'journal': h.store.events('a'), 'audible': h.audible(), 'cancelled': len(h.log('answer.cancelled')),
-                    'marks': marks('q')}
-        facts, _ = self.play(scenario, config=SPEC, model_deltas=[('A reply that must not be used.', .1)],
+            return {'states': [s for _, s, *_ in h.states('q')], 'accepted': h.accepted_turns(), 'audible': len(h.audible('q')),
+                    'answers': len(h.answers), 'marks': marks('q')}
+        facts, _ = self.play(scenario, config=SPEC, model_deltas=[('The held reply, used once the turn is admitted.', .1)],
                              classifier={'question': [script(SPEAK, .2, fail=True), script(SPEAK, .2, fail=True)]})
-        self.assertEqual(facts['states'], ['considering', 'degraded'])
-        self.assertEqual((facts['journal'], facts['audible']), ([], []))
-        self.assertEqual(facts['marks'], ['spec.start', 'spec.discard'])
+        self.assertEqual(facts['states'], ['considering', 'admit'])
+        self.assertEqual((facts['accepted'], facts['audible'], facts['answers']), (['q'], 1, 1))
+        self.assertEqual(facts['marks'], ['spec.start', 'spec.promote'])
 
     def test_a_classifier_timeout_that_recovers_still_promotes_the_one_held_reply(self):
         async def scenario(h):
@@ -111,18 +120,20 @@ class HeldReply(Scenario):
         self.assertEqual(jobs, [('t', 'Write the weekly report', 'queued')])
         self.assertEqual((answers, seen), (1, ['spec.start', 'spec.promote']))
 
+    @OFFERS_NOTHING
     def test_a_proposal_the_classifier_did_not_authorise_discards_the_held_reply_and_changes_nothing(self):
         """The held request offered tools; this turn may not use them. It is answered like any ordinary turn: the proposal is refused."""
         async def scenario(h):
             await h.candidate('t', h.audio('ask'), final=True)
             await h.settle()
             return {'jobs': h.jobs(), 'directs': h.host.directs, 'answers': [a['allow_tools'] for a in h.answers], 'errors': len(h.events('error')), 'marks': marks('t')}
-        facts, _ = self.play(scenario, config=SPEC, proposal=DELEGATE_TASK, classifier={'ask': script(SPEAK, .2)})
+        facts, _ = self.play(scenario, config=SPEC_NO_TOOLS, proposal=DELEGATE_TASK, classifier={'ask': script(SPEAK, .2)})
         self.assertEqual((facts['jobs'], facts['directs']), ([], []))
         self.assertEqual(facts['answers'], [True, False])            # the held one offered tools; the real one did not
         self.assertEqual(facts['errors'], 1)
         self.assertEqual(facts['marks'], ['spec.start', 'spec.discard'])
 
+    @OFFERS_NOTHING
     def test_a_proposal_that_arrives_after_promotion_on_an_unauthorised_turn_is_dropped_not_an_error(self):
         """Found live: the held reply was promoted while still generating and proposed a tool a moment later; the turn failed with
         a generic error although the user had been answered. The proposal is dropped (nothing runs); the text is the reply."""
@@ -131,22 +142,36 @@ class HeldReply(Scenario):
             await h.settle()
             return {'jobs': h.jobs(), 'directs': h.host.directs, 'answers': [a['allow_tools'] for a in h.answers], 'errors': len(h.events('error')),
                     'heard': h.first_audible('t') is not None, 'marks': marks('t')}
-        facts, _ = self.play(scenario, config=SPEC, proposal=DELEGATE_TASK, model_deltas=[('Okay.', 1.5)], classifier={'ask': script(SPEAK, .2)})
+        facts, _ = self.play(scenario, config=SPEC_NO_TOOLS, proposal=DELEGATE_TASK, model_deltas=[('Okay.', 1.5)], classifier={'ask': script(SPEAK, .2)})
         self.assertEqual((facts['jobs'], facts['directs'], facts['errors']), ([], [], 0))
         self.assertEqual(facts['answers'], [True])                   # one model operation: the held reply was kept
         self.assertTrue(facts['heard'])
         self.assertEqual(facts['marks'], ['spec.start', 'spec.promote', 'spec.tool_dropped'])
 
+    @OFFERS_NOTHING
     def test_a_promoted_reply_that_was_only_a_dropped_proposal_is_asked_again_without_tools(self):
         async def scenario(h):
             await h.candidate('t', h.audio('ask'), final=True)
             await h.settle()
             return {'jobs': h.jobs(), 'answers': [a['allow_tools'] for a in h.answers], 'marks': marks('t')}
-        facts, _ = self.play(scenario, config=SPEC, proposal=DELEGATE_TASK, model_deltas=[('', 1.5)], classifier={'ask': script(SPEAK, .2)},
+        facts, _ = self.play(scenario, config=SPEC_NO_TOOLS, proposal=DELEGATE_TASK, model_deltas=[('', 1.5)], classifier={'ask': script(SPEAK, .2)},
                              proposal_always=False)
         self.assertEqual(facts['jobs'], [])
         self.assertEqual(facts['answers'], [True, False])
         self.assertIn('spec.tool_dropped', facts['marks'])
+
+    def test_a_transcript_that_arrives_while_deciding_does_not_waste_the_held_reply(self):
+        """Found live 2026-11-08: the Whisper transcript arrived before admission and the admitted request (with it) no longer matched
+        the held one (without it), so the model was asked twice. The model hears the audio; the transcript is for history only."""
+        async def scenario(h):
+            await h.candidate('t', h.audio('ask'), final=True)
+            h.state['transcripts']['t'] = 'What is the capital of Kentucky?'      # the browser's transcript, before the decision
+            await h.settle()
+            content = [c['content'] for c in h.store.context('a')['turns'] if c['id'] == 't'][0]
+            return {'answers': len(h.answers), 'marks': marks('t'), 'transcript': content.get('transcript'), 'sent': h.answers[0].get('transcript')}
+        facts, _ = self.play(scenario, config=SPEC, classifier={'ask': script(SPEAK, .2)})
+        self.assertEqual((facts['answers'], facts['marks']), (1, ['spec.start', 'spec.promote']))
+        self.assertEqual((facts['transcript'], facts['sent']), ('What is the capital of Kentucky?', None))
 
     def test_a_clarifying_turn_is_answered_by_a_fresh_request_with_its_own_instruction(self):
         clarify = {'speech': 'clarify', 'action': 'none', 'confidence': .75}
@@ -248,7 +273,7 @@ class HeldReply(Scenario):
                 contract.validate_settings({key: bad})
         defaults = contract.validate_settings({})
         self.assertEqual((defaults['speculative_reply'], defaults['main_listen_decision'], defaults['first_clause_speech'],
-                          defaults['continuation_seconds'], defaults['recent_remarks_seconds']), (False, False, False, 7, 0))
+                          defaults['continuation_seconds'], defaults['recent_remarks_seconds']), (False, False, True, 7, 0))
 
 
 class SpeculationUnit(unittest.IsolatedAsyncioTestCase):

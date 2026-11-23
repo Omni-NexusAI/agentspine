@@ -158,6 +158,10 @@ export const classifierSetup = {
         if (!this.config.decider || typeof this.config.decider !== 'object') this.config.decider = { source: '', kind: CLASSIFIER_KIND, url: '', model: '' };
         const saved = this.baseline ? (JSON.parse(this.baseline).decider?.source || '') : '';
         this.config.decider.source = on ? 'system_one' : (saved === 'system_one' ? 'convo' : saved);
+        // Off, with nothing of Convo's own to decide (no provider and no decision server address), the decision backend the
+        // switch turned on is turned off too: the earlier endpoint classifier is what the card shows, and what is used.
+        if (!on && !(this.config.roles?.classifier?.provider || '') && !(this.config.decider.url || '') && this.config.system_one)
+            this.config.system_one.enabled = false;
         Object.assign(this.ui.classifier, { check: null, checking: false });
         return this.classifierUsesSystemOne();
     },

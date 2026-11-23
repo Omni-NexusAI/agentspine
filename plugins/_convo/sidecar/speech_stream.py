@@ -47,6 +47,11 @@ def speech_request(role, text):
         if not isinstance(role['language'], str) or len(role['language']) > 40:
             raise ContractError('Invalid assistant language')
         body['language'] = role['language']
+    if role.get('backend') != 'managed_audio' and role.get('reply_tuning'):
+        value = role['reply_tuning']
+        if not isinstance(value, dict) or not isinstance(value.get('overrides'), dict) or len(json.dumps(value)) > 8192:
+            raise ContractError('Invalid synthesis tuning snapshot')
+        body['tuning'] = copy.deepcopy(value)          # one reply's seed and the user's synthesis choice (your audio.cpp)
     if role.get('backend') == 'managed_audio':
         for key in ('clone_snapshot', 'expected_engine_epoch', 'expected_supervisor_instance_id', 'tuning'):
             if key not in role or role[key] is None or role[key] == '':
@@ -76,25 +81,95 @@ async def provider_pcm(role=None, text=None, *, prepared=None):
     try:
         async with convo_net.client(httpx.Timeout(35, connect=5)) as client:
             async with client.stream('POST', prepared.url, content=prepared.content, headers=prepared.headers) as response:
-                if 400 <= response.status_code < 500:
-                    size = 0
-                    async for part in response.aiter_bytes():
-                        size += len(part)
-                        if size > REJECTION_BYTES:
-                            raise speech_admission.UncertainOutcome('response_limit')
-                    raise speech_admission.DefinitiveRejection(response.status_code)
                 if not 200 <= response.status_code < 300:
-                    raise speech_admission.UncertainOutcome('provider_failure')
+                    # A complete bounded error body decides: any 4xx, and the server's own "generation already finished"
+                    # 502, are terminal (the speech lock is released and the refusal reported); anything else stays unknown.
+                    body = b''
+                    async for part in response.aiter_bytes():
+                        body += part
+                        if len(body) > REJECTION_BYTES:
+                            raise speech_admission.UncertainOutcome('response_limit')
+                    speech_admission.raise_for_provider(response.status_code, body)
                 async for chunk in pcm_chunks(response):
                     yield chunk
     except httpx.TimeoutException:
         raise speech_admission.UncertainOutcome('timeout') from None
 
 
+# A phrase this short ends before the speech server has two native PCM pieces to stream (its 502 "native-stream-not-incremental":
+# a one-word reply, under about half a second): it is synthesised whole instead, the same request with buffered WAV output.
+SHORT_WORDS = 2
+SHORT_CHARS = 24
+WHOLE_BYTES = 16 * 1024 * 1024
+
+
+def is_short(text):
+    return isinstance(text, str) and len(text.split()) <= SHORT_WORDS and len(text.strip()) <= SHORT_CHARS
+
+
+def whole_request(prepared):
+    """The same frozen request for the whole phrase: buffered WAV instead of the native PCM stream (nothing else changes)."""
+    body = json.loads(prepared.content)
+    body.update(response_format='wav', stream=False)
+    headers = {key: value for key, value in prepared.headers.items() if key.lower() not in ('content-length', 'content-type')}
+    return httpx.Request('POST', prepared.url, json=body, headers=headers)
+
+
+def wav_pcm16(data):
+    """(sample_rate, PCM16 little-endian mono bytes) from a complete WAV: 16-bit integer or 32-bit float mono only."""
+    import struct
+    if len(data) < 12 or data[:4] != b'RIFF' or data[8:12] != b'WAVE':
+        raise speech_admission.DefinitiveRejection(502, 'whole-phrase-format')
+    offset, fmt, audio = 12, None, None
+    while offset + 8 <= len(data):
+        kind, size = data[offset:offset + 4], struct.unpack('<I', data[offset + 4:offset + 8])[0]
+        chunk = data[offset + 8:offset + 8 + size]
+        if kind == b'fmt ' and len(chunk) >= 16:
+            fmt = struct.unpack('<HHIIHH', chunk[:16])
+            if fmt[0] == 0xFFFE and len(chunk) >= 26:
+                fmt = (struct.unpack('<H', chunk[24:26])[0],) + fmt[1:]
+        elif kind == b'data':
+            audio = chunk
+            break
+        offset += 8 + size + (size & 1)
+    if fmt is None or audio is None or fmt[1] != 1 or fmt[2] not in {8000, 16000, 22050, 24000, 32000, 44100, 48000}:
+        raise speech_admission.DefinitiveRejection(502, 'whole-phrase-format')
+    if fmt[0] == 1 and fmt[5] == 16:
+        return fmt[2], audio[:len(audio) - len(audio) % 2]
+    if fmt[0] == 3 and fmt[5] == 32:
+        count = len(audio) // 4
+        samples = struct.unpack('<%df' % count, audio[:count * 4])
+        return fmt[2], struct.pack('<%dh' % count, *(max(-32768, min(32767, int(round(value * 32767)))) for value in samples))
+    raise speech_admission.DefinitiveRejection(502, 'whole-phrase-format')
+
+
+async def provider_whole(prepared):
+    """The whole phrase at once, as the same PCM chunks the stream would have given (bounded, every outcome classified alike)."""
+    try:
+        async with convo_net.client(httpx.Timeout(35, connect=5)) as client:
+            async with client.stream('POST', prepared.url, content=prepared.content, headers=prepared.headers) as response:
+                body = b''
+                async for part in response.aiter_bytes():
+                    body += part
+                    if len(body) > (WHOLE_BYTES if 200 <= response.status_code < 300 else REJECTION_BYTES):
+                        raise speech_admission.UncertainOutcome('response_limit')
+                if not 200 <= response.status_code < 300:
+                    speech_admission.raise_for_provider(response.status_code, body)
+    except httpx.TimeoutException:
+        raise speech_admission.UncertainOutcome('timeout') from None
+    rate, audio = wav_pcm16(body)
+    if not audio:
+        raise speech_admission.DefinitiveRejection(502, 'whole-phrase-format')
+    step = 8192
+    for offset in range(0, len(audio), step):
+        yield {'audio': audio[offset:offset + step], 'sample_rate': rate, 'format': 'pcm_s16le', 'channels': 1}
+
+
 class AdmittedPCM:
     """One independent producer; only its bounded delivery queue is disposable."""
     def __init__(self, prepared):
         self.prepared = prepared
+        self.counters, self.path = [0, 0, hashlib.sha256()], ''
         self.queue = asyncio.Queue(maxsize=QUEUE_FRAMES)
         self.operation = speech_admission.start(self._produce)
 
@@ -125,8 +200,31 @@ class AdmittedPCM:
                 self._discard()
 
     async def _produce(self):
-        count, size, digest = 0, 0, hashlib.sha256()
-        async for chunk in provider_pcm(prepared=self.prepared):
+        """The phrase streamed, or whole when it is very short. A stream the server refuses as "not incremental" before any audio
+        was published (it finished generating first, so it is idle) is asked once more, whole, inside the same admission."""
+        self.counters = [0, 0, hashlib.sha256()]
+        try:
+            text = json.loads(self.prepared.content).get('input')
+        except (ValueError, AttributeError):
+            text = None
+        if is_short(text):
+            self.path = 'whole'
+            await self._relay(provider_whole(whole_request(self.prepared)))
+        else:
+            self.path = 'stream'
+            try:
+                await self._relay(provider_pcm(prepared=self.prepared))
+            except speech_admission.DefinitiveRejection as error:
+                if self.counters[0] or error.reason != 'native-stream-not-incremental':
+                    raise
+                self.path = 'whole-after-stream'
+                await self._relay(provider_whole(whole_request(self.prepared)))
+        count, size, digest = self.counters
+        return {'chunks': count, 'bytes': size, 'sha256': digest.hexdigest()}
+
+    async def _relay(self, source):
+        count, size, digest = self.counters
+        async for chunk in source:
             if not count:
                 await self._publish({'type': 'speech.start', 'format': chunk['format'],
                                      'sample_rate': chunk['sample_rate'], 'channels': chunk['channels']})
@@ -136,7 +234,7 @@ class AdmittedPCM:
             await self._publish({'type': 'speech.chunk', 'seq': count,
                                  'audio': base64.b64encode(audio).decode('ascii')})
             count += 1
-        return {'chunks': count, 'bytes': size, 'sha256': digest.hexdigest()}
+            self.counters[0], self.counters[1] = count, size
 
     def _encode(self, frame):
         return (json.dumps({**frame, 'operation_id': self.operation.operation_id},

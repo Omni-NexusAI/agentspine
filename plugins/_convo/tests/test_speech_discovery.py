@@ -208,7 +208,7 @@ class SpeechDiscoveryTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules, {PACKAGE + '.convo_transport': transport, PACKAGE + '.convo_service': service}):
             result = await self.setup.discover('tts', {'provider': 'audiocpp', 'connection': 'managed'})
         self.assertEqual(result['verification']['state'], 'unavailable')
-        self.assertIn('Manage runtime', result['verification']['message'])
+        self.assertIn('Run Convo’s own runtime', result['verification']['message'])
         studio.assert_not_awaited()
 
     async def test_native_kokoro_discovers_nothing_and_contacts_nothing(self):

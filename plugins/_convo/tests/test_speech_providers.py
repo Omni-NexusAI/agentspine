@@ -260,9 +260,9 @@ class Readiness(unittest.TestCase):
         return {row['id']: row for row in sp.readiness_rows(config)}
 
     def test_the_speech_provider_row_says_what_is_chosen_and_what_is_still_missing(self):
-        rows = self.rows(provider='audiocpp', connection='managed')
+        rows = self.rows(sidecar={'managed': False}, provider='audiocpp', connection='managed')   # an external gateway was chosen
         self.assertEqual(rows['speech_provider']['state'], 'missing')
-        self.assertIn('Manage runtime', rows['speech_provider']['detail'])                   # managed shows its reason while the runtime is off
+        self.assertIn('Run Convo’s own runtime', rows['speech_provider']['detail'])                   # managed shows its reason while the runtime is off
         self.assertEqual(self.rows(sidecar={'managed': True}, provider='audiocpp', connection='managed')['speech_provider']['state'], 'ready')
         self.assertIn('Kokoro', self.rows(provider='kokoro_native')['speech_provider']['detail'])
         unsloth = self.rows(provider='unsloth_studio', url='')['speech_provider']
@@ -310,7 +310,7 @@ class Descriptors(unittest.TestCase):
     def test_availability_is_reported_honestly_and_never_blocks_the_read(self):
         found = {item['id']: item for item in self.describe(toggles={'_kokoro_tts': 'enabled'})['providers']}
         self.assertEqual([found[k]['available'] for k in ('openai', 'managed_audio', 'host_kokoro')], [True, False, True])
-        self.assertIn('Manage runtime', found['managed_audio']['reason'])
+        self.assertIn('Run Convo’s own runtime', found['managed_audio']['reason'])
         off = {item['id']: item for item in self.describe()['providers']}
         self.assertFalse(off['host_kokoro']['available'])
         self.assertIn('Native Kokoro is off', off['host_kokoro']['reason'])

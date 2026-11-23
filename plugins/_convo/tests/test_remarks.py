@@ -117,7 +117,7 @@ class Context(Scenario):
         seen, _ = self.play(scenario, config=ON, classifier=self.CLASS)
         self.assertEqual(seen, {'interrupt': (1, 0), 'retarget': (1, 0)})
 
-    def test_an_unfinished_utterance_is_held_for_its_continuation_not_remembered_as_a_remark(self):
+    def test_an_unfinished_utterance_is_answered_not_remembered_as_a_remark(self):
         async def scenario(h):
             h.handler._typed = lambda state: True
             await h.candidate('f1', h.audio('part'), final=True)
@@ -127,7 +127,7 @@ class Context(Scenario):
                       'attention_probabilities': {'addressed': .05, 'backchannel': .02, 'side_conversation': .03, 'unfinished': .85, 'unclear': .05},
                       'explicit_probability': .1, 'name_probability': 0.0}
         result, _ = self.play(scenario, config=ON, classifier={'part': script(unfinished, .2)})
-        self.assertEqual(result, (0, True))
+        self.assertEqual(result, (0, False))                       # answered after its wait; nothing is kept once the answer is heard
 
     def test_ambient_and_name_listening_keep_nothing(self):
         async def scenario(h):
@@ -170,14 +170,18 @@ class SidecarContent(unittest.TestCase):
         role = {'capabilities': {'audio_input': True}}
         first, second, latest = make_wav(100, .2), make_wav(101, .2), make_wav(102, .2)
         content = self.app.answer_content({'audio': latest, 'context_audio': [first, second]}, role)
-        self.assertEqual([part['type'] for part in content], ['text', 'input_audio', 'input_audio', 'text', 'input_audio'])
+        self.assertEqual([part['type'] for part in content], ['text', 'input_audio', 'input_audio', 'text', 'text', 'input_audio'])
         self.assertEqual([part['input_audio']['data'] for part in content if part['type'] == 'input_audio'], [first, second, latest])
         self.assertIn('Context only', content[0]['text'])
+        self.assertEqual(content[4]['text'], self.app.AUDIO_LABEL)                   # the latest audio is named as the user's recording
 
-    def test_without_clips_the_content_is_exactly_what_it_was(self):
+    def test_without_clips_the_content_is_the_labelled_audio_and_nothing_else(self):
+        """2026-11-18: a bare audio part let a model conclude it "only receives words as text"; the recording is named beside it."""
         role = {'capabilities': {'audio_input': True}}
         latest = make_wav(102, .2)
-        self.assertEqual(self.app.answer_content({'audio': latest}, role), self.app.input_content({'audio': latest}, role))
+        self.assertEqual(self.app.answer_content({'audio': latest}, role),
+                         [{'type': 'text', 'text': self.app.AUDIO_LABEL}] + self.app.input_content({'audio': latest}, role))
+        self.assertEqual(self.app.answer_content({'transcript': 'Hello'}, {'capabilities': {}}), 'Hello')   # typed words carry no label
 
     def test_a_model_that_cannot_take_audio_never_receives_clips(self):
         contract = importlib.import_module('plugins._convo.helpers.convo_contract')

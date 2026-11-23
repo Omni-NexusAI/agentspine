@@ -44,6 +44,12 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
               <div class="convo-diag-tile"><span class="convo-diag-k">Playback volume</span><span class="convo-diag-v"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.ducked ? 'volume_down' : 'volume_up'"></span><span x-text="(live.ducked ? 'Ducked' : 'Full') + (live.toggles ? ' · ducked ' + live.toggles + '×' : '')"></span></span></div>
               <div class="convo-diag-tile"><span class="convo-diag-k">Decision hold</span><span class="convo-diag-v"><span class="material-symbols-outlined" aria-hidden="true" x-text="live.hold ? 'pause_circle' : 'check_circle'"></span><span x-text="live.hold ? 'Waiting for the classifier' : 'Nothing pending'"></span></span></div>
               <div class="convo-diag-tile"><span class="convo-diag-k">Queued audio</span><span class="convo-diag-v" x-text="live.playing || live.queued ? (live.playing ? 'Playing' : 'Idle') + ' · ' + (live.queued || 0) + ' queued' : 'Nothing playing'"></span></div>
+              <div class="convo-diag-tile" data-diag-output><span class="convo-diag-k">Audio output</span><span class="convo-diag-v" :data-severity="live.context && live.context !== 'running' ? 'warning' : ''"><span class="material-symbols-outlined" aria-hidden="true" x-text="!live.context ? 'speaker' : live.context === 'running' ? 'volume_up' : 'volume_off'"></span><span x-text="live.context ? (live.context === 'running' ? 'Running' : 'Paused (' + live.context + ')') : 'No voice session'"></span></span></div>
+              <div class="convo-diag-tile"><span class="convo-diag-k">Output device</span><span class="convo-diag-v" x-text="!live.sink ? 'Not open' : live.sink === 'default' ? 'System default' : live.sink"></span></div>
+            </div>
+            <div class="convo-diag-tone">
+              <button type="button" class="button" :disabled="$store.convoDiagnostics.tone?.busy === true" @click="$store.convoDiagnostics.testSound()"><span class="material-symbols-outlined" aria-hidden="true">music_note</span>Play test sound</button>
+              <p class="convo-diag-line" x-show="$store.convoDiagnostics.tone?.text" :data-severity="$store.convoDiagnostics.tone?.ok ? 'ok' : 'warning'"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convoDiagnostics.tone?.ok ? 'check_circle' : 'warning'"></span><span x-text="$store.convoDiagnostics.tone?.text"></span></p>
             </div>
             <div class="convo-diag-echo">
               <h4>Echo guard <small x-text="live.echoSetting ? '(' + live.echoSetting + ')' : ''"></small></h4>
@@ -210,7 +216,123 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
       </div>
     </section>
 
-    <!-- 7. Tune: the tunables, saved through the same revision-aware draft as Settings -->
+    <!-- 7. What the model saw / wrote: the last 10 turns' requests and raw output, what each filter took out, what was spoken (never audio) -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.saw)" :aria-controls="uid + '-saw'" @click="$store.convoDiagnostics.toggle('saw'); $store.convoDiagnostics.sections.saw && ($store.convoDiagnostics.loadInspected(), $store.convoDiagnostics.replayList())"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>What the model saw / wrote</button></h3>
+      <div :id="uid + '-saw'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.saw">
+        <div class="convo-diag-stack">
+          <p class="convo-diag-note">The last 10 turns, kept in memory on the Agent Zero host while developer mode is on. Audio is shown as its length and stays in memory; “Save for replay” writes one turn, with its audio, to Convo’s data folder.</p>
+          <div class="convo-diag-actions"><button type="button" class="button" data-diag-inspect-refresh @click="$store.convoDiagnostics.loadInspected()">Refresh</button></div>
+          <p class="convo-diag-note" x-show="$store.convoDiagnostics.inspectNote" x-text="$store.convoDiagnostics.inspectNote"></p>
+          <p class="convo-diag-note" x-show="!($store.convoDiagnostics.inspected || []).length">No turn yet (or the server keeps none). Speak once with developer mode on.</p>
+          <ol class="convo-diag-inspect">
+            <template x-for="item in ($store.convoDiagnostics.inspected || [])" :key="item.turn">
+              <li>
+                <div class="convo-diag-row">
+                  <button type="button" class="convo-diag-toggle" :aria-expanded="String($store.convoDiagnostics.openTurn === item.turn)" @click="$store.convoDiagnostics.openInspected(item.turn)"
+                          x-text="($store.convoDiagnostics.wallTime(item.at) || item.turn) + ' · ' + item.passes.length + (item.passes.length === 1 ? ' request' : ' requests') + (item.audio ? ' · audio ' + item.audio.toFixed(1) + ' s' : '')"></button>
+                  <button type="button" class="button" data-diag-replay-save @click="$store.convoDiagnostics.replaySave(item.turn)" :aria-label="'Save turn ' + item.turn + ' for replay'">Save for replay</button>
+                </div>
+                <template x-if="$store.convoDiagnostics.openTurn === item.turn">
+                  <div class="convo-diag-stack">
+                    <p class="convo-diag-note" x-show="item.whisper" x-text="'Whisper heard: “' + item.whisper + '”'"></p>
+                    <p class="convo-diag-note" x-text="item.spoken ? 'Spoken: “' + item.spoken + '”' : 'Nothing was spoken.'"></p>
+                    <template x-for="(use, index) in item.tools" :key="item.turn + ':tool' + index"><p class="convo-diag-note" x-text="'Tool ' + use"></p></template>
+                    <template x-for="pass in item.passes" :key="pass.key">
+                      <div class="convo-diag-stack convo-diag-pass">
+                        <h4 x-text="pass.label + (pass.figures ? ' · ' + pass.figures : '')"></h4>
+                        <p class="convo-diag-line" data-severity="error" x-show="pass.error"><span class="material-symbols-outlined" aria-hidden="true">error</span><span x-text="pass.error"></span></p>
+                        <details><summary>What the model saw</summary><pre class="convo-diag-saw" tabindex="0" :aria-label="pass.label + ': the request'" x-text="pass.saw"></pre></details>
+                        <p class="convo-diag-k">What it wrote (raw, before any filter)</p>
+                        <pre class="convo-diag-saw" tabindex="0" :aria-label="pass.label + ': the raw output'" x-text="pass.raw || '(nothing)'"></pre>
+                        <p class="convo-diag-note" x-show="pass.heard || pass.language" x-text="'Header: heard “' + pass.heard + '”' + (pass.language ? ', language ' + pass.language : '')"></p>
+                        <p class="convo-diag-note" x-show="pass.control" x-text="'Control word: ' + pass.control"></p>
+                        <template x-for="(call, index) in pass.calls" :key="pass.key + ':call' + index"><p class="convo-diag-note" x-text="'Tool call: ' + call"></p></template>
+                        <template x-for="cut in pass.removed" :key="pass.key + ':' + cut.name"><div><p class="convo-diag-k" x-text="'Taken out: ' + cut.label"></p><pre class="convo-diag-saw" tabindex="0" x-text="cut.text"></pre></div></template>
+                        <p class="convo-diag-note" x-show="pass.filtered && !pass.removed.length">No filter took anything out.</p>
+                        <p class="convo-diag-note" x-show="!pass.filtered">Not read through the filters (an early reply that was not used).</p>
+                        <p class="convo-diag-note" x-show="pass.after !== null" x-text="'Shown and spoken from this request: “' + (pass.after || '') + '”'"></p>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </li>
+            </template>
+          </ol>
+          <p class="convo-diag-k" x-show="($store.convoDiagnostics.replays || []).length">Saved for replay</p>
+          <ul class="convo-diag-clips" x-show="($store.convoDiagnostics.replays || []).length">
+            <template x-for="saved in ($store.convoDiagnostics.replays || [])" :key="saved.id"><li><span x-text="saved.id + (saved.unreadable ? ' · unreadable' : ' · ' + Number(saved.audio_s || 0).toFixed(1) + ' s · ' + (saved.passes || 0) + ' requests')"></span><button type="button" class="button" @click="$store.convoDiagnostics.replayDelete(saved.id)" :aria-label="'Delete saved turn ' + saved.id">Delete</button></li></template>
+          </ul>
+          <template x-if="!($store.convoDiagnostics.inspected || []).length && $store.convoDiagnostics.lastRequest">
+            <div class="convo-diag-stack">
+              <p class="convo-diag-note" x-text="'Last request' + ($store.convoDiagnostics.modelSawWhen() ? ' at ' + $store.convoDiagnostics.modelSawWhen() : '') + '. Audio is shown as its length; it is never stored here.'"></p>
+              <pre class="convo-diag-saw" tabindex="0" aria-label="The last request to the conversation model" x-text="$store.convoDiagnostics.modelSawText()"></pre>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7b. Memory: the context used against the window, the summary chapters, the standing notes, compaction runs -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.memory)" :aria-controls="uid + '-memory'" @click="$store.convoDiagnostics.toggle('memory'); $store.convoDiagnostics.sections.memory && $store.convoDiagnostics.loadMemory()"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Memory</button></h3>
+      <div :id="uid + '-memory'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.memory">
+        <div class="convo-diag-stack">
+          <div class="convo-diag-actions"><button type="button" class="button" data-diag-memory-refresh @click="$store.convoDiagnostics.loadMemory()">Refresh</button></div>
+          <p class="convo-diag-note" x-show="$store.convoDiagnostics.memoryNote" x-text="$store.convoDiagnostics.memoryNote"></p>
+          <template x-if="$store.convoDiagnostics.memory">
+            <div class="convo-diag-stack">
+              <div class="convo-diag-row">
+                <span class="convo-diag-k">Memory in the window</span>
+                <span class="convo-diag-bar" aria-hidden="true" :style="'--level:' + Math.min(1, $store.convoDiagnostics.memory.ratio)"><i></i></span>
+                <span class="convo-diag-v" x-text="$store.convoDiagnostics.memory.used.toLocaleString() + ' of ' + $store.convoDiagnostics.memory.window.toLocaleString() + ' tokens (estimated)'"></span>
+              </div>
+              <p class="convo-diag-note" x-text="'Word for word: ' + $store.convoDiagnostics.memory.verbatimTurns + ' turns, about ' + $store.convoDiagnostics.memory.verbatimTokens.toLocaleString() + ' tokens (a chapter is written past ' + $store.convoDiagnostics.memory.verbatimHigh.toLocaleString() + '). Chapters: about ' + $store.convoDiagnostics.memory.chaptersTokens.toLocaleString() + ' of ' + $store.convoDiagnostics.memory.chaptersMax.toLocaleString() + ' tokens; ' + $store.convoDiagnostics.memory.covered + ' turns summarised.'"></p>
+              <p class="convo-diag-note" x-show="$store.convoDiagnostics.memory.older">An older summary without chapters is in use; it becomes the first chapter at the next one.</p>
+              <p class="convo-diag-note" x-show="!$store.convoDiagnostics.memory.chapters.length && !$store.convoDiagnostics.memory.older">Nothing is summarised yet: every turn is word for word.</p>
+              <ol class="convo-diag-inspect">
+                <template x-for="chapter in $store.convoDiagnostics.memory.chapters" :key="'ch' + chapter.seq">
+                  <li><details><summary x-text="chapter.label + ' · ' + chapter.turns + ' turns (' + chapter.covers + ') · ' + ($store.convoDiagnostics.wallTime(chapter.at) || '?') + ' · about ' + chapter.tokens + ' tokens' + (chapter.stale ? ' · to be rewritten' : '')"></summary><pre class="convo-diag-saw" tabindex="0" x-text="chapter.summary"></pre></details></li>
+                </template>
+              </ol>
+              <p class="convo-diag-k">Standing notes</p>
+              <pre class="convo-diag-saw" tabindex="0" x-text="$store.convoDiagnostics.memory.standing || '(none)'"></pre>
+              <p class="convo-diag-k" x-show="$store.convoDiagnostics.memory.compactions.length">Compaction runs (since Agent Zero started)</p>
+              <ul class="convo-diag-issues">
+                <template x-for="(run, index) in $store.convoDiagnostics.memory.compactions" :key="'cr' + index"><li class="convo-diag-issue" :data-severity="run.ok ? 'info' : 'warning'"><span class="material-symbols-outlined" aria-hidden="true" x-text="run.ok ? 'compress' : 'schedule'"></span><span x-text="($store.convoDiagnostics.wallTime(run.at) || '') + ' ' + run.text"></span></li></template>
+              </ul>
+              <p class="convo-diag-line" data-severity="warning" x-show="($store.convoDiagnostics.view?.context?.latest?.leftOut || 0) > 0"><span class="material-symbols-outlined" aria-hidden="true">content_cut</span><span x-text="'The latest request did not fit: its ' + ($store.convoDiagnostics.view?.context?.latest?.leftOut || 0) + ' oldest word-for-word turns were left out of it (the journal keeps them).'"></span></p>
+              <p class="convo-diag-note">Sizes are Convo’s own estimate. Swap warm-ups are not built yet, so none is listed.</p>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. Test clips: labelled utterances for a decision-model bake-off, recorded only on request -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.clips)" :aria-controls="uid + '-clips'" @click="$store.convoDiagnostics.toggle('clips'); $store.convoDiagnostics.sections.clips && $store.convo?.clipList()"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Test clips</button></h3>
+      <div :id="uid + '-clips'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.clips">
+        <div class="convo-diag-stack" x-id="['clip-label']">
+          <p class="convo-diag-note">Saved on the Agent Zero test host only; delete any time; records only when you press. The recorded utterance is not answered.</p>
+          <div class="convo-actions">
+            <label :for="$id('clip-label')">Label</label>
+            <select :id="$id('clip-label')" :value="$store.convoDiagnostics.clipLabel" @change="$store.convoDiagnostics.clipLabel = $event.target.value">
+              <template x-for="label in ['request','statement','follow_up','acknowledgement','unfinished','dont_respond','noise','side_talk','over_playback']" :key="label"><option :value="label" :selected="label === $store.convoDiagnostics.clipLabel" x-text="label.replaceAll('_', ' ')"></option></template>
+            </select>
+            <button type="button" class="button" x-show="!$store.convo?.clipArmed" :disabled="!($store.convo?.active === true)" @click="$store.convo.armClip($store.convoDiagnostics.clipLabel)">Record next utterance</button>
+            <button type="button" class="button" x-show="!!$store.convo?.clipArmed" @click="$store.convo.disarmClip()">Cancel recording</button>
+          </div>
+          <p class="convo-diag-note" x-show="!($store.convo?.active === true)">Start a conversation first: the clip is the next thing you say.</p>
+          <p class="convo-diag-note" role="status" x-show="$store.convo?.clipNote" x-text="$store.convo?.clipNote"></p>
+          <ul class="convo-diag-clips" x-show="($store.convo?.clips || []).length">
+            <template x-for="clip in ($store.convo?.clips || [])" :key="clip.id"><li><span x-text="String(clip.label || '').replaceAll('_', ' ') + ' · ' + Number(clip.seconds || 0).toFixed(1) + ' s · ' + (clip.device || 'unknown device')"></span><button type="button" class="button" @click="$store.convo.clipDelete(clip.id)" :aria-label="'Delete clip ' + clip.id">Delete</button></li></template>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9. Tune: the tunables, saved through the same revision-aware draft as Settings -->
     <section class="convo-diag-section">
       <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.tune)" :aria-controls="uid + '-tune'" @click="$store.convoDiagnostics.toggle('tune')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Tune</button></h3>
       <div :id="uid + '-tune'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.tune">
@@ -222,8 +344,9 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
                 <x-component path="/plugins/_convo/webui/settings-banner.html"></x-component>
                 <p class="convo-hint">The same settings as Convo settings: an unsaved edit there and here is one draft, and a change saved elsewhere shows the banner above.</p>
                 <label>Echo protection<select x-model="$store.convoSetup.config.echo_guard"><template x-for="option in [['adaptive','Adaptive: ignore Convo’s own voice, allow interruptions'],['strict','Strict: ignore the microphone while Convo speaks'],['off','Off: browser echo cancellation only']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.echo_guard" x-text="option[1]"></option></template></select></label>
-                <p class="convo-hint">Also in Voice &amp; Audio. Takes effect the next time you start Convo.</p>
+                <p class="convo-hint">Also in Voice &amp; Audio. The saved default; a device with its own Sound settings uses those.</p>
                 <x-component path="/plugins/_convo/webui/tuning-controls.html"></x-component>
+                <x-component path="/plugins/_convo/webui/synthesis-controls.html"></x-component>
                 <p role="alert" class="convo-error" x-show="$store.convoSetup.error" x-text="$store.convoSetup.error"></p>
                 <p role="status" class="convo-hint" x-show="$store.convoSetup.message" x-text="$store.convoSetup.message"></p>
                 <div class="convo-actions convo-diag-save">
@@ -284,6 +407,7 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
 .convo-diag-row,.convo-diag-bars>li{display:grid;grid-template-columns:minmax(7rem,.9fr) minmax(60px,1.4fr) minmax(5.5rem,auto);align-items:center;gap:.5rem;min-width:0}
 .convo-diag-bars,.convo-diag-issues,.convo-diag-waterfall{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.4rem;min-width:0}
 .convo-diag-echo{display:flex;flex-direction:column;gap:.4rem;padding:.5rem .6rem;border-radius:8px;background:var(--cd-tile)}
+.convo-diag-tone{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem .6rem;min-width:0}
 .convo-diag-echo h4{margin:0}
 .convo-diag-ring{display:grid;grid-template-columns:repeat(60,1fr);gap:1px;height:12px;min-width:60px}
 .convo-diag-ring>i{display:block;border-radius:1px;background:var(--cd-track)}
@@ -311,6 +435,12 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
 /* Tune: the same controls as Settings, laid out for a narrower column. */
 .convo-diag-tune .convo-stack{display:flex;flex-direction:column;gap:.8rem;min-width:0}
 .convo-diag-tune x-component{display:contents}
+.convo-diag-inspect{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.4rem;min-width:0}
+.convo-diag-pass{border-left:2px solid var(--color-border);padding-left:.5rem;min-width:0}
+.convo-diag-pass h4{margin:0;font-size:.8rem;font-weight:600}
+.convo-diag-saw{margin:0;max-height:22rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.75rem;line-height:1.45;border:1px solid var(--color-border);border-radius:8px;padding:.5rem .6rem;background:var(--color-background)}
+.convo-diag-clips{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.3rem;font-size:.78rem}
+.convo-diag-clips li{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .convo-diag-tune label{display:flex;flex-direction:column;gap:.35rem;min-width:0;font-size:.84rem}
 .convo-diag-tune input:not([type=checkbox]),.convo-diag-tune select,.convo-diag-tune textarea{width:100%;min-width:0;min-height:38px;padding:.45rem .6rem;border:1px solid var(--color-border);border-radius:8px;background:var(--color-input,var(--color-background));color:var(--color-text);font:inherit}
 .convo-diag-tune .convo-check{flex-direction:row;align-items:flex-start;gap:.55rem}

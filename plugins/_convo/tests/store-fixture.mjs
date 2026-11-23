@@ -22,14 +22,16 @@ export function fakeMic(attributes = {}) {
 }
 
 // `hostConfig`: the host Whisper store's config (its message_mode decides, with settings.voice_message_draft, continuous drafting).
-export async function storeFixture({ settings = {}, startFails = false, performance = undefined, hostConfig = undefined } = {}) {
+// `globals`: more page globals for the store's realm (for example a `justToast` spy). `api(url, payload)`: an answer for a host API
+// call, or undefined for the default one (status, then an empty history).
+export async function storeFixture({ settings = {}, startFails = false, performance = undefined, hostConfig = undefined, globals: extra = {}, api = null } = {}) {
     const mic = fakeMic({ 'aria-label': 'Microphone standby', 'aria-pressed': 'false' }), cueNames = [], calls = [], requests = [], audios = [];
     const handlers = {};
     const nativeMic = { async toggle() {}, dispose() {}, async finishConvoDictation() {} };
     const nativeStore = { microphoneInput: null, config: hostConfig, getSelectedDevice: () => ({ deviceId: 'mic' }), async initRuntime() {}, async initMicrophone() { this.microphoneInput = nativeMic; } };
     const bindings = hostStubs({
-        '/js/api.js': { callJsonApi: async (_url, payload) =>
-            payload.action === 'status' ? { settings: { enabled: true, max_audio_seconds: 20, ...settings }, runtime: { mode: 'external' } } : { events: [], jobs: [] } },
+        '/js/api.js': { callJsonApi: async (url, payload) => (await api?.(url, payload)) ??
+            (payload.action === 'status' ? { settings: { enabled: true, max_audio_seconds: 20, ...settings }, runtime: { mode: 'external' } } : { events: [], jobs: [] }) },
         '/js/websocket.js': { createNamespacedClient: () => ({ addHandlers() {}, async on(name, fn) { handlers[name] = fn; }, onDisconnect() {}, disconnect() {},
             async request(event, data) {
                 calls.push(event); requests.push({ event, data });
@@ -50,6 +52,7 @@ export async function storeFixture({ settings = {}, startFails = false, performa
         CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
     };
     if (performance) globals.performance = performance;
+    Object.assign(globals, extra);
     const { namespace } = await loadModule('webui/convo-store.js', { bindings, globals });
     return { store: namespace.store, namespace, mic, cueNames, calls, requests, audios, handlers, nativeStore };
 }
