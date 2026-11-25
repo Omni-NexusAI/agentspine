@@ -1,6 +1,6 @@
 # Voice agent modes — design (not implemented)
 
-Written 2026-10-31 from the user's direction. **Nothing here is built yet.** It is built after the user has tested today's core, so those results can shape it. Each build step needs its own approval; downloads, GPU loads and training stay separate checkpoints.
+Written 2026-10-31 from the user's direction. **Nothing of these modes is built yet** (the working modes at the end are a separate matter: planning is built, live translation is prepared). It is built after the user has tested today's core, so those results can shape it. Each build step needs its own approval; downloads, GPU loads and training stay separate checkpoints.
 
 ## Why
 
@@ -63,3 +63,31 @@ Further choices:
 - NemotronLabs VoiceChat (NVIDIA catalog): https://catalog.ngc.nvidia.com/orgs/nim/nvidia/models/nemotron-labs-voicechat
 - GPT-Live (OpenAI engineering post): https://openai.com/index/continuous-voice-interaction-with-gpt-live/
 - Speakrail and the Codacus video: see the backend reference audit in the Convo plan (Part B).
+
+# Working modes (2026-11-24)
+
+What the voice agent does with what it hears, whichever of the modes above carries the conversation.
+
+## Planning — built
+
+Voice only: talk and look things up, everything else on the user's yes, a plan that is written beside the conversation and can be handed over. Contract and tests: `AGENTS.md` ("Planning mode"). It is also the first of the permission modes the user asked for later (auto, ask): its floor is applied after the permission join (`convo_policy.set_authorizer`), so a later mode can tighten what runs but never loosen planning.
+
+## Live translation — design; stage 1 is prepared, nothing else is built
+
+The user wants what a commercial voice translator does: the agent speaks the translation while the other person is still talking, both ways, with several people, on request or by itself. Their decisions: their own models first (a cloud interpreter later, as a choice with its own consent); one device between people, earbuds, calls and videos on the PC, and the VR headset or launcher.
+
+**Why it needs a path of its own.** Convo treats speech over its own speech as an interruption, decides one utterance at a time and speaks one language per reply. While translating, speech goes to a separate engine inside the same session and epoch, which holds `state['task']` (so notices, timers and typed turns wait as they do for a reply), refuses `convo.candidate`, and blocks compaction. The ordinary conversation comes back unchanged.
+
+**How it would work.** The browser cuts what it hears at tiny pauses into pieces of about 1.5 to 5 seconds. The conversation model gets each piece as audio with the last pieces as text and writes the language, what it heard and the translation (the source line is needed: it is the next piece's context and the caption). A FIFO speech line of its own speaks the translations, each in its own language. A piece may be held until more is said (a language that puts the verb last); when it falls behind, waiting pieces are joined and said shorter; nothing is dropped.
+
+- Direction per utterance: speech in the user's language goes to the other person's, anything else to the user's. With several other languages, the one named or last heard. A key settles doubt.
+- Where it speaks over people: only on a device that passes an echo check (a short test sound at the start, or the user saying so); on a loudspeaker between people it speaks in the speaker's pauses, captions run live. The PC can use two outputs; a phone cannot, so the other side gets large captions.
+- Talking to the assistant meanwhile: by name, under the planning floor, so a bystander can never start anything.
+- Starting by itself: asked once when another language is heard with the user's; the yes holds for that conversation.
+- Privacy: other people's words are not kept unless the user switches that on, no audio is stored, and a conversation model on someone else's server needs a consent of its own for translating.
+
+**Stage 1 comes first, and decides.** Can the user's own model translate pieces of speech well and quickly enough? Pieces cut three ways against the whole sentence, in four languages: meaning kept, words lost or doubled at the cuts, the language recognised, the time to the text, the time to the first sound with the cloned voice and with a quicker one. Go on when at least 90% of the pieces keep their meaning and the usual delay is 7 seconds or less; otherwise choose together (another model, or the cloud interpreter). The test texts and the measuring program are in `tests/translation/` and send nothing by themselves; running them uses the user's model and speech server, so it waits for the user's word.
+
+Then: captions live; voice in pauses; voice while the person talks, where the echo check allows; two outputs and PC sound; by name and by itself; the cloud interpreter. Each is its own step.
+
+Not settled, and not to be claimed: that any local model does this well; the delay of a cloned voice (about 2.3 s to its first sound was measured on 2026-11-18, likely the largest part); whether the launcher can hand over the PC's sound; prices and two-way behaviour of cloud interpreters beyond what their own documentation says.
