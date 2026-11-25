@@ -340,8 +340,9 @@ class Plans:
 
     # ── hand-overs being written up ──
     def prepare(self, plan, label):
-        """A hand-over the user agreed to begins to be written up. `made`: its task exists; `back`: who took it back ('' nobody)."""
-        item = {'plan': plan['id'], 'target': plan['target'], 'label': label, 'made': False, 'back': '', 'task': None, 'loop': None}
+        """A hand-over the user agreed to begins to be written up. `made`: its task exists; `back`: who took it back ('' nobody); `changes`: what
+        they said should be different, meanwhile."""
+        item = {'plan': plan['id'], 'target': plan['target'], 'label': label, 'made': False, 'back': '', 'changes': [], 'task': None, 'loop': None}
         with self.store.lock:
             self.work.append(item)
         return item
@@ -354,6 +355,14 @@ class Plans:
         """The hand-overs that can still be taken back, newest last."""
         with self.store.lock:
             return [item for item in self.work if not item['made'] and not item['back'] and (target is None or item['target'] == str(target))]
+
+    def add_to(self, item, change):
+        """What is being written up should be different: it goes along. False when it is too late for that (its task is made, or it was taken back)."""
+        with self.store.lock:
+            if item['made'] or item['back']:
+                return False
+            item['changes'].append(words(change, 500))
+            return True
 
     def take_back(self, by, *, plan_id=None, target=None):
         """The user does not want these hand-overs after all (from any thread): nothing is handed over, the plans stay as they are. Returns what
@@ -529,17 +538,17 @@ class Plans:
         """The plan becomes one task for a chat's agent and is over: one step, so it happens once. `change`: what the user changed about it
         with their yes; `since`: what was said and is not in the plan yet. `item`: the hand-over that was written up (`prepare`): refused when it was taken back meanwhile, and it cannot be from here
         on. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
-        change = words(change, 500)
         self.settle()
         with self.store.transaction():
             if item is not None and item['back']:
                 raise ValueError(TAKEN_BACK)
             plan = self.get(plan_id)
             self.check(plan)
+            changes = [words(change, 500)] if words(change) else []
             if item is not None:
-                item['made'] = True
-            if change:
-                self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + change, plan['id']))
+                item['made'], changes = True, changes + item['changes']
+            if changes:
+                self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + '\n- '.join(changes), plan['id']))
                 plan = self.get(plan['id'])
             owner = (session or {}).get('id') or self._session(plan)
             job = uuid.uuid4().hex

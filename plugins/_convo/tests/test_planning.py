@@ -292,6 +292,7 @@ class Kept(unittest.TestCase):
         second = self.plans.prepare(plan, 'The plan: a garden shed')
         self.plans.hand_over(plan['id'], 'a', item=second)
         self.assertEqual((second['made'], self.plans.take_back('voice'), len(self.store.jobs('a'))), (True, [], 1))        # too late
+        self.assertEqual([self.plans.add_to(gone, 'in green') for gone in (item, second)], [False, False])                  # (and neither can be added to any more)
 
     def test_a_plan_with_nothing_written_yet_is_not_dropped_while_it_is_being_written_up(self):
         plan, _ = self.plans.begin('a', 'a garden shed')
@@ -1656,8 +1657,16 @@ class Ending(Talk):
             await h.candidate('v', h.audio('next'), final=True)                        # "yes, exactly", to the plan's first sentence
             await h.advance(10)
             await h.settle()
-            return sent < 8, question, h.readings, h.jobs(), h.plans.shown('a')['status'], h.state.get('pending')
-        self.assertEqual(self.out_loud(early, self.SAY), (True, None, [], [], 'kept', None))      # the question went with what was still to be played
+            late = self.late(h.answers[-1])
+            h.reading = 'OTHER'
+            await h.candidate('w', h.audio('next'), final=True)
+            await h.advance(10)
+            await h.settle()
+            return (sent < 8, question, h.readings, h.jobs(), h.plans.shown('a')['status'], h.state.get('pending')), late, self.late(h.answers[-1])
+        found, late, later = self.out_loud(early, self.SAY)
+        self.assertEqual(found, (True, None, [], [], 'kept', None))                    # the question went with what was still to be played
+        self.assertIn('cut off before the user heard the question at its end (Hand over the plan: "a garden shed")', late)      # the reply is told, so that it can be asked again
+        self.assertNotIn('before the user heard the question', later)                  # once
 
         async def then(h):
             while h.state['pending']['heard'] is None:
@@ -1707,7 +1716,7 @@ class Ending(Talk):
             return 0 <= h.now() - h.playing[-1][0] <= voice_tools.PLAYED_MARGIN + 1
         self.assertTrue(self.out_loud(then, self.SAY, tell=False))
 
-    def preparing(self, then, **options):
+    def preparing(self, then, after=None, **options):
         """A hand-over in the middle of planning was agreed to, and its final text is still being written."""
         async def scenario(h):
             plan = h.plans.open('a')
@@ -1721,6 +1730,8 @@ class Ending(Talk):
             result = await then(h)
             await h.advance(40)
             await h.settle()
+            if after is not None:
+                after(h)
             return result, [job['status'] for job in h.jobs()], h.plans.get(plan['id'])['status'], [p['message'] for _, p in h.events('notice') if p.get('kind') == 'info']
         return self.play(scenario, planned='a garden shed', proposals=[self.HAND], **options)
 
@@ -1814,6 +1825,47 @@ class Ending(Talk):
                 late, made, _, _ = self.preparing(then)
                 self.assertIn(told, late)
                 self.assertEqual(made, jobs)
+
+    def test_what_they_say_while_it_is_written_up_goes_along(self):
+        for calls, told in ((call('steer_task', change='with a window to the south'), 'The change was added to "The plan: a garden shed", which is just being written up'),
+                            (call('steer_task', change='with a window to the south', what='the shed'), 'The change was added to'),
+                            (call('voice_mode', mode='conversation', plan='hand_over', change='with a window to the south'), 'handed over in a moment, as the user agreed, with that change'),
+                            (call('voice_mode', mode='conversation', plan='hand_over'), 'The plan is being written up already and is handed over in a moment, as the user agreed.')):
+            async def then(h):
+                h.proposals, h.reading, h.asked_for = [calls], 'YES', 'YES'
+                await h.candidate('v', h.audio('ask'), final=True)
+                await h.advance(6)
+                if h.state.get('pending'):                                             # (still planning: asked about once)
+                    await self.heard(h)
+                    await h.advance(2)
+                    h.proposals = []
+                    await h.candidate('w', h.audio('next'), final=True)
+                    await h.advance(6)
+                return json.dumps([a['tool_turn']['result'] for a in h.answers if a.get('tool_turn')] + [self.late(a) for a in h.answers]), [job['prompt'] for job in h.jobs()]
+            with self.subTest(calls['name'], change=calls['arguments'].get('change')), patch.object(sys.modules['plugins._convo.helpers.convo_steering'], 'available', return_value=True):
+                prompts = []
+
+                async def scenario(h):
+                    result = await then(h)
+                    return result
+                (said, early), jobs, status, _ = self.preparing(scenario, after=lambda h: prompts.extend(job['prompt'] for job in h.jobs()))
+                self.assertIn(json.dumps(told)[1:-1], said)
+                self.assertEqual((early, jobs, status), ([], ['queued'], 'handed'))     # one task, whatever was said
+                self.assertEqual('Changed by the user' in prompts[0] and 'with a window to the south' in prompts[0], 'change' in calls['arguments'])
+
+    def test_a_change_to_a_task_is_not_taken_for_one_to_the_plan_nor_the_other_way_round(self):
+        async def scenario(h):
+            h.store.accept_turn(h.session['id'], 'browser', h.session['epoch'], 'earlier', {'transcript': 'x'})
+            h.store.submit(h.session['id'], 'browser', h.session['epoch'], 'earlier', 'k', 'Write the weekly report')
+            item = h.plans.prepare({'id': 'p', 'target': 'a'}, 'The plan: a garden shed')
+            h.service.dispatcher.steer = lambda job_id, change, turn: 'added'
+            found = []
+            for what in ('the weekly report', 'the garden shed', ''):
+                ok, said = await voice_tools._steer(h.handler, 'browser', h.state, h.session, 'earlier', {'change': 'in green', 'what': what})
+                found.append((ok, 'weekly' in said, 'garden' in said))
+            h.plans.work.clear()
+            return found, item['changes']
+        self.assertEqual(self.play(scenario), ([(True, True, False), (True, False, True), (False, True, True)], ['in green']))      # (the last: asked which one)
 
     def test_a_new_conversation_still_knows_of_it(self):
         async def then(h):

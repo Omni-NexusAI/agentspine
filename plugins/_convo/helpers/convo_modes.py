@@ -269,6 +269,15 @@ async def switch(rt, sid, state, session, turn, args, *, voice=True, about='', m
             plan = chosen(rt, state, session, args, about)
             if plan is None:
                 return Outcome(False, hand_over_problem(rt, state, session, args) or 'there is no plan to hand over')
+            kept, change = plans(rt, state), str(args.get('change') or '').strip()
+            for item in kept.preparing(session['target']):
+                if item['plan'] != plan['id']:
+                    continue
+                if str(args.get('chat') or '').strip():
+                    kept.take_back('voice', plan_id=plan['id'])           # to a chat they name now: begun again
+                elif not change or kept.add_to(item, change):
+                    return Outcome(True, 'The plan is being written up already and is handed over in a moment, as the user agreed%s.' % (
+                        ', with that change' if change else ''))
             return await _to_its_end(rt, sid, state, turn, plan, lambda item: _hand_over(
                 rt, sid, state, session, turn, plan, str(args.get('chat') or ''), str(args.get('change') or ''), item))
         return await _leave(rt, sid, state, session, turn, args.get('plan') == 'keep', voice, about, may_ask)

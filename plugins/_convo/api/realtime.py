@@ -3502,6 +3502,9 @@ class Realtime(WsHandler):
             confirmed_names, granted_question, confirmed_note = set(), None, ''
             # A reply that begins while the two of them are planning is held to that to its end, also when planning ends in it.
             floor = modes.on(self, state, session) is not None
+            missed = voice_tools.missed(state)
+            if missed:
+                block = (block + "\n" if block else "") + missed
             answer = state.get('confirm', {}).pop(turn, None)
             open_question = voice_tools.pending(state)
             if answer and open_question is not None:

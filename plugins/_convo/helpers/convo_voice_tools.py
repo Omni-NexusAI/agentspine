@@ -274,6 +274,20 @@ async def unheard(rt, sid, state, session):
     record = pending(state)
     if record is not None and record.get('phrase') and record.get('heard') is None:
         await resolve(rt, sid, state, session, 'replaced', by='unheard')
+        _missed(state, record)
+
+
+def _missed(state, record):
+    """The question at the end of a reply was not heard: the next reply is told, so that it can be asked again when it still fits."""
+    if record.get('last'):
+        state['unheard'] = record['label'] + (': ' + json.dumps(record['summary'], ensure_ascii=False) if record['summary'] else '')
+
+
+def missed(state):
+    """What the reply to what was said instead is told about a question nobody heard ('' when there was none), once."""
+    what = state.pop('unheard', None)
+    return ('Your last reply was cut off before the user heard the question at its end (' + what + '). Nothing was asked and nothing was started; what '
+            'they say now is not its answer. When it still fits what they want, make that call again (they are asked then).') if what else ''
 
 
 async def asked_aloud(rt, sid, state, session, turn, over):
@@ -285,6 +299,7 @@ async def asked_aloud(rt, sid, state, session, turn, over):
         return
     if over:
         await resolve(rt, sid, state, state.get('session') or session, 'replaced', by='unheard')
+        _missed(state, record)
     elif record.get('phrase') in state['phrases']:
         # It was sent and is still to be played: the page says when (`playing`). Without a word from it, after the time that takes.
         async def in_time(seconds):
@@ -625,22 +640,30 @@ async def _steer(rt, sid, state, session, turn, args):
     change, what = str(args['change']).strip(), str(args.get('what') or '')
     jobs = [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'dispatching', 'running')]
     chat, chat_name = '', ''
+    # A plan that is just being written up to be handed over is work that is going on, too: what they say now goes along with it.
+    modes = rt._helper('convo_modes')
+    preparing = list(reversed(modes.working(rt, state, session)))
     if str(args.get('chat') or '').strip():
         found = await host.find_chat(' '.join(str(args['chat']).split()))
         chat, chat_name = found['id'], found['name']
-        jobs = [job for job in jobs if job['target'] == chat]
-    job = jobs[0] if len(jobs) == 1 else None
+        jobs, preparing = [job for job in jobs if job['target'] == chat], []
+    going_on = [(item, item['label']) for item in preparing] + [(job, _job_label(state, job)) for job in jobs]
+    job = going_on[0][0] if len(going_on) == 1 else None
     wanted = set(_words(what))
-    if len(jobs) > 1 and wanted:
+    if len(going_on) > 1 and wanted:
         def fit(candidate):
-            text = set(_words(_job_label(state, candidate)))
+            text = set(_words(candidate[1]))
             shared = len(wanted & text)
             return shared, (shared / len(text) if text else 0.0)
-        best = max(jobs, key=fit)
-        job = best if fit(best)[0] and [fit(candidate) for candidate in jobs].count(fit(best)) == 1 else None
-    if len(jobs) > 1 and job is None:
+        best = max(going_on, key=fit)
+        job = best[0] if fit(best)[0] and [fit(candidate) for candidate in going_on].count(fit(best)) == 1 else None
+    if len(going_on) > 1 and job is None:
         return False, 'more than one task is going on (%s); ask the user which one is meant' % '; '.join(
-            json.dumps(_job_label(state, candidate)[:60], ensure_ascii=False) for candidate in jobs[:4])
+            json.dumps(name[:60], ensure_ascii=False) for _, name in going_on[:4])
+    if any(job is item for item in preparing):
+        if not modes.plans(rt, state).add_to(job, change):
+            return False, 'that plan has just been handed over; its task can be changed instead'
+        return True, 'The change was added to %s, which is just being written up and is handed over in a moment.' % json.dumps(job['label'][:80], ensure_ascii=False)
     label = ''
     if job is not None:
         label = _job_label(state, job)[:80]

@@ -404,13 +404,14 @@
     (`convo_firstclause.last_sentence`, held back while the reply streams), and the page's playback receipt opens the question
     (`voice_tools.playing`; a page that sends none: after the time it takes, `_until_played`). Audio is sent well ahead of the loudspeaker, so
     "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to answer begins with the question.
-    Speech or Stop that drops what was still to be played drops an unheard question with it (`unheard`).
+    Speech that drops what was still to be played drops an unheard question with it (`unheard`), and the next reply is told once (`missed`).
   - **What the user agreed to** is carried out to its end (`modes._to_its_end`), also when they speak over the reply, add a word or stop voice;
     from the panel's Run in a task of its own (`_pressed`). Until its task is made it can be taken back (`Plans.take_back`; the list `Plans.work`
     belongs to the journal, not to a connection): by voice, whichever conversation is running by then (`cancel_task`: whatever it is called
     by, unless the words clearly name another task or timer), by `voice_mode` keep, with the stop-reply key while the reply to the yes is under
     way, by End planning, Discard or Hand over in the panel, by turning Convo off (`Service.deactivate`). `Plans.hand_over(item)` refuses it in
-    the same transaction. A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with
+    the same transaction. What they say should be different meanwhile goes along (`steer_task`, or handing it over once more with a change:
+    `Plans.add_to`); what else was said while it was written up does, too (`unwritten`). A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with
     before its task has started, the task is taken back with what was added to it (`Plans.begin`), else both versions would run.
   - **The other ways in**, all closed: a search that got nothing is asked about, not handed over (`search_ask_first`); a question open from
     before is dropped (`begin` resolves it; `voice_tools.pending` drops one that planning overtook when it was switched on in the panel or
