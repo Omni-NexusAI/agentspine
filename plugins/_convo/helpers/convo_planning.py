@@ -535,14 +535,17 @@ class Plans:
         if not plan['text'].strip():
             raise ValueError(EMPTY)
 
-    def hand_over(self, plan_id, chat, *, session=None, turn='', change=''):
+    def hand_over(self, plan_id, chat, *, session=None, turn='', change='', revision=None):
         """The plan becomes one task for a chat's agent and is over: one step, so it happens once. `change`: what the user changed about it
-        with their yes. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
+        with their yes. `revision`: the plan they agreed to; one that was opened again or written to since is not handed over. Returns the job.
+        Raises ValueError when it cannot be handed over (any more)."""
         change = words(change, 500)
         self.settle()
         with self.store.transaction():
             plan = self.get(plan_id)
             self.check(plan)
+            if revision is not None and plan['revision'] != revision:
+                raise ValueError(CHANGED)
             if change:
                 self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + change, plan['id']))
                 plan = self.get(plan['id'])

@@ -1583,6 +1583,28 @@ class Ending(Talk):
         self.assertEqual((jobs, status), ([], 'kept'))
         self.assertIn('The plan could not be handed over: that chat is gone. It is still here.', notices)
 
+    def test_a_plan_opened_again_or_changed_before_its_task_was_made_is_not_handed_over(self):
+        for what in ('opened again', 'edited', 'discarded', 'handed over in the panel'):
+            async def scenario(h):
+                with self.slowly():
+                    plan = await self.agreed(h)
+                    if what == 'opened again':
+                        h.plans.begin('a', plan_id=plan)
+                    elif what == 'edited':
+                        h.plans.write(plan, KEPT + '\n- mine', revision=h.plans.get(plan)['revision'], by='user')
+                    elif what == 'discarded':
+                        h.plans.end(plan, 'dropped')
+                    else:
+                        h.plans.hand_over(plan, 'a')
+                    await h.advance(20)
+                    await h.settle()
+                return len(h.jobs()), h.plans.get(plan)['status'], self.late(h.answers[-1]), self.errors(h)
+            with self.subTest(what):
+                jobs, status, late, errors = self.play(scenario, planned='a garden shed', proposals=[self.HAND])
+                self.assertEqual((jobs, status, errors), {'opened again': (0, 'open', []), 'edited': (0, 'kept', []), 'discarded': (0, 'dropped', []), 'handed over in the panel': (1, 'handed', [])}[what])
+                self.assertIn('could not be done: ' + {'opened again': 'the plan was changed meanwhile', 'edited': 'the plan was changed meanwhile', 'discarded': 'that plan is no longer there',
+                                                       'handed over in the panel': 'that plan was already handed over'}[what], late)
+
     def test_another_plan_begun_meanwhile_neither_holds_the_agreed_task_nor_is_called_over(self):
         async def scenario(h):
             with self.slowly():
@@ -1940,6 +1962,42 @@ class Ending(Talk):
             open_, gone, readings, jobs, late, resolved = found
             self.assertEqual((open_, gone, readings, jobs, resolved), (('Hand over the plan', True), None, [], [], ['replaced']))
             self.assertIn('could hear or answer the question at the end of your last reply (Hand over the plan: "a garden shed")', late)
+
+    def test_nothing_is_told_between_the_question_and_its_answer(self):
+        async def notice(h):
+            h.store.accept_turn(h.session['id'], 'browser', h.ids()['epoch'], 'earlier', {'transcript': 'x'})
+            job = h.store.submit(h.session['id'], 'browser', h.ids()['epoch'], 'earlier', 'k', 'Write the weekly report')
+            for before, after in (('queued', 'dispatching'), ('dispatching', 'running'), ('running', 'completed')):
+                h.store.transition(job['id'], before, after)
+            h.asked_for = 'YES'
+            await self.ask(h)
+            await self.heard(h)
+            await h.advance(3)
+            waits = await h.handler.process('convo.notice', {**h.ids(), 'job_id': job['id']}, 'browser')
+            h.proposals, h.reading = [], 'YES'
+            await self.says(h)
+            handed = len(h.jobs())
+            await self.heard(h)
+            await h.advance(2)
+            told = await h.handler.process('convo.notice', {**h.ids(), 'job_id': job['id']}, 'browser')
+            await h.settle()
+            return waits, handed, told.get('busy'), any('weekly report' in json.dumps(answer) and 'handed over earlier has ended' in answer['system'] for answer in h.answers)
+        self.assertEqual(self.play(notice, planned='a garden shed', proposals=[END]), ({'ok': True, 'busy': True}, 2, None, True))
+
+        async def timer(h):
+            h.asked_for = 'YES'
+            await self.ask(h)
+            await self.heard(h)
+            await h.advance(3)
+            open_ = h.state['pending']['label']
+            h.proposals, h.model_deltas = [], [('Your tea is ready.', .1)]
+            await h.handler._timer_notice('browser', h.state, h.state['session'], [{'id': 'x', 'label': 'tea', 'due': 0}])
+            gone, h.model_deltas, h.reading = h.state.get('pending'), FIRST, 'YES'
+            await self.says(h)                                                          # "yes, thanks" - to the timer
+            return open_, gone, h.readings, h.jobs(), self.late(h.answers[-1])
+        open_, gone, readings, jobs, late = self.play(timer, planned='a garden shed', proposals=[END])
+        self.assertEqual((open_, gone, readings, jobs), ('Hand over the plan', None, [], []))
+        self.assertIn('could hear or answer the question at the end of your last reply', late)
 
     def test_the_reply_is_told_about_it_also_when_noise_came_first(self):
         async def then(h):

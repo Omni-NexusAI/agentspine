@@ -606,7 +606,9 @@ class Realtime(WsHandler):
             return await self._tune(state, session, data, m)
         if event == 'convo.notice':
             if data.get('epoch') != session['epoch']: return {'ok':False, 'stale':True}
-            if state.get('task') and not state['task'].done(): return {'ok':True, 'busy':True}
+            # (Nothing is told between a question and its answer, which would be taken for an answer to that: it waits, `PENDING_SECONDS` at most.)
+            if (state.get('task') and not state['task'].done()) or self._helper('convo_voice_tools').pending(state) is not None:
+                return {'ok':True, 'busy':True}
             job = store.claim_notice(session['id'], sid, session['epoch'], str(data.get('job_id','')))
             if job:
                 self._stop_upkeep(state, session)
@@ -2581,6 +2583,7 @@ class Realtime(WsHandler):
         turn = ''
         try:
             turn = s.store.note_turn(session['id'], sid, session['epoch'], 'A timer the user set went off', 'timer.due', {'count': len(due)})
+            await voice_tools.unanswered(self, sid, state, session)      # a timer does not wait; what they say next may be about it
             m, _, _ = modules()
             role = s.host.freeze_speech(self._tts_role(state, m))
             if role.get('backend') == 'managed_audio':

@@ -406,11 +406,12 @@
     well ahead of the loudspeaker, so "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to
     answer begins with the question. Its answer's first sound (`first_sound`; the page says how long ago that was, `onset_s`) comes at least
     `ANSWER_AFTER` later, and it is the very next thing that is answered: whatever else is admitted or answered takes the question away
-    (`unanswered`), and the next reply that says something is told (`missed`), so that it is asked again when it still fits. One that could not
-    be spoken is answered by its card alone (`silent`).
+    (`unanswered`), and the next reply that says something is told (`missed`), so that it is asked again when it still fits. A finished task is
+    not told between any question and its answer (`convo.notice` is busy), and a timer, which is, takes this one away. One that could not be
+    spoken is answered by its card alone (`silent`).
   - **Handing over has one way**: the final text is written, planning ends (`kept`), the plan is said, the user is asked, and their yes hands
     over exactly that, at once (`_hand_over`; `_at_once`: a chat may have to be found or made for it, and what they say meanwhile does not lose
-    it; nothing happens once Convo is off). Handing over a plan that is being worked on finishes it first (`_leave`; the chat and the change
+    it; a plan that was opened again or changed in that moment is not handed over, `revision`, and nothing happens once Convo is off). Handing over a plan that is being worked on finishes it first (`_leave`; the chat and the change
     they named stay with the question). Speaking while the final text is written simply goes on planning. The model's call is not enough,
     nor that some request was heard (`decide`): a yes, or their own words asking for it (ASKED `voice_mode:hand_over`). There used to be a
     hand-over that was agreed to first and written up after the yes; everything said or pressed in that window needed a rule of its own, and

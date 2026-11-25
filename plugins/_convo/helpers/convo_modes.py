@@ -371,7 +371,7 @@ async def _hand_over(rt, sid, state, session, turn, plan, chat, change):
     if getattr(service, 'disabled', False):                                    # nothing starts once Convo is off (and nothing ends its pause)
         raise ValueError('Convo was turned off')
     idle = rt._chat_idle(service, where['id'])                                 # before the task itself makes its chat busy
-    job = kept.hand_over(plan['id'], where['id'], session=session, turn=turn, change=change)
+    job = kept.hand_over(plan['id'], where['id'], session=session, turn=turn, change=change, revision=plan['revision'])
     kept.allow(target, job['id'])                                              # planning of something else may be going on: this was agreed to
     state.setdefault('job_labels', {})[job['id']] = 'The plan' + (': ' + plan['topic'] if plan['topic'] else '')
     service.dispatcher.start()
