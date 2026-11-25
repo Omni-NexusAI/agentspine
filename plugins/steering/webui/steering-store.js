@@ -46,7 +46,7 @@ const model = {
     const items = this.viewOf().items || [];
     const known = new Set(items.map((item) => item.id));
     const onTheWay = this.sending.filter((item) => item.context === this.chatId && !known.has(item.id)).map((item) => ({ ...item, status: "sending", attachments: [] }));
-    const failed = this.failed.filter((item) => item.context === this.chatId).map((item) => (
+    const failed = this.failed.filter((item) => item.context === this.chatId && !known.has(item.id)).map((item) => (
       { id: item.id, text: item.message.slice(0, 200), attachments: item.files.map((file) => file?.name || "a file"), status: "held", local: true }));
     return [...items, ...onTheWay, ...failed];
   },
@@ -92,8 +92,7 @@ const model = {
     await this.deliver({ context, message, attachments, how: how === "queue" ? "" : how });
   },
 
-  async deliver({ context, message, attachments = [], how = "" }) {
-    const id = newId();
+  async deliver({ context, message, attachments = [], how = "", id = newId() }) {
     const fromComposer = context === this.chatId && String(chatInputStore.message || "").trim() === message;
     const kept = fromComposer ? { text: chatInputStore.message, files: [...(attachmentsStore.attachments || [])] } : null;
     this.sending = [...this.sending, { id, context, text: message.slice(0, 200) }];
@@ -105,6 +104,7 @@ const model = {
       const filenames = await this.upload(attachments);
       const answer = await callJsonApi(API, { action: "send", context, text: message, attachments: filenames, how, id });
       this.keepFor(context, answer?.steering);
+      if (answer?.outcome === "known") toastFrontendInfo("That message had arrived: only the answer was lost.", "Steering");
     } catch (error) {
       console.error("Steering could not send the message:", error);
       if (kept && context === this.chatId && !String(chatInputStore.message || "").trim()) {
@@ -162,7 +162,7 @@ const model = {
   async sendNow(item) {
     if (!item.local) return this.act("release", item);
     const found = this.takeFailed(item);
-    return found ? this.deliver({ context: found.context, message: found.message, attachments: found.files, how: found.how }) : null;
+    return found ? this.deliver({ context: found.context, message: found.message, attachments: found.files, how: found.how, id: found.id }) : null;
   },
   async remove(item) { return item.local ? this.takeFailed(item) : this.act("remove", item); },
   async backToComposer(item) {

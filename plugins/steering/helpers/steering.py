@@ -26,6 +26,7 @@ A message's status:
   delivered    is in the run
   sent         started a new run, because the run ended before it could go in
   undelivered  the same, but its sender asked to handle that itself (`caller`)
+  stopped      the run was stopped or failed, and its sender asked to handle that itself: nothing of it should begin again by itself
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ VIEW_KEY = "_steering"          # context.output_data: what the page shows (unde
 MARK = "steering_mode"          # attribute on a UserMessage: 'interrupt' = its sender wants Agent Zero's own interruption
 PARENT_KEY = "parent_context_id"  # Agent Zero's own key on a sub-agent's chat (tools/call_subordinate.py)
 MODES = ("automatic", "steer", "queue")
-WAITING, HELD, DELIVERED, SENT, UNDELIVERED = "waiting", "held", "delivered", "sent", "undelivered"
+WAITING, HELD, DELIVERED, SENT, UNDELIVERED, STOPPED = "waiting", "held", "delivered", "sent", "undelivered", "stopped"
 SETTLE_SECONDS = 0.6            # after a run ends: time for the queue, a nudge or another message to start the next one
 LIMIT = 50                      # messages waiting or held in one chat
 KEPT = 20                       # delivered messages remembered, so sub-agents still at work can be told
@@ -177,7 +178,7 @@ def publish(context, st=None):
 
 
 def _prune(st):
-    done = [item for item in st["items"] if item["status"] not in (WAITING, HELD, UNDELIVERED)]
+    done = [item for item in st["items"] if item["status"] not in (WAITING, HELD, UNDELIVERED, STOPPED)]
     for item in done[:-KEPT] if len(done) > KEPT else ():
         st["items"].remove(item)
 
@@ -234,6 +235,15 @@ def _own_alive(context):
         return False
 
 
+def _begun_by(task):
+    """Whose run an asyncio task is: Agent Zero begins a chat's own run as DeferredTask._run(context._process_chain, ...), and this is that
+    context. None when it cannot be told."""
+    try:
+        return getattr(task.get_coro().cr_frame.f_locals.get("func"), "__self__", None)
+    except Exception:
+        return None
+
+
 def live(context):
     """'own' when the chat's own run is at work, 'inside' when its agent works inside another run (a sub-agent that its superior
     waits for, a scheduled task), '' when nothing is."""
@@ -264,7 +274,9 @@ def run_began(agent, task):
     st = state(context)
     if st is None or task is None:
         return
-    entry = {"agent": agent, "task": task, "own": _own_alive(context), "began": time.time()}
+    # A run that was stopped in its first moment still gets here once, though the chat's task is over already: it is the chat's own all the same
+    # (taken for an inner one, it would keep the message that follows).
+    entry = {"agent": agent, "task": task, "own": _own_alive(context) or _begun_by(task) is context, "began": time.time()}
     with st["lock"]:
         over = [run for run in st["runs"] if _finished(run["task"])]
         if any(not run["own"] for run in over):
@@ -282,10 +294,11 @@ def run_began(agent, task):
 
 
 def _hold(st):
-    """What waits is kept by the composer until the user decides (its sender, when it asked to handle that itself). Under the lock."""
+    """The run was stopped or failed: what waits is kept by the composer until the user decides (its sender is told, when it asked to handle
+    that itself). Under the lock."""
     for item in st["items"]:
         if item["status"] == WAITING:
-            item["status"] = UNDELIVERED if item["caller"] else HELD
+            item["status"] = STOPPED if item["caller"] else HELD
 
 
 def _inner_over(context_id, entry):
@@ -413,7 +426,7 @@ def steer(context, text, *, attachments=(), mode="", source="", item_id="", call
 
 
 def status(context, item_id):
-    """Where a message is: waiting, held, delivered, sent, undelivered or '' (unknown)."""
+    """Where a message is: waiting, held, delivered, sent, undelivered, stopped or '' (unknown)."""
     st = state(context, create=False)
     if st is None:
         return ""
@@ -427,7 +440,7 @@ def forget(context, item_id):
     if st is None:
         return None
     with st["lock"]:
-        item = next((i for i in st["items"] if i["id"] == item_id and i["status"] in (WAITING, HELD, UNDELIVERED)), None)
+        item = next((i for i in st["items"] if i["id"] == item_id and i["status"] in (WAITING, HELD, UNDELIVERED, STOPPED)), None)
         if item is not None:
             st["items"].remove(item)
     if item is not None:
@@ -670,6 +683,10 @@ def _settle(context_id, outcome):
         if live(parent):
             _pass_up(context, st, parent)
             return
+        with st["lock"]:
+            for item in st["items"]:
+                if item["status"] == WAITING and item["caller"]:
+                    item["status"] = UNDELIVERED           # its run ended by itself
         outcome = "failed"
     first = None
     with st["lock"]:
@@ -677,7 +694,7 @@ def _settle(context_id, outcome):
             if item["status"] != WAITING:
                 continue
             if item["caller"]:
-                item["status"] = UNDELIVERED
+                item["status"] = UNDELIVERED if outcome == "finished" else STOPPED
             elif outcome != "finished":
                 item["status"] = HELD
             elif first is None:
@@ -737,6 +754,8 @@ def send(context, text, *, attachments=(), how="", item_id="", source="composer"
     if not text.strip() and not attachments:
         raise ValueError("Nothing to send")
     how = how if how in (*MODES, "interrupt") else mode_for(context)
+    if item_id and known(context, item_id):
+        return {"outcome": "known", "id": str(item_id)}          # sent already: only the answer was lost on its way
     item_id = str(item_id or uuid.uuid4())
     where = live(context)
     if not where:
@@ -759,6 +778,23 @@ def send(context, text, *, attachments=(), how="", item_id="", source="composer"
         return {"outcome": "steering", "id": kept}
     start(context, _item(text, attachments, item_id=item_id))      # the run ended in between
     return {"outcome": "started", "id": item_id}
+
+
+def known(context, item_id):
+    """Whether a message with this id got here: it waits, is held, queued or in a run, or stands in the chat."""
+    from helpers import message_queue
+    item_id = str(item_id)
+    if status(context, item_id):
+        return True
+    try:
+        if any(str((entry or {}).get("id") or "") == item_id for entry in message_queue.get_queue(context) or ()):
+            return True
+    except Exception:
+        logger.debug("Steering could not look into the queue", exc_info=True)
+    try:
+        return any(str(getattr(line, "id", "") or "") == item_id for line in list(context.log.logs)[-200:] if getattr(line, "type", "") == "user")
+    except Exception:
+        return False
 
 
 def interrupt_item(context, item_id):

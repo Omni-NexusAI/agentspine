@@ -46,11 +46,12 @@ A tool that takes long is not cut, up to its own limit. "Interrupt now" beside t
 ```python
 from usr.plugins.steering.helpers import steering
 item = steering.steer(context, text, source="my_plugin", caller=True)   # '' when no agent is at work
-steering.status(context, item)     # waiting, held, delivered, sent, undelivered or ''
+steering.status(context, item)     # waiting, held, delivered, sent, undelivered, stopped or ''
 steering.busy(context)             # also true for sub-agents and scheduled tasks
 ```
 
-With `caller=True` a message the run could not take up any more is left to you (`undelivered`): deal with it and call `forget`.
+With `caller=True` a message the run could not take up any more is left to you (`undelivered`; `stopped` when the run was stopped or
+failed, and then nothing should begin again by itself): deal with it and call `forget`.
 A `UserMessage` with the attribute `steering_mode = "interrupt"` is Agent Zero's own interruption.
 
 See `AGENTS.md` for how it works inside.

@@ -428,6 +428,33 @@ def stopped():
     assert s.view(context)["items"] == []
 
 
+def stopped_in_its_first_moment():
+    """A run that is stopped just before its first step (a task cancelled at once) does not keep the message that follows."""
+    s = steering()
+    original, seen = s.run_began, []
+
+    def at_that_very_moment(agent, task):
+        first = not seen
+        if first:
+            agent.context.kill_process()
+        original(agent, task)
+        if first:
+            seen.append(s.live(agent.context))
+    s.run_began = at_that_very_moment
+    try:
+        MODEL.begin(lambda n, m: final("again"))
+        context = chat("early stop")
+        context.communicate(UserMessage("first try", id=str(uuid.uuid4())))
+        until(lambda: seen, 20, "the loop's first step")
+        assert seen == [""], seen
+        task = context.communicate(UserMessage("second try", id=str(uuid.uuid4())))
+        assert s.view(context)["items"] == [], s.view(context)
+        assert task.result_sync(60) == "again"
+        assert len(MODEL.calls) == 1 and "second try" in joined(MODEL.calls[0])
+    finally:
+        s.run_began = original
+
+
 def nudged():
     s = steering()
     context, task = begin("nudge", lambda n, m: shell("sleep 20") if n == 1 else final("nudged on"))
@@ -590,7 +617,7 @@ def long_history():
 
 
 SCENARIOS = [during_a_tool, native_during_a_tool, while_writing, several_messages, during_the_final_answer, ends_a_wait, a_wait_without_messages,
-             with_a_sub_agent, to_a_sub_agents_chat, with_parallel_sub_agents, too_late_for_a_parallel_sub_agent, stopped_with_a_sub_agent, stopped, nudged, failing, reset_and_removed, paused, queue_first,
+             with_a_sub_agent, to_a_sub_agents_chat, with_parallel_sub_agents, too_late_for_a_parallel_sub_agent, stopped_with_a_sub_agent, stopped, stopped_in_its_first_moment, nudged, failing, reset_and_removed, paused, queue_first,
              send_now_from_the_queue, commands, a_broken_plugin, scheduled_run, long_history]
 
 

@@ -116,6 +116,22 @@ test('a failed message never overwrites what was typed meanwhile, and is not los
     assert.equal(p.input.message, 'second');
 });
 
+test('a message that had arrived though its answer was lost shows once, and sending it again says so', async () => {
+    let p, first = true;
+    p = await page({ composer: 'first', answer: data => {
+        if (first) { first = false; p.input.message = 'typed on'; p.sent = data.id; throw new Error('the answer was lost'); }
+        return { ok: true, outcome: 'known', steering: { mode: 'automatic', revision: 6, items: [] } };
+    } });
+    await p.store.beforeSend(ctx('first'));
+    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.local])), [['first', true]]);
+    p.chat._steering = { mode: 'automatic', own_mode: '', revision: 5, items: [{ id: p.sent, text: 'first', status: 'waiting', mode: 'automatic', attachments: [] }] };
+    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.status, !!item.local])), [['first', 'waiting', false]]);      // the server has it
+    p.chat._steering = { mode: 'automatic', own_mode: '', revision: 6, items: [] };                     // and it is in the run by now
+    await p.store.sendNow(p.store.items[0]);
+    assert.deepEqual([p.calls.at(-1).id, p.store.items.length], [p.sent, 0]);                           // the same id: never a second message
+    assert.match(p.toasts.at(-1)[1], /had arrived/);
+});
+
 test('a message that failed after the chat was changed waits in its own chat', async () => {
     let p;
     const other = { id: 'd', running: true, _steering: { mode: 'automatic', own_mode: '', revision: 1, items: [] } };

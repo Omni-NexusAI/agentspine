@@ -1,6 +1,7 @@
 """Steering's rules against small stand-ins for Agent Zero (no Agent Zero needed). `in_container.py` runs the same rules against the real one."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -306,6 +307,20 @@ class Arriving(Case):
         self.assertEqual(self.chat.sent, [])
         self.assertEqual(self.statuses(), [("and the weather", "waiting")])
 
+    def test_a_run_stopped_in_its_first_moment_does_not_keep_the_message_that_follows(self):
+        async def _run(func, args, kwargs):                       # as Agent Zero's DeferredTask begins a chat's own run
+            return await func(*args, **kwargs)
+
+        async def chain(owner):
+            self.s.run_began(self.chat.agent0, asyncio.current_task())
+            return self.s.live(self.chat), self.s.busy(self.chat)
+        self.chat.task = Task()
+        self.chat.task.kill()                                     # Stop was faster than the loop's first step
+        self.assertEqual(asyncio.run(_run(types.MethodType(chain, self.chat), (), {})), ("", False))
+        other = AgentContext("other")
+        self.assertEqual(asyncio.run(_run(types.MethodType(chain, other), (), {})), ("inside", True))        # its superior's run: at work
+        self.assertEqual(asyncio.run(chain(None)), ("inside", True))                                          # a run begun in another way
+
     def test_a_finished_loop_is_not_at_work(self):
         task = LoopTask()
         self.s.run_began(self.chat.agent0, task)
@@ -549,6 +564,18 @@ class RunEnds(Case):
         self.settle()
         self.assertEqual((child.sent, self.states(child), self.s.status(child, kept)), ([], ["held", "undelivered"], "undelivered"))
 
+    def test_a_sender_that_handles_the_end_itself_learns_that_the_run_was_stopped(self):
+        for how, expected in (("stopped", "stopped"), ("failed", "stopped"), ("finished", "undelivered")):
+            with self.subTest(how):
+                chat = AgentContext("s-" + how)
+                self.running(chat)
+                kept = self.s.steer(chat, "use euros", caller=True)
+                self.ends(chat, how)
+                self.settle()
+                self.assertEqual((self.s.status(chat, kept), chat.sent), (expected, []))
+                self.assertIsNotNone(self.s.forget(chat, kept))
+                self.assertEqual(self.s.status(chat, kept), "")
+
     def test_a_message_that_came_too_late_starts_the_next_run(self):
         self.running()
         self.chat.communicate(UserMessage("and one more thing"))
@@ -726,6 +753,17 @@ class Composer(Case):
         self.running()
         self.assertEqual(self.s.send(self.chat, "b")["outcome"], "queued")
         self.assertEqual(self.s.send(self.chat, "c", how="steer")["outcome"], "steering")
+
+    def test_a_message_that_had_arrived_is_not_sent_again(self):
+        self.running(self.chat)
+        self.assertEqual(self.s.send(self.chat, "use euros", item_id="m1")["outcome"], "steering")
+        self.assertEqual(self.s.send(self.chat, "use euros", item_id="m1"), {"outcome": "known", "id": "m1"})      # only the answer was lost
+        self.s.deliver(self.chat.agent0, self.chat.agent0.loop_data)
+        self.assertEqual(self.s.send(self.chat, "use euros", item_id="m1")["outcome"], "known")                   # in the run by now
+        self.assertEqual(self.texts(), ["use euros"])
+        self.chat.log.log("user", content="hello", id="m2")
+        self.assertEqual(self.s.send(self.chat, "hello", item_id="m2")["outcome"], "known")                       # it had begun a run
+        self.assertEqual(self.s.send(self.chat, "hello", item_id="m3")["outcome"], "steering")                    # the same words are another message
 
     def test_what_is_already_queued_goes_first(self):
         self.queue.queues["a"] = [("earlier", [], "q")]

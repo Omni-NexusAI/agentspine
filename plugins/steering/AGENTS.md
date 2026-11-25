@@ -26,7 +26,8 @@ A message sent to a working agent joins the same run at its next step. A standal
   running (the user stopped it to say this); more than `LIMIT` waiting.
 - `live(context)`: the chat's own task, or an agent loop noted by the `monologue` hooks whose asyncio task is not done and which was not
   started by the chat's own task. `context.task.is_alive()` alone misses sub-agents and scheduled runs (a message there would start a
-  second run); the noted loops alone would call a run alive that Stop has just cancelled.
+  second run); the noted loops alone would call a run alive that Stop has just cancelled. A run stopped in its first moment still reaches the
+  hook once, when the chat's task is over already: whose run it is is read from the asyncio task itself (`_begun_by`).
 - `message_loop_prompts_before/_95_steering.py` -> `deliver`: after `_90_organize_history_wait` (history compression is settled), before the
   history is read, inside the loop's own error handling. It goes through `hist_add_user_message(intervention=True)`, so other plugins'
   hooks see a native intervention. `extras_persistent['steering']` shows the messages with every request of the run: compression keeps only
@@ -41,6 +42,10 @@ A message sent to a working agent joins the same run at its next step. A standal
   (`_inner_over`, and `run_began` for one that ended unseen), and what waited is held, never taken into that sub-agent's next run.
   A sub-agent's chat never starts a run by itself, also when it has a task of its own (parallel sub-agents): Agent Zero would run its
   superior along with it, beside the superior's own run. Its leftovers go to the superior, or are held when that one has ended.
+- A sender that asked to handle the end itself (`caller`) reads the status: `undelivered` when the run ended by itself (the message can be a
+  new task), `stopped` when it was stopped or failed: nothing of it should begin again by itself. Both wait for `forget`.
+- A message has one id from the page's first try on: the same id sent again is never a second message (`known`: it waits, is held, queued or in
+  a run, or stands in the chat), and a message whose answer was lost on its way is not shown twice.
 - Sub-agents: each one at work is told once about messages its superiors got after it began (`_copies`), for information only.
 - State is a plain dict under `context.data['_steering']` (a lock and the runs, not saved with the chat); what must survive a restart is
   written to `data/<chat id>.json` at once (`_save`), because a message waits while a step is in progress. It comes back as held.
