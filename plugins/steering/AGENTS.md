@@ -45,7 +45,9 @@ A message sent to a working agent joins the same run at its next step. A standal
 - A sender that asked to handle the end itself (`caller`) reads the status: `undelivered` when the run ended by itself (the message can be a
   new task), `stopped` when it was stopped or failed: nothing of it should begin again by itself. Both wait for `forget`.
 - A message has one id from the page's first try on: the same id sent again is never a second message (`known`: it waits, is held, queued or in
-  a run, or stands in the chat), and a message whose answer was lost on its way is not shown twice.
+  a run, stands in the chat, or is on its way through `send` right now). When sending fails the page asks whether it had arrived (`known`) before
+  it keeps anything; text that went back into the composer keeps its id (`returned`) for as long as it is sent as it was, also when the run is
+  over by then; what the server has once shown (`SEEN`) is never offered again as not sent.
 - Sub-agents: each one at work is told once about messages its superiors got after it began (`_copies`), for information only.
 - State is a plain dict under `context.data['_steering']` (a lock and the runs, not saved with the chat); what must survive a restart is
   written to `data/<chat id>.json` at once (`_save`), because a message waits while a step is in progress. It comes back as held.

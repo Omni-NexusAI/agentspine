@@ -116,6 +116,93 @@ test('a failed message never overwrites what was typed meanwhile, and is not los
     assert.equal(p.input.message, 'second');
 });
 
+// A server that takes what it is sent once per id, knows what it has, and may lose an answer on its way.
+function server({ lose = 1 } = {}) {
+    const taken = [];
+    let left = lose;
+    return { taken, answer: data => {
+        const view = { mode: 'automatic', own_mode: '', revision: 9, items: [] };
+        if (data.action === 'known') return { ok: true, known: taken.some(m => m.id === data.id), steering: view };
+        if (data.action !== 'send') return { ok: true, steering: view };
+        const there = taken.some(m => m.id === data.id);
+        if (!there) taken.push({ id: data.id, text: data.text });
+        if (left-- > 0) throw new Error('the answer was lost');
+        return { ok: true, outcome: there ? 'known' : 'steering', steering: view };
+    } };
+}
+
+test('when only the answer was lost nothing is put back, and nothing is sent twice', async () => {
+    const s = server(), p = await page({ composer: 'book the hotel', answer: s.answer });
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.deepEqual([p.input.message, plain(p.store.items), p.toasts], ['', [], []]);
+    assert.deepEqual(s.taken.map(m => m.text), ['book the hotel']);
+});
+
+test('a message that went back into the composer is the same message when it is sent again', async () => {
+    const s = server();
+    let offline = true;
+    const p = await page({ composer: 'book the hotel', answer: data => {
+        if (offline && data.action === 'known') throw new Error('offline');
+        if (offline && data.action === 'send') { try { s.answer(data); } finally { throw new Error('offline'); } }      // it got there; nothing comes back
+        return s.answer(data);
+    } });
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.equal(p.input.message, 'book the hotel');                                       // kept for the user: nobody could say that it had arrived
+    offline = false;
+    const again = ctx('book the hotel');
+    await p.store.beforeSend(again);
+    assert.deepEqual([again.cancel, p.input.message, s.taken.length], [true, '', 1]);
+    assert.match(p.toasts.at(-1)[1], /had arrived/);
+    const idle = await page({ composer: 'book the hotel', answer: data => (offline ? (() => { throw new Error('offline'); })() : s.answer(data)) });
+    offline = true;
+    await idle.store.beforeSend(ctx('book the hotel'));
+    const id = idle.calls.find(call => call.action === 'send').id;
+    s.taken.push({ id, text: 'book the hotel' });
+    idle.chat.running = false; offline = false;                                            // the run is over: Agent Zero would send it as a new message
+    const later = ctx('book the hotel');
+    await idle.store.beforeSend(later);
+    assert.deepEqual([later.cancel, s.taken.length], [true, 2]);
+    idle.input.message = 'book another hotel';                                             // other words are another message
+    const other = ctx('book another hotel');
+    await idle.store.beforeSend(other);
+    assert.equal(other.cancel, false);
+});
+
+test('it is the same message also when nobody could ask whether it had arrived', async () => {
+    const s = server(), p = await page({ composer: 'book the hotel', answer: data => { if (data.action === 'known') throw new Error('offline'); return s.answer(data); } });
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.equal(p.input.message, 'book the hotel');
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.deepEqual([p.input.message, s.taken.length], ['', 1]);
+    assert.equal(Object.keys(p.store.returned).length, 0);
+    assert.match(p.toasts.at(-1)[1], /had arrived/);
+});
+
+test('what could not be sent really is sent when it is sent again', async () => {
+    let offline = true;
+    const s = server({ lose: 0 }), p = await page({ composer: 'book the hotel', answer: data => { if (offline) throw new Error('offline'); return s.answer(data); } });
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.equal(p.input.message, 'book the hotel');
+    offline = false;
+    await p.store.beforeSend(ctx('book the hotel'));
+    assert.deepEqual([p.input.message, s.taken.map(m => m.text)], ['', ['book the hotel']]);
+});
+
+test('once the server has shown a message it is never offered again as not sent', async () => {
+    let p, first = true;
+    p = await page({ composer: 'first', answer: data => {
+        if (data.action === 'known') throw new Error('offline');
+        if (data.action === 'send' && first) { first = false; p.input.message = 'typed on'; p.sent = data.id; throw new Error('the answer was lost'); }
+        return { ok: true, outcome: 'known', steering: { mode: 'automatic', revision: 6, items: [] } };
+    } });
+    await p.store.beforeSend(ctx('first'));
+    assert.equal(plain(p.store.items).length, 1);
+    p.chat._steering = { mode: 'automatic', own_mode: '', revision: 5, items: [{ id: p.sent, text: 'first', status: 'waiting', mode: 'automatic', attachments: [] }] };
+    assert.deepEqual(plain(p.store.items.map(item => [item.status, !!item.local])), [['waiting', false]]);
+    p.chat._steering = { mode: 'automatic', own_mode: '', revision: 6, items: [] };         // it is in the run
+    assert.deepEqual([plain(p.store.items), p.store.heldCount], [[], 0]);
+});
+
 test('a message that had arrived though its answer was lost shows once, and sending it again says so', async () => {
     let p, first = true;
     p = await page({ composer: 'first', answer: data => {
@@ -125,9 +212,9 @@ test('a message that had arrived though its answer was lost shows once, and send
     await p.store.beforeSend(ctx('first'));
     assert.deepEqual(plain(p.store.items.map(item => [item.text, item.local])), [['first', true]]);
     p.chat._steering = { mode: 'automatic', own_mode: '', revision: 5, items: [{ id: p.sent, text: 'first', status: 'waiting', mode: 'automatic', attachments: [] }] };
-    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.status, !!item.local])), [['first', 'waiting', false]]);      // the server has it
-    p.chat._steering = { mode: 'automatic', own_mode: '', revision: 6, items: [] };                     // and it is in the run by now
-    await p.store.sendNow(p.store.items[0]);
+    const local = p.store.items[0];
+    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.status, !!item.local])), [['first', 'held', true]]);
+    await p.store.sendNow(local);
     assert.deepEqual([p.calls.at(-1).id, p.store.items.length], [p.sent, 0]);                           // the same id: never a second message
     assert.match(p.toasts.at(-1)[1], /had arrived/);
 });
@@ -142,7 +229,7 @@ test('a message that failed after the chat was changed waits in its own chat', a
     assert.deepEqual(plain(p.store.items.map(item => item.text)), ['for c']);
     p.input.message = 'typed on';
     await p.store.backToComposer(p.store.items[0]);
-    assert.deepEqual([p.input.message, p.store.items.length, p.calls.length], ['typed on\nfor c', 0, 1]);
+    assert.deepEqual([p.input.message, p.store.items.length, p.calls.filter(call => call.action === 'send').length], ['typed on\nfor c', 0, 1]);
     p.chats.selected = 'd'; p.chats.selectedContext = other;
     await p.store.deliver({ context: 'c', message: 'from a button' });             // one that never was in the composer
     p.chats.selected = 'c'; p.chats.selectedContext = p.chat;

@@ -754,6 +754,17 @@ class Composer(Case):
         self.assertEqual(self.s.send(self.chat, "b")["outcome"], "queued")
         self.assertEqual(self.s.send(self.chat, "c", how="steer")["outcome"], "steering")
 
+    def test_a_sender_learns_that_a_sub_agent_failed(self):
+        for failed, expected in ((False, "undelivered"), (True, "stopped")):
+            with self.subTest(failed):
+                self.running()
+                child = AgentContext("f%s" % failed, parent=self.chat)
+                self.s.run_began(child.agent0, LoopTask())
+                kept = self.s.steer(child, "use euros", caller=True)
+                self.s.run_over(child.agent0, failed=failed)
+                self.settle()
+                self.assertEqual(self.s.status(child, kept), expected)
+
     def test_a_message_that_had_arrived_is_not_sent_again(self):
         self.running(self.chat)
         self.assertEqual(self.s.send(self.chat, "use euros", item_id="m1")["outcome"], "steering")
@@ -764,6 +775,26 @@ class Composer(Case):
         self.chat.log.log("user", content="hello", id="m2")
         self.assertEqual(self.s.send(self.chat, "hello", item_id="m2")["outcome"], "known")                       # it had begun a run
         self.assertEqual(self.s.send(self.chat, "hello", item_id="m3")["outcome"], "steering")                    # the same words are another message
+
+    def test_one_with_attachments_only_is_known_again_too(self):
+        self.assertEqual(self.s.send(self.chat, "", attachments=["photo.png"], item_id="m1")["outcome"], "started")
+        self.assertEqual(self.s.send(self.chat, "", attachments=["photo.png"], item_id="m1"), {"outcome": "known", "id": "m1"})
+        self.assertEqual((len(self.chat.sent), [line.id for line in self.chat.log.logs]), (1, ["m1"]))      # and it stands in the chat
+
+    def test_the_same_message_twice_at_once_is_one(self):
+        self.running()
+        real, inside = self.s.steer, []
+
+        def slow(*args, **kwargs):
+            if not inside:
+                inside.append(self.s.send(self.chat, "use euros", item_id="m1")["outcome"])      # the second copy arrives while the first is on its way
+            return real(*args, **kwargs)
+        self.s.steer = slow
+        try:
+            self.assertEqual(self.s.send(self.chat, "use euros", item_id="m1")["outcome"], "steering")
+        finally:
+            self.s.steer = real
+        self.assertEqual((inside, self.statuses()), (["known"], [("use euros", "waiting")]))
 
     def test_what_is_already_queued_goes_first(self):
         self.queue.queues["a"] = [("earlier", [], "q")]

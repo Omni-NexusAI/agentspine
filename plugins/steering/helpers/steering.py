@@ -346,19 +346,20 @@ def run_over(agent, failed=False):
         return
     parent = next(iter(_ancestors(context)), None)
     if parent is not None and live(parent):
-        _pass_up(context, st, parent)
+        _pass_up(context, st, parent, failed)
         return
     _later(_settle, context.id, "failed" if failed else "finished")
 
 
-def _pass_up(context, st, parent):
-    """What a sub-agent could not take up any more goes to the agent that waits for it."""
+def _pass_up(context, st, parent, failed=False):
+    """What a sub-agent could not take up any more goes to the agent that waits for it (a sender that handles the end itself is told how it
+    ended)."""
     name = str(getattr(context, "name", "") or "").strip()
     with st["lock"]:
         waiting = [item for item in st["items"] if item["status"] == WAITING and not item["caller"]]
         for item in st["items"]:
             if item["status"] == WAITING and item["caller"]:
-                item["status"] = UNDELIVERED
+                item["status"] = STOPPED if failed else UNDELIVERED
         for item in waiting:
             st["items"].remove(item)
     for item in waiting:
@@ -719,11 +720,14 @@ def start(context, item):
     from agent import AgentContext, UserMessage
     from helpers import message_queue
     AgentContext.use(context.id)
-    if item["text"] and not item["logged"]:
+    if (item["text"] or item["attachments"]) and not item["logged"]:
         message_queue.log_user_message(context, item["text"], item["attachments"], message_id=item["id"])
         item["logged"] = True
     context.communicate(UserMessage(message=item["text"], attachments=list(item["attachments"]), system_message=list(item["system"]),
                                     id=item["id"]))
+
+
+_arriving, _arriving_lock = set(), threading.Lock()      # (chat, message id) of what is being sent right now
 
 
 # ── What the composer, the strip and the commands do ───────────────────────────────────────────────────────────────────
@@ -733,7 +737,7 @@ def interrupt(context, text, attachments=(), system=(), item_id="", logged=False
     from helpers import message_queue
     AgentContext.use(context.id)
     item_id = str(item_id or uuid.uuid4())
-    if text and not logged:
+    if (text or attachments) and not logged:
         message_queue.log_user_message(context, text, list(attachments), message_id=item_id)
     message = UserMessage(message=text, attachments=list(attachments), system_message=list(system), id=item_id)
     setattr(message, MARK, "interrupt")
@@ -749,14 +753,25 @@ def interrupt(context, text, attachments=(), system=(), item_id="", logged=False
 def send(context, text, *, attachments=(), how="", item_id="", source="composer"):
     """A message from the composer or a command. `how`: '' (the chat's mode), automatic, steer, queue or interrupt. Returns
     {'outcome': started | steering | queued | interrupted, 'id'}."""
-    from helpers import message_queue
     text, attachments = str(text or ""), [full_path(a) for a in attachments or ()]
     if not text.strip() and not attachments:
         raise ValueError("Nothing to send")
     how = how if how in (*MODES, "interrupt") else mode_for(context)
-    if item_id and known(context, item_id):
-        return {"outcome": "known", "id": str(item_id)}          # sent already: only the answer was lost on its way
     item_id = str(item_id or uuid.uuid4())
+    with _arriving_lock:
+        # Sent already (only the answer was lost on its way), or on its way through here right now.
+        if (context.id, item_id) in _arriving or known(context, item_id):
+            return {"outcome": "known", "id": item_id}
+        _arriving.add((context.id, item_id))
+    try:
+        return _send(context, text, attachments, how, item_id, source)
+    finally:
+        with _arriving_lock:
+            _arriving.discard((context.id, item_id))
+
+
+def _send(context, text, attachments, how, item_id, source):
+    from helpers import message_queue
     where = live(context)
     if not where:
         if message_queue.has_queue(context):

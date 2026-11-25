@@ -21,6 +21,8 @@ class Steering(ApiHandler):
                 return {"ok": True, "steering": steering.view(context), "running": steering.busy(context)}
             if action == "mode":
                 return {"ok": True, "steering": steering.set_mode(context, str(input.get("mode") or ""))}
+            if action == "known":                        # did a message with this id get here (its answer was lost)?
+                return {"ok": True, "known": bool(item_id) and steering.known(context, item_id), "steering": steering.view(context)}
             if action == "send":
                 data = {"message": str(input.get("text") or ""),
                         "attachment_paths": [steering.full_path(a) for a in input.get("attachments") or []]}
