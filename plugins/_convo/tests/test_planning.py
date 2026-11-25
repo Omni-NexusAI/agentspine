@@ -1605,6 +1605,28 @@ class Ending(Talk):
                 self.assertIn('could not be done: ' + {'opened again': 'the plan was changed meanwhile', 'edited': 'the plan was changed meanwhile', 'discarded': 'that plan is no longer there',
                                                        'handed over in the panel': 'that plan was already handed over'}[what], late)
 
+    def test_another_plan_begun_while_one_is_finished_is_not_called_over(self):
+        for what in ('new plan', 'handed over, new plan'):
+            async def scenario(h):
+                plan = h.plans.open('a')
+                h.plans.write(plan['id'], KEPT, revision=plan['revision'], by='user')
+                h.store.submit(h.session['id'], 'browser', 0, 't0', 'k', 'Write the weekly report')
+                h.asked_for, h.plan_delay = 'YES', 6.0
+                await h.candidate('t', h.audio('ask'), final=True)
+                await h.advance(3)
+                if what == 'handed over, new plan':
+                    h.plans.hand_over(plan['id'], 'a')
+                h.plans.begin('a', 'the holiday', new=True)                            # in the panel, while the final text is being written
+                await h.advance(20)
+                await h.settle()
+                return h.answers[1]['tool_turn']['result'], h.plans.open('a')['topic'], [h.plans.held(job) for job in h.jobs()][0], [p['on'] for _, p in h.events('plan.changed')][-1]
+            with self.subTest(what):
+                told, planning_now, held, on = self.play(scenario, planned='a garden shed', proposals=[END])
+                self.assertEqual((planning_now, held, on), ('the holiday', True, True))
+                self.assertIn('nother plan is being worked on now', told)
+                self.assertNotIn('lanning is over', told)
+                self.assertNotIn('starts now', told)                                   # what waits still waits
+
     def test_another_plan_begun_meanwhile_neither_holds_the_agreed_task_nor_is_called_over(self):
         async def scenario(h):
             with self.slowly():

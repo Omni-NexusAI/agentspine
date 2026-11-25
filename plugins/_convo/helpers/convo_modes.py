@@ -398,11 +398,14 @@ async def _leave(rt, sid, state, session, turn, args, voice, about='', may_ask=T
         plan = await final(rt, sid, state, session, turn, plan, said)
     plan = kept.end(plan['id'], 'kept', session=session, turn=turn)
     rt._mark(turn, 'mode.conversation', disposition='keep' if keep else 'finish')
-    await _changed(rt, sid, state, state.get('session') or session, turn, plan)
+    other = kept.open(target)                                                  # (begun in the panel while the final text was written)
+    await _changed(rt, sid, state, state.get('session') or session, turn, other or plan)
+    over = 'planning is over' if other is None else 'another plan is being worked on now'
+    released = _released(rt, state, waiting) if other is None else ''
     if plan['status'] != 'kept':
-        return Outcome(True, 'The plan was handed over in the panel meanwhile; planning is over.' + _released(rt, state, waiting))
-    result = 'Planning is over. ' + ('The plan is kept (in the panel); nothing was handed over.' if plan['text'].strip()
-                                     else 'Nothing was written down, so there is no plan to hand over.') + _released(rt, state, waiting)
+        return Outcome(True, 'The plan was handed over in the panel meanwhile; ' + over + '.' + released)
+    result = over[:1].upper() + over[1:] + '. ' + ('The plan is kept (in the panel); nothing was handed over.' if plan['text'].strip()
+                                                   else 'Nothing was written down, so there is no plan to hand over.') + released
     if keep or not may_ask or not plan['text'].strip():
         return Outcome(True, result + (' To hand it over, press Hand over there.' if hands_over('voice_mode', args) and plan['text'].strip() else ''))
     # The last step of finishing: shall I hand it over? Nothing starts without the yes; a no keeps the plan.
