@@ -249,7 +249,7 @@ class Kept(unittest.TestCase):
 
     def test_a_chat_counts_as_named_when_its_words_were_said(self):
         for name, said, expected in (('Garden planning', 'yes, but put it into the garden planning one', True), ('Garden planning', 'yes, but in euros', False), ('', 'yes', False),
-                                     ('周报', '好的，不过放到周报那个聊天里', True), ('周报', '好的，用欧元', False), ('काली', 'हाँ, पर कला वाली में', False), ('काली', 'हाँ, पर काली में', True), ('C', 'yes, use the cloud', False)):
+                                     ('周报', '好的，不过放到周报那个聊天里', True), ('周报', '好的，用欧元', False), ('काली', 'हाँ, पर कला वाली में', False), ('माली', 'हाँ, मेले में मूली', False), ('काली', 'हाँ, पर काली में', True), ('C', 'yes, use the cloud', False)):
             self.assertEqual(planning.named(name, said), expected, (name, said))
 
     def test_an_old_kept_plan_a_handed_one_and_a_discarded_one_are_not_opened_again(self):
