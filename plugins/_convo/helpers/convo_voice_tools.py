@@ -37,7 +37,11 @@ READER = ("You are given one short utterance from a person who was just asked wh
 ASKED = ("You are given one utterance a person said to their voice assistant. Decide whether, in this utterance, the person themself asks "
          "the assistant to %s. Any wording and any language counts. Reply with exactly one word and nothing else: YES if they ask for "
          "it; NO if they do not (a remark, a question about it, an answer, something else); OTHER if it is unclear.")
-ASKED_FOR = {'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
+# `voice_mode` has two of its own: planning ends only on the user's word (convo_modes.decide), and handing a plan over starts work.
+ASKED_FOR = {'voice_mode': 'stop planning: to finish or wrap up the plan they are working on together, or to leave planning mode',
+             'voice_mode:plan': 'put the plan they are working on together aside for now and to plan something else, or to go back to another plan',
+             'voice_mode:hand_over': 'hand the plan they worked out together over, so that another agent or chat carries it out',
+             'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
              'cancel_task': 'stop or cancel a task, a timer or work that is going on',
              'steer_task': 'change, correct or add something to work that another agent or chat is already doing or has been given'}
 # The last check before speech the classifier took for talk to someone else is left unanswered: is it the user still talking to the
@@ -164,8 +168,40 @@ def _minutes(seconds):
 
 
 # ── The pending question ───────────────────────────────────────────────────────────────────────────────────────────────
+def _planning_since(state):
+    """Which planning is going on in this conversation: (the open plan, since when), or None."""
+    try:
+        from .convo_planning import of
+        plan = of(state['service'].store).open(state['session']['target'])
+        return (plan['id'], plan['started']) if plan is not None else None
+    except Exception:
+        return None
+
+
 def pending(state):
-    return state.get('pending') if isinstance(state.get('pending'), dict) else None
+    """The open question, or None. One asked before planning mode was switched on (in the panel, or on another page) is over: a yes to it
+    must not start anything any more."""
+    record = state.get('pending')
+    if not isinstance(record, dict):
+        return None
+    if not record.get('overtaken'):
+        since = _planning_since(state)
+        record['overtaken'] = (since is not None and since != record.get('planning')) or _moved_on(state, record)
+    return None if record['overtaken'] else record
+
+
+def _moved_on(state, record):
+    """Whether the plan a question is about is no longer there to be asked about: handed over or discarded (in the panel, on another page),
+    or, for a question about ending planning, over already."""
+    if not record.get('about'):
+        return False
+    try:
+        from .convo_modes import change
+        from .convo_planning import of
+        plan = of(state['service'].store).get(record['about'])
+        return plan is None or plan['status'] not in (('open', 'kept') if change(record['arguments']) == 'hand_over' else ('open',))
+    except Exception:
+        return False
 
 
 def answerable(state, began):
@@ -175,15 +211,16 @@ def answerable(state, began):
     return record if record is not None and record.get('heard') is not None and began >= record['heard'] else None
 
 
-async def ask(rt, sid, state, session, turn, name, args, prepared=None):
+async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label=None, summary=None, about=''):
     """Keep one pending action. A newer question replaces an older one. Nothing is started. The question is asked aloud, by the model
     in the user's language; the panel shows it (Run / Dismiss) once its first words are heard (`heard`), never before: a card that
     came seconds ahead of the question was all the user got, and what they were saying meanwhile was taken for its answer
     (2026-11-24). Returns the pending record: {'id', 'name', 'arguments', 'summary', 'label', 'turn', 'prepared', 'heard'}."""
     tools = rt._helper('convo_tools')
     await resolve(rt, sid, state, session, 'replaced')
-    record = {'id': uuid.uuid4().hex, 'name': name, 'arguments': dict(args), 'summary': tools.summary(name, args), 'turn': turn,
-              'label': tools.CATALOG[name].get('ask') or tools.LABEL[name], 'prepared': prepared, 'heard': None, 'voiced': False}
+    record = {'id': uuid.uuid4().hex, 'name': name, 'arguments': dict(args), 'summary': tools.summary(name, args) if summary is None else summary,
+              'turn': turn, 'label': label or tools.CATALOG[name].get('ask') or tools.LABEL[name], 'prepared': prepared, 'heard': None,
+              'voiced': False, 'planning': _planning_since(state), 'about': about}
     state['pending'] = record
     state['service'].store.append(session["id"], sid, session["epoch"], turn, "action.asked",
                                   {"id": record['id'], "name": name, "summary": record['summary']})
@@ -200,11 +237,11 @@ async def show(rt, sid, state, session, record):
 
     async def expire():
         await asyncio.sleep(PENDING_SECONDS)
-        if pending(state) is record:
+        if state.get('pending') is record:
             await resolve(rt, sid, state, state.get('session') or session, 'expired')
     record['timer'] = asyncio.ensure_future(expire())
     await rt._send(sid, state, session, record['turn'], 'action.pending', id=record['id'], name=record['name'], label=record['label'],
-                   summary=record['summary'], seconds=int(PENDING_SECONDS))
+                   summary=record['summary'], seconds=int(PENDING_SECONDS), **({'plan_id': record['about']} if record.get('about') else {}))
 
 
 async def heard(rt, sid, state, session, turn):
@@ -230,8 +267,8 @@ async def asked_aloud(rt, sid, state, session, turn, over):
 async def resolve(rt, sid, state, session, outcome, by=''):
     """Close the pending question: 'run', 'declined', 'expired' or 'replaced'. Journalled with the tool and how it ended; the panel
     card goes. Returns the record that was pending, or None."""
-    record = pending(state)
-    if record is None:
+    record = state.get('pending')            # whatever is open, one that planning has overtaken too: it is closed here
+    if not isinstance(record, dict):
         return None
     state['pending'] = None
     timer = record.get('timer')
@@ -264,12 +301,14 @@ def can_read(state, audio, transcript):
     return (audio is not None and hears) or bool(transcript)
 
 
-async def asked(rt, state, name, audio, transcript):
+async def asked(rt, state, name, audio, transcript, args=None):
     """Whether the user's own utterance, read alone (ASKED), asks for this kind of work. False for a tool that is always asked about
     first, when a permission system decides (convo_policy.set_authorizer), and whenever it cannot be read."""
-    if name not in ASKED_FOR or rt._helper('convo_policy')._AUTHORIZER is not None:
+    kind = rt._helper('convo_modes').change(args) if name == 'voice_mode' else 'leave'
+    what = ASKED_FOR.get(name if kind == 'leave' else name + ':' + kind)
+    if what is None or rt._helper('convo_policy')._AUTHORIZER is not None:
         return False
-    return await reading(rt, state, audio, transcript, ASKED % ASKED_FOR[name]) == 'yes'
+    return await reading(rt, state, audio, transcript, ASKED % what) == 'yes'
 
 
 def so_far(rt, state):
@@ -388,20 +427,42 @@ async def place(rt, state, session, chat='', create=True):
     return {**made, 'new': True}
 
 
-async def delegate(rt, sid, state, session, turn, text, key=None, chat=''):
-    """Queue one task for a chat's agent (`place`) and say so in the panel. Returns what is now true, as a sentence for the model."""
+async def queue(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False, label=''):
+    """Queue one task for a chat's agent (`place`) and say so in the panel. Returns (the job, what is now true as a sentence for the model).
+    `agreed`: the user has just agreed to this very task, so it starts although the conversation is planning; any other one that gets here
+    while a plan is open waits for its end."""
     s = state["service"]
     where = await place(rt, state, session, chat)
     idle = rt._chat_idle(s, where['id'])               # before the task itself makes its chat busy
     job = s.store.submit(session["id"], sid, session["epoch"], turn, key or (turn + ":job"), text,
                          target=where['id'] if where['id'] != session["target"] else None)
+    waits = False
+    try:
+        plans = rt._helper('convo_planning').of(s.store)
+        if agreed:
+            plans.allow(session["target"], job["id"])
+        waits = plans.held(job)
+    except Exception:
+        logger.debug("Whether a task waits for planning could not be read", exc_info=True)
     s.dispatcher.start()
-    state.setdefault('job_labels', {})[job["id"]] = ' '.join(str(text).split())[:120]
+    state.setdefault('job_labels', {})[job["id"]] = label or ' '.join(str(text).split())[:120]
     await rt._send(sid, state, session, turn, "job.queued", job_id=job["id"], target=job["target"], chat=where['name'][:80])
+    return job, queued(rt, session, where, chat, idle, waits)
+
+
+def queued(rt, session, where, chat, idle, waits=False):
+    """What is now true of a task that was queued, as a sentence for the model."""
     named = ('a new chat' + (' named "%s"' % where['name'][:60] if where['name'] else '')) if where['new'] else (
         'the chat "%s"' % where['name'][:60] if where['name'] and (chat or rt._global(session)) else 'the chat')
+    if waits:
+        return "The task is kept for %s and waits until planning is over; it starts then." % named
     return ("The task is queued in %s and starts right away; its result is reported when it finishes." % named if idle
             else "The task is queued in %s behind its current work and starts when that is finished; its result is reported later." % named)
+
+
+async def delegate(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False):
+    """Queue one task (`queue`). Returns what is now true, as a sentence for the model."""
+    return (await queue(rt, sid, state, session, turn, text, key, chat, agreed=agreed))[1]
 
 
 def prepare_task(rt, state, session, turn, task):
@@ -415,23 +476,26 @@ def prepare_task(rt, state, session, turn, task):
     return text
 
 
-async def perform(rt, sid, state, session, turn, record):
-    """Carry out a confirmed pending action (the user's yes, or the panel's Run). Returns (worked, what is now true)."""
+async def perform(rt, sid, state, session, turn, record, *, voice=True, panel=False):
+    """Carry out a confirmed pending action (the user's yes, or the panel's Run). Returns a convo_modes.Outcome."""
     name, args = record['name'], record['arguments']
+    modes = rt._helper('convo_modes')
     try:
+        if name == 'voice_mode':
+            return await modes.switch(rt, sid, state, session, turn, args, voice=voice, about=record.get('about') or '', may_ask=not panel)
         if name == 'delegate_task':
             text = record.get('prepared') or prepare_task(rt, state, session, turn, args.get('task'))
-            return True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'))
-        return await act(rt, sid, state, session, turn, name, args, state['config'])
+            return modes.Outcome(True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'), agreed=True))
+        return modes.Outcome(*await act(rt, sid, state, session, turn, name, args, state['config']))
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        return False, _safe(error, 'it could not be done')
+        return modes.Outcome(False, _safe(error, 'it could not be done'))
 
 
 async def act(rt, sid, state, session, turn, name, args, config):
-    """Carry out one action that is not read-only (not delegate_task, which has its hold and its own path). Returns
-    (worked, what is now true or why not), both in plain words for the model."""
+    """Carry out one action that is not read-only (not delegate_task, which has its hold and its own path, nor voice_mode: convo_modes).
+    Returns (worked, what is now true or why not), both in plain words for the model."""
     s = state["service"]
     try:
         if name == 'set_timer':
@@ -685,6 +749,11 @@ async def read(rt, sid, state, session, turn, name, args, config, more=False):
                                                               probes={'services': _services(rt, state)}), limit)
         elif name == 'task_status':
             result = _status(rt, state, session)
+        elif name == 'project_files':
+            files = rt._helper('convo_files')
+            folder = await asyncio.to_thread(s.host.work_folder, rt._work(state, session))
+            result = await asyncio.wait_for(asyncio.to_thread(files.look, folder, args.get('action') or '', args.get('path') or '',
+                                                              args.get('query') or '', int(args.get('from_line') or 1)), limit)
         elif name == 'chats':
             actions = rt._helper('convo_actions')
             contexts = s.host.chat_contexts()
@@ -728,8 +797,14 @@ def _status(rt, state, session):
     jobs = s.store.jobs(session["target"])[-5:]
     words = {'queued': 'queued, not started yet', 'dispatching': 'starting', 'running': 'running now', 'completed': 'finished',
              'failed': 'failed', 'cancelled': 'cancelled', 'cancel_requested': 'being cancelled', 'uncertain': 'outcome unknown (interrupted by a restart)'}
+    try:
+        waiting = {job['id'] for job in rt._helper('convo_planning').of(s.store).waiting(session["target"])}
+    except Exception:
+        waiting = set()
     for job in jobs:
         line = '- "%s": %s' % (_job_label(state, job)[:100], words.get(job['status'], job['status']))
+        if job['id'] in waiting:
+            line += ', waiting until planning is over'
         for change in s.store.steers([job['id']])[-3:]:
             line += '. Change from the user (%s): %s' % (STEER_WORDS.get(change['status'], change['status']), change['text'][:160])
         result = ' '.join(str(job.get('result') or '').split())

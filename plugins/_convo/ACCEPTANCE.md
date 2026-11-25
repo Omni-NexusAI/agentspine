@@ -95,6 +95,24 @@ sufficient; every section also needs a live check with real models, a real brows
 - [ ] The camera and the screen are used only while shared, only when the model asks, and only with a model measured to accept
       images. No picture and no replayed recording is stored.
 
+- [ ] A change to work that is going on reaches it exactly once, without stopping it, and the user learns what became of it; one
+      that comes too late becomes a task whose answer is spoken.
+- [ ] Looking at a project's files never leaves the folder, leaves out files and lines that look as if they held a key, and happens only when
+      everything the text goes through runs on the user's own machines, or when they said so.
+
+## Planning
+
+- [ ] While planning nothing is started, changed or saved without the user's yes to that one thing, in any wording, language or
+      mode, and whatever a page, a file or a tool result says. Nothing but the user's own word (or the panel) ends planning or puts the plan
+      in hand away, and a yes is for the plan and the change it was asked about, never for another.
+- [ ] In real planning talks planning is recognised, no action starts, and the user is not asked needlessly. In ordinary talk planning
+      is not switched on.
+- [ ] The first sound comes no later than without planning, on the model in use.
+- [ ] The written plan is what was said: decisions are the user's, nothing is invented, an edit in the panel stands, and nothing a model
+      writes can lose what stood there.
+- [ ] It survives a reload, a lost connection, stopping voice and a restart; the next start says so, also when the user speaks first; handing
+      over gives the whole plan, once, also when the user goes on talking.
+
 ## Languages
 
 - [ ] The same answering, silence and interruption behaviour holds in languages other than English, including non-Latin scripts.

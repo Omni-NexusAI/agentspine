@@ -154,6 +154,17 @@ CATALOG = {
                                                            required=False),
                                          'chat': _text('For read: the chat\'s name. Leave out for the chat this conversation is '
                                                        'attached to.', required=False, limit=200)}},
+    'project_files': {
+        'group': 'always', 'kind': 'read', 'small': False, 'label': 'file look-up', 'activity': 'Looking at the files…',
+        'description': "Look at the files of the chat's project or work folder: list a folder, read a text file, or search their text "
+                       "(what looks like a key is left out). Use it when the answer or the plan depends on them.",
+        'primary': 'path',
+        'arguments': {'action': _choice('list: what a folder holds. read: one text file. search: where words occur.', ('list', 'read', 'search'),
+                                        required=False),
+                      'path': _text('For list and read: the path inside the folder. Leave out for the top folder.', required=False,
+                                    limit=300),
+                      'query': _text('For search: the words to look for.', required=False, limit=200),
+                      'from_line': _number('For read: the line to start at, when a file is long.', 1, 1000000, required=False)}},
     'open': {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'opening', 'activity': 'Opening it…',
         'description': "Open something in Agent Zero's interface for the user: a chat, Settings, the file browser, or a web page. "
@@ -165,6 +176,22 @@ CATALOG = {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'voice speed', 'activity': 'Changing the voice…',
         'description': "Speak slower, faster or at the normal speed for the rest of this conversation, when the user asks.",
         'primary': 'speed', 'arguments': {'speed': _choice('How to speak from now on.', ('slower', 'normal', 'faster'))}},
+    'voice_mode': {
+        'group': 'always', 'kind': 'quick', 'small': False, 'label': 'mode change', 'activity': 'Changing how we talk…',
+        'ask': 'Change the voice mode',
+        'description': "Change how you work with the user. planning: think something through together first; you only talk and look "
+                       "things up, and nothing is started, changed or saved without the user's yes to it. Use it when they ask to plan, "
+                       "or clearly start planning something substantial: it only makes you more careful. conversation: end planning, "
+                       "only when they say they are done.",
+        'primary': 'topic',
+        'arguments': {'mode': _choice('The mode to change to.', ('planning', 'conversation')),
+                      'topic': _text('For planning: what is planned, in a few words; leave out to go on with the last plan. For hand_over: '
+                                     'a kept plan by its name, when it is not the one in hand.', required=False, limit=200),
+                      'plan': _choice('new (with planning): a separate new plan. finish (with conversation, the default): write the final '
+                                      'plan and ask whether to hand it over. keep: leave it as it is. hand_over: pass it to the main '
+                                      'chat as a task, when the user asks.', ('new', 'finish', 'keep', 'hand_over'), required=False),
+                      'chat': _text('For hand_over: a chat the user names by its title.', required=False, limit=200),
+                      'change': _text('For hand_over, when they agree but with a change: the change.', required=False, limit=500)}},
     'listen_back': {
         'group': 'senses', 'kind': 'read', 'small': False, 'label': 'listening back', 'activity': 'Listening again…',
         'description': "Hear again the last few things the microphone picked up (the user's recent speech and the sounds around "
@@ -193,7 +220,8 @@ ORDER = tuple(CATALOG)
 GROUPS = ('web', 'memory', 'tasks', 'system', 'timers', 'chats', 'senses', 'interface')
 # Offered only while their condition holds (part of the conversation summarised; a camera or a screen shared with a model that
 # takes images); every other tool of a conversation is the same on each of its requests.
-CONDITIONAL = {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen', 'steer_task': 'steering'}
+CONDITIONAL = {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen', 'steer_task': 'steering',
+               'project_files': 'files'}
 # Tables derived from the catalog (the names older code and the gateway read).
 KNOWN = {name: tool['primary'] for name, tool in CATALOG.items()}
 READ_ONLY = {name for name, tool in CATALOG.items() if tool['kind'] == 'read'}
@@ -230,14 +258,14 @@ def schemas(names):
     return [schema(name) for name in ORDER if name in set(names or ())]
 
 
-def offered(*, recall=False, camera=False, screen=False, steering=False, groups=None, mode='native', audio=True):
+def offered(*, recall=False, camera=False, screen=False, steering=False, files=False, groups=None, mode='native', audio=True):
     """The tools a conversation offers, in a fixed order. The same on every request of the conversation (a tool's follow-up too),
     so the start of the request never changes: only a chapter swap adds `recall_conversation`, and only sharing or stopping the
     camera or the screen (with a model that accepts images) adds or removes their tools. `steering`: the Steering plugin was on when
-    the voice session started. `groups` is the saved permission switches
+    the voice session started; `files`: whether it may look at the project's files (settings `project_files`). `groups` is the saved permission switches
     (settings `voice_tools`: a group switched off is not offered; None or a missing key means on). A model that takes its tools in
     writing (`mode` 'text') is offered the small set only. `listen_back` needs a model that hears audio."""
-    conditions = {'recall': recall, 'camera': camera, 'screen': screen, 'steering': steering}
+    conditions = {'recall': recall, 'camera': camera, 'screen': screen, 'steering': steering, 'files': files}
     groups = groups if isinstance(groups, dict) else {}
     names = []
     for name in ORDER:
@@ -680,13 +708,15 @@ def repeated(label):
             'that they do not hold the answer.' % (label, ONLY_ROUND))
 
 
-def ask_first(label, what, voice=True):
+def ask_first(label, what, voice=True, planning=False):
     """The follow-up instruction for work that needs the user's go-ahead first: nothing was started, and the model asks, in one
     short sentence in the user's language, reading back what would be done. `voice`: a spoken answer can be read (the model
-    hears the user, or there is recognized text); without it only the Run button in the panel confirms, and the model says so."""
+    hears the user, or there is recognized text); without it only the Run button in the panel confirms, and the model says so.
+    `planning`: it is asked about because the two of them are planning; only this one thing runs on the yes."""
     return ('Nothing was started yet: this needs the user\'s go-ahead first (%s%s). %s Ask the user in one short sentence whether '
-            'to go ahead, saying in a few words what would be done. %sNever say or imply that it is already under way.'
+            'to go ahead, saying in a few words what would be done%s. %sNever say or imply that it is already under way.'
             % (label, ': ' + json.dumps(str(what)[:300], ensure_ascii=False) if what else '', ONLY_ROUND,
+               ' and that you are still planning' if planning else '',
                '' if voice else 'They confirm with the Run button in the Convo panel: tell them so. '))
 
 
@@ -711,6 +741,24 @@ def search_handed_over(sentence, blocked):
             'now, and that you will tell them the answer when it is back. Never invent the answer.'
             % ('every search engine asked is refusing this computer right now (blocked or rate-limited; this is not "nothing '
                'found")' if blocked else 'the search engines returned nothing for it', str(sentence).strip(), ONLY_ROUND))
+
+
+def search_ask_first(blocked, voice=True):
+    """The follow-up instruction for a web search that got nothing here while the two of them are planning: handing it to the chat's agent
+    would start work, so it is asked about first (`search_handed_over` is what happens outside planning)."""
+    return ('The web search could not get results here: %s. Nothing was started. The chat\'s agent could look it up with its own browser '
+            'instead, but you are planning and that would start work, so it needs the user\'s go-ahead first. %s Tell the user briefly that '
+            'your own search got nothing, and ask in one short sentence whether the agent should look it up now. %sNever invent the answer, '
+            'and never say or imply that it is already under way.'
+            % ('every search engine asked is refusing this computer right now (blocked or rate-limited; this is not "nothing '
+               'found")' if blocked else 'the search engines returned nothing for it', ONLY_ROUND,
+               '' if voice else 'They confirm with the Run button in the Convo panel: tell them so. '))
+
+
+def mode_changed(text, more=False):
+    """The follow-up instruction after the voice mode was changed (convo_modes): what is now true and what to say, then whether this
+    reply may still make look-ups."""
+    return text + ' ' + _round(more)
 
 
 def not_now(label):

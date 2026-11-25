@@ -126,7 +126,7 @@ test('In the history the asking is bookkeeping, and every voice tool reads as wo
     assert.deepEqual(foldTurns(journal, { developer: false }), []);                       // shown only with developer diagnostics on
     assert.equal(foldTurns(journal, { developer: true, diagnostics: true }).length, asked.length);
     const labels = { web_search: 'Web search', web_read: 'Page read', memory_read: 'Memory search', remember: 'Memory save', delegate_task: 'Task',
-        task_status: 'Task check', cancel_task: 'Cancellation', steer_task: 'Task change', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer',
+        task_status: 'Task check', cancel_task: 'Cancellation', steer_task: 'Task change', voice_mode: 'Voice mode', project_files: 'File look-up', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer',
         chats: 'Chat lookup', open: 'Opening', voice_speed: 'Voice speed', listen_back: 'Listening back', camera_context: 'Camera look',
         screen_context: 'Screen look', recall_conversation: 'Conversation lookup' };
     for (const [name, label] of Object.entries(labels)) {

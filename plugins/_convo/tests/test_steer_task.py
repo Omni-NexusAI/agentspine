@@ -23,6 +23,8 @@ from plugins._convo.helpers import convo_steering
 from plugins._convo.helpers.convo_host import Dispatcher, Host
 from plugins._convo.helpers.convo_store import Store
 
+convo_host = importlib.import_module('plugins._convo.helpers.convo_host')
+convo_store = importlib.import_module('plugins._convo.helpers.convo_store')
 tools = importlib.import_module('plugins._convo.helpers.convo_tools')
 voice_tools = importlib.import_module('plugins._convo.helpers.convo_voice_tools')
 
@@ -101,10 +103,45 @@ class Dispatching(unittest.TestCase):
         d.tick()
         self.assertEqual(self.host.begun, ['Write the weekly report\n\nAdded by the user before the task started:\nInclude the costs'
                                            '\n\nAdded by the user before the task started:\nAnd keep it to one page'])
-        self.assertEqual(self.store.job(job['id'])['prompt'], 'Write the weekly report')      # the task itself is what was asked for
         again = self.store.submit(self.session['id'], 'browser', 0, 't', 'k', 'Write the weekly report')
         self.assertEqual(again['id'], job['id'])                                              # the same request again is the same task
+        with self.assertRaises(ValueError):
+            self.store.submit(self.session['id'], 'browser', 0, 't', 'k', 'Write the weekly')
         self.assertEqual(self.kinds('job.steered'), [('job.steered', 'added')] * 2)
+
+    def test_a_change_that_came_too_late_never_goes_into_the_next_tasks_run(self):
+        d = self.make()
+        first = self.job('Task 1')
+        d.tick()
+        self.host.busy = True
+        second = self.job('Task 2', 'k2')
+        self.assertEqual(d.steer(first['id'], 'Use euros'), 'waiting')
+        self.host.futures['a'].set_result('The report')                                       # it was writing its final answer
+        self.host.busy = False
+        with patch.object(convo_host.time, 'monotonic', side_effect=lambda: self.clock):
+            self.clock = 100.0
+            d.tick()
+            self.assertEqual((self.host.begun, self.store.job(second['id'])['status']), (['Task 1'], 'queued'))      # not before that is settled
+            self.host.states = dict.fromkeys(self.host.states, 'undelivered')
+            d.tick()
+            self.assertEqual(self.changes(), [('Use euros', 'follow_up')])
+            d.tick()
+        self.assertEqual(self.host.begun[:2], ['Task 1', 'Task 2'])
+        self.assertIn('Use euros', [job['prompt'] for job in self.store.jobs('a')])           # a task of its own
+
+    def test_a_change_that_is_never_settled_does_not_hold_the_chat_up_for_good(self):
+        d = self.make()
+        first = self.job('Task 1')
+        d.tick()
+        self.host.busy = True
+        self.job('Task 2', 'k2')
+        d.steer(first['id'], 'Use euros')
+        self.host.futures['a'].set_result('The report')
+        self.host.busy = False
+        with patch.object(convo_host.time, 'monotonic', side_effect=lambda: self.clock):
+            for self.clock, started in ((100.0, 1), (100.0 + convo_host.UNSETTLED_SECONDS - 1, 1), (100.0 + convo_host.UNSETTLED_SECONDS + 1, 2)):
+                d.tick()
+                self.assertEqual(len(self.host.begun), started, self.clock)
 
     def test_a_task_too_long_with_the_change_is_refused_and_unchanged(self):
         d = self.make()
@@ -230,13 +267,13 @@ class Dispatching(unittest.TestCase):
         self.assertFalse(self.store.steer_status('item1', 'taken'))
         self.assertIsNone(self.store.follow_up('item1'))
 
-    def test_an_older_convo_reads_the_journal_and_ignores_the_changes(self):
+    def test_an_older_convo_reads_the_journal_and_starts_the_task_with_its_change(self):
         d = self.make()
         self.host.busy = True
         self.job()
         d.steer(self.store.jobs('a')[0]['id'], 'Use euros')
         with closing(sqlite3.connect(self.store.path)) as db:
-            self.assertEqual([r[0] for r in db.execute('SELECT prompt FROM jobs')], ['Write the weekly report'])
+            self.assertEqual([r[0] for r in db.execute('SELECT prompt FROM jobs')], ['Write the weekly report' + convo_store.ADDED + 'Use euros'])
             self.assertEqual(len(db.execute('SELECT * FROM jobs').fetchone()), 8)             # the table an older Convo writes is unchanged
 
 

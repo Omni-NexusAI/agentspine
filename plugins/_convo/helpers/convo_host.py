@@ -179,6 +179,21 @@ class Host:
             pass
         return {'id': str(context.id), 'name': name or str(context.id)}
 
+    def work_folder(self, chat):
+        """The folder a chat's agent works in, as Agent Zero's own code tool picks it: the chat's project, else the work folder. Raises
+        ValueError (in words that may be said) when there is none, or when it is so broad that it holds Agent Zero's own settings
+        and keys."""
+        from agent import AgentContext
+        from helpers import files, projects, settings
+        from . import convo_files
+        context = AgentContext.get(str(chat)) if chat else None
+        name = projects.get_context_project_name(context) if context is not None else None
+        path = projects.get_project_folder(name) if name else str(settings.get_settings().get("workdir_path") or "")
+        path = files.fix_dev_path(path) if path else ""
+        if not path or convo_files.too_broad(path, files.get_abs_path("usr")):
+            raise ValueError(convo_files.NO_FOLDER)
+        return path
+
     def install_dispatch_guard(self):
         from agent import AgentContext
         with self.dispatch_lock:
@@ -669,18 +684,22 @@ class Host:
         return await asyncio.wait_for(asyncio.shield(pending), 35)
 
 
+UNSETTLED_SECONDS = 10.0        # how long a queued task waits for a change the chat's last run did not take up to be dealt with
+
+
 class Dispatcher:
     """Runs independently of voice WebSocket lifetime; never replays uncertain jobs."""
     def __init__(self, store, host):
         self.store, self.host = store, host
         self.running = {}
-        self.steers = {}               # changes passed to a run and not taken up yet: id -> {"job", "target"}
+        self.steers = {}               # changes passed to a run and not taken up yet: id -> {"job", "target", "ended": when its run was over}
         self.lock = threading.RLock()
         self.wake = threading.Event()
         self.closed = threading.Event()
         self.paused = threading.Event()
         self.thread = None
         self.side = None               # called about once a second on this thread (the voice timers), voice running or not
+        self.plans = None              # the plans beside this journal (convo_planning), read when a task is about to start
         self._side_at = 0.0
 
     def start(self):
@@ -709,6 +728,17 @@ class Dispatcher:
             self.wake.wait(.25)
             self.wake.clear()
 
+    def held(self, job):
+        """Whether a queued task waits because its conversation is planning (convo_planning). A plan that cannot be read holds nothing: it
+        could not be planned with either, and a broken table must never stop every task for good."""
+        try:
+            if self.plans is None:
+                self.plans = importlib.import_module(__package__ + '.convo_planning').of(self.store)
+            return self.plans.held(job)
+        except Exception:
+            logger.debug("Whether a task waits for planning could not be read", exc_info=True)
+            return False
+
     def tick(self):
         with self.lock:
             for job_id, future in list(self.running.items()):
@@ -732,6 +762,10 @@ class Dispatcher:
             for job in queued:
                 if self.paused.is_set() or len(self.running) >= 4:
                     break
+                if self.held(job):
+                    continue                     # its conversation is planning: it starts when that is over, or when the user agrees
+                if self._unsettled(job["target"]):
+                    continue                     # a change that run did not take up is still to be dealt with: it must not go into this task's run
                 try:
                     if not self.host.available(job["target"]):
                         continue
@@ -741,7 +775,7 @@ class Dispatcher:
                 if not self.store.transition(job["id"], "queued", "dispatching"):
                     continue
                 try:
-                    future = self.host.begin({**job, "prompt": self.store.job_text(job)})
+                    future = self.host.begin(job)
                     if future is None:
                         self.store.transition(job["id"], "dispatching", "queued")
                         continue
@@ -772,7 +806,7 @@ class Dispatcher:
             turn = job["turn"] if turn is None else turn
             if job["status"] == "queued":
                 # Under this lock the task cannot start meanwhile (tick holds it, too).
-                if len(self.store.job_text(job)) + len(text) > 15900:
+                if len(job["prompt"]) + len(text) > 15900:
                     raise ValueError("The task would become too long")
                 self.store.steered(job["session"], turn, job["target"], text, "added", job=job_id)
                 return "added"
@@ -796,9 +830,20 @@ class Dispatcher:
         how = "waiting" if kept else "interrupted"
         self.store.steered(session_id, turn, target, text, how, job=job_id, steer_id=kept or "")
         if kept:
-            self.steers[kept] = {"job": job_id, "target": target}
+            self.steers[kept] = {"job": job_id, "target": target, "ended": None}
             self.start()
         return how
+
+    def _unsettled(self, target):
+        """Whether a change passed to a run in this chat that is over now has not been dealt with yet (Steering settles it a moment after
+        the end). Waited for briefly, never for good."""
+        waits = False
+        for where in self.steers.values():
+            if where["target"] != target or (where["job"] and where["job"] in self.running):
+                continue
+            where["ended"] = where["ended"] or time.monotonic()
+            waits = waits or time.monotonic() - where["ended"] < UNSETTLED_SECONDS
+        return waits
 
     def _follow_steers(self):
         """What became of the changes that were waiting: in the run, or too late for it. One too late for a run that ended normally becomes

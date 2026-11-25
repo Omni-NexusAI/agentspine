@@ -4,7 +4,7 @@
   <template x-for="row in ($store.convoSetup?.hotkeyRows() || [])" :key="row.id"><div class="convo-hotkey">
     <span class="convo-hotkey-name"><span x-text="row.label"></span><small x-show="row.hint" x-text="row.hint"></small></span>
     <span class="convo-hotkey-buttons">
-      <button type="button" class="button convo-hotkey-key" :data-hotkey="row.id" :data-recording="$store.convoSetup.hotkeyRecording(row.id) ? '' : null" :value="row.id === 'hotkey' ? $store.convoSetup.config.hotkey : $store.convoSetup.config.hotkeys[row.id]" :aria-pressed="$store.convoSetup.hotkeyRecording(row.id) ? 'true' : 'false'" :aria-label="$store.convoSetup.hotkeyName(row.id)" @click="$store.convoSetup.hotkeyRecord(row.id)" x-text="$store.convoSetup.hotkeyText(row.id)"></button>
+      <button type="button" class="button convo-hotkey-key" :data-hotkey="row.id" :data-recording="$store.convoSetup.hotkeyRecording(row.id) ? '' : null" :value="row.id === 'hotkey' ? $store.convoSetup.config.hotkey : row.id === 'planning_hotkey' ? $store.convoSetup.config.planning_hotkey : $store.convoSetup.config.hotkeys[row.id]" :aria-pressed="$store.convoSetup.hotkeyRecording(row.id) ? 'true' : 'false'" :aria-label="$store.convoSetup.hotkeyName(row.id)" @click="$store.convoSetup.hotkeyRecord(row.id)" x-text="$store.convoSetup.hotkeyText(row.id)"></button>
       <button type="button" class="button" :aria-label="'Reset: ' + row.label" :disabled="$store.convoSetup.hotkeyValue(row.id) === $store.convoSetup.hotkeyDefault(row.id)" @click="$store.convoSetup.hotkeyReset(row.id)">Reset</button>
     </span>
     <p class="convo-hotkey-note" role="status" x-show="$store.convoSetup.hotkeyNote(row.id)" x-text="$store.convoSetup.hotkeyNote(row.id)"></p>

@@ -47,6 +47,59 @@ def steering_on(m):
         return False
 
 
+def plans(m, store):
+    return importlib.import_module(m.__package__ + '.convo_planning').of(store)
+
+
+def plan_view(m, store, target):
+    """The conversation's plan for the panel, or None. Never fails a read."""
+    try:
+        return plans(m, store).view(target)
+    except Exception:
+        return None
+
+
+PLAN_ACTIONS = {'plan_start', 'plan_end', 'plan_save', 'plan_hand_over', 'plan_drop'}
+
+
+def plan_action(m, s, target, action, data):
+    """The panel's plan buttons (and the hotkey). The journal decides what holds, so a voice session running in this conversation, on this
+    page or another, sees it with its next reply and its next tool call. Every one is the user's own press. A refusal answers with
+    words; a plan that changed meanwhile answers with the plan as it is now."""
+    kept = plans(m, s.store)
+    owner = voice_owner(m)
+    session = s.store.session(owner['session'], active=False) if owner and owner.get('target') == target else None
+    try:
+        if action == 'plan_start':
+            kept.begin(target, str(data.get('topic') or ''), new=data.get('new') is True, plan_id=str(data.get('id') or ''), session=session)
+            return {'ok': True, 'plan': kept.view(target)}
+        plan = kept.get(str(data.get('id') or ''))
+        if plan is None or plan['target'] != target:
+            raise ValueError('That plan is no longer there')
+        job = None
+        if action == 'plan_save':
+            kept.write(plan['id'], data.get('text'), revision=data.get('revision'), by='user', topic=data.get('topic') or '',
+                       was=data.get('was') if isinstance(data.get('was'), str) else None)
+        elif action == 'plan_hand_over':
+            kept.check(plan)                               # before a chat is made for it
+            contract = importlib.import_module(m.__package__ + '.convo_contract')
+            chat = target
+            if target == contract.GLOBAL_SCOPE:
+                chat = str(data.get('chat') or '')
+                if chat:
+                    s.host.context(chat)
+                else:
+                    chat = s.host.new_chat('Voice tasks')['id']
+            job = kept.hand_over(plan['id'], chat, session=session)
+        else:
+            kept.end(plan['id'], 'dropped' if action == 'plan_drop' else 'kept', session=session)
+        if action != 'plan_save':
+            s.dispatcher.start()                       # what waited for the end of planning, and the plan itself when it was handed over
+        return {'ok': True, 'plan': kept.view(target), **({'job': job} if job else {})}
+    except ValueError as exc:
+        return {'ok': False, 'code': 'conflict' if str(exc) == kept.CHANGED else 'invalid', 'error': str(exc)[:200], 'plan': plan_view(m, s.store, target)}
+
+
 def module():
     root = Path(__file__).resolve().parent.parent
     prefix = "usr.plugins" if root.parent.parent.name == "usr" else "plugins"
@@ -256,7 +309,9 @@ class Conversation(ApiHandler):
             for change in s.store.steers([job["id"] for job in jobs if job["status"] in ("queued", "dispatching", "running")] or ["-"]):
                 changes[change["job"]] = change["status"]          # the newest change of each task still going on
             return {"ok": True, **page, "jobs": [{**job, "change": changes[job["id"]]} if job["id"] in changes else job for job in jobs],
-                    "steering": steering_on(m), "assistant_name": assistant_name(m.settings(), s.host, target)}
+                    "steering": steering_on(m), "plan": plan_view(m, s.store, target), "assistant_name": assistant_name(m.settings(), s.host, target)}
+        if action in PLAN_ACTIONS:
+            return plan_action(m, s, target, action, input)
         if action in {"cancel_job", "steer_job"}:
             job = s.store.job(str(input.get("job_id", "")))
             if job["target"] != target:

@@ -28,7 +28,7 @@ SPEC = {
     'delegate_task': ('work', 'tasks'), 'steer_task': ('work', 'tasks'), 'task_status': ('read', 'tasks'), 'cancel_task': ('work', 'tasks'),
     'system_status': ('read', 'system'), 'world_time': ('read', 'system'), 'set_timer': ('quick', 'timers'), 'chats': ('read', 'chats'),
     'open': ('quick', 'interface'), 'voice_speed': ('quick', 'interface'), 'listen_back': ('read', 'senses'),
-    'recall_conversation': ('read', 'always'), 'camera_context': ('read', 'senses'), 'screen_context': ('read', 'senses'),
+    'voice_mode': ('quick', 'always'), 'project_files': ('read', 'always'), 'recall_conversation': ('read', 'always'), 'camera_context': ('read', 'senses'), 'screen_context': ('read', 'senses'),
 }
 SMALL = ['web_search', 'web_read', 'memory_read', 'delegate_task', 'task_status', 'cancel_task', 'system_status', 'set_timer']
 ALWAYS = [name for name in tools.ORDER if name not in tools.CONDITIONAL]
@@ -42,8 +42,8 @@ def gateway():
 
 
 class Catalog(unittest.TestCase):
-    def test_there_are_eighteen_tools_each_of_a_known_kind_and_group(self):
-        self.assertEqual(len(tools.CATALOG), 18)
+    def test_there_are_twenty_tools_each_of_a_known_kind_and_group(self):
+        self.assertEqual(len(tools.CATALOG), 20)
         self.assertEqual({name: (tool['kind'], tool['group']) for name, tool in tools.CATALOG.items()}, SPEC)
         self.assertEqual(tools.ORDER, tuple(tools.CATALOG))
         self.assertEqual(set(tools.GROUPS), {group for _, group in SPEC.values()} - {'always'})
@@ -60,22 +60,23 @@ class Catalog(unittest.TestCase):
 
     def test_a_conversation_is_offered_everything_in_one_order_except_what_needs_a_condition(self):
         self.assertEqual(tools.offered(), ALWAYS)
-        self.assertEqual(len(ALWAYS), 14)
+        self.assertEqual(len(ALWAYS), 15)
         self.assertEqual(tools.CONDITIONAL, {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen',
-                                             'steer_task': 'steering'})
+                                             'steer_task': 'steering', 'project_files': 'files'})
         for name, flag in tools.CONDITIONAL.items():
             with self.subTest(name):
                 self.assertEqual(tools.offered(**{flag: True}), [tool for tool in tools.ORDER if tool in ALWAYS or tool == name])
-        self.assertEqual(tools.offered(recall=True, camera=True, screen=True, steering=True), list(tools.ORDER))
+        self.assertEqual(tools.offered(recall=True, camera=True, screen=True, steering=True, files=True), list(tools.ORDER))
 
     def test_a_group_switched_off_removes_exactly_its_tools(self):
         self.assertEqual(tools.offered(groups={'web': False}), [name for name in ALWAYS if name not in ('web_search', 'web_read')])
         for group in tools.GROUPS:
             with self.subTest(group):
-                left = tools.offered(recall=True, camera=True, screen=True, steering=True, groups={group: False})
+                left = tools.offered(recall=True, camera=True, screen=True, steering=True, files=True, groups={group: False})
                 self.assertEqual(left, [name for name in tools.ORDER if SPEC[name][1] != group])
         everything_off = tools.offered(recall=True, camera=True, screen=True, groups={group: False for group in tools.GROUPS})
-        self.assertEqual(everything_off, ['recall_conversation'])           # looking back through this conversation has no switch
+        # Looking back through this conversation has no switch, and neither has the voice mode (planning only makes Convo more careful).
+        self.assertEqual(everything_off, ['voice_mode', 'recall_conversation'])
 
     def test_a_missing_switch_or_an_older_configuration_means_on(self):
         for groups in (None, {}, {'web': True}, 'everything', {'unknown': False}):

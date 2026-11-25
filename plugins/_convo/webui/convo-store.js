@@ -3,7 +3,7 @@ import { callJsonApi } from '/js/api.js';
 import { createNamespacedClient } from '/js/websocket.js';
 import { getCurrentContextId, getCurrentContext, openModal } from '/js/shortcuts.js';
 import { AudioSession } from './audio.js';
-import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, changeState, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
+import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, changeState, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, planState, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
 import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
 import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, soundKey, soundSource } from './sound-setup.js';
@@ -17,6 +17,7 @@ const candidates = new Map();
 let nativePromise = null, nativeBinding = null, dictationPromise = null, dictationHeld = false, dictationEnding = null, dictationWasVoice = false, lastDictationLabel = '', dictationBuffer = null, bufferSettling = null;
 let historyTarget = '', historySequence = 0, refreshTimer = null;
 let scroller = null, stick = true, settleQueued = false;   // the transcript element and whether the reader follows its end
+let seenTop = 0, seenLayout = '';                           // where it was, and how large it and what it holds were, when it was last looked at
 let capturing = false, lastActivity = 0, noticePending = false, noteTimer = null, lastOrb = null, holdTimer = null;
 let draftTurn = '', replyTurn = '';      // the turn the draft belongs to; the turn whose reply was last seen (text or audio)
 let playbackFault = '';                   // the last playback failure shown (cleared once audio plays again)
@@ -680,7 +681,7 @@ function showAction(event) {
     if (!id) return;
     clearAction();
     const seconds = Number(event.seconds);
-    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false };
+    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false, ...(event.plan_id ? { planId: String(event.plan_id) } : {}) };
     actionTimer = setTimeout(() => clearAction(id), Math.min(ACTION_MAX_SECONDS, seconds > 0 ? seconds : ACTION_SECONDS) * 1000);
 }
 
@@ -757,6 +758,20 @@ async function answerOpen(event) {
     await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
 }
 
+// A card above the transcript that opens, closes or grows (the plan, a question, the sound drawer) changes the transcript's height: a reader
+// who is at its end stays there. The browser tells about a scroll only a frame later, when a card may have opened or an entry been added
+// since: only a move up in a layout that is still the same is the reader's own.
+function layoutOf(element) { return element.scrollHeight + 'x' + element.clientHeight; }
+function look(element) { seenTop = element.scrollTop; seenLayout = layoutOf(element); }
+let sizeWatch = null;
+function watchSize(element) {
+    try { sizeWatch?.disconnect?.(); } catch { /* it watched something that is gone */ }
+    sizeWatch = null;
+    if (!element || typeof globalThis.ResizeObserver !== 'function') return;
+    sizeWatch = new globalThis.ResizeObserver(() => { if (scroller === element) store.settleScroll(); });
+    sizeWatch.observe(element);
+}
+
 export const store = createStore('convo', {
     settings: null, settingsRevision: '', session: null, state: 'off', error: '', errorQuiet: false, errorShowMs: ERROR_SHOW_MS, problems: [], loading: '', unavailable: '', activity: '',
     muted: false, talking: false, mutedOver: '',   // the user's mute; push-to-talk held while muted; what the assistant does while muted (the chip)
@@ -775,6 +790,7 @@ export const store = createStore('convo', {
     screenShared: false, screenOffered: false, // "Share screen": the same for a screen, window or tab chosen in the browser's own picker
     work: '', workName: '', workDebounceMs: 300, // the conversation across chats: the chat work goes to by default ('' = none) and its title
     pendingAction: null,                         // what Convo asks before going ahead ({id, label, summary, busy}): one card, Run or Dismiss
+    plan: null, planOpen: false, planText: '', planDirty: false, planBase: 0, planFrom: '', planBusy: false, planNote: '', planClash: false, planLost: null, planEarlierOpen: false,   // planning mode (below)
     links: [], uiWaitMs: UI_WAIT_MS,             // "Open <title>" link cards from the open tool (at most three); how long a host call may take
     busyRetryMs: [250, 500, 1000, 1500, 2000],   // how long a completed turn may wait for a free server before it is reported as not answered
     owner: null, reconnecting: false, movedTo: '', outputMessage: '',   // who runs voice (status `voice_owner`); re-attaching; taken over by; output device notes
@@ -830,6 +846,7 @@ export const store = createStore('convo', {
             case 'stop_reply': return this.stopReply();
             case 'open_panel': void this.openPanel(); return true;
             case 'open_settings': void this.openSettingsModal(); return true;
+            case 'planning': if (!this.enabled || this.planBusy) return false; void this.togglePlanning({ look: true }); return true;
             case 'run_action': case 'dismiss_action':
                 if (!this.pendingAction || this.pendingAction.busy) return false;
                 void this.answerAction(action === 'run_action'); return true;
@@ -1217,7 +1234,7 @@ export const store = createStore('convo', {
                     jobChats.set(String(event.job_id), event.chat.slice(0, 80));
                     while (jobChats.size > 64) jobChats.delete(jobChats.keys().next().value);
                 }
-                if (event.type === 'job.queued' || event.type === 'job.steered' || (event.type === 'state' && event.state === 'listening')) void this.history();
+                if (event.type === 'job.queued' || event.type === 'job.steered' || event.type === 'plan.changed' || (event.type === 'state' && event.state === 'listening')) void this.history();
             });
             const response = await request('start', { target: chat, mode: this.mode, page: pageId(), device: deviceName(),
                 ...(takeover ? { takeover: String(takeover) } : {}) }, ownedClient);
@@ -1538,7 +1555,8 @@ export const store = createStore('convo', {
         const target = this.target;
         if (!target) return;
         if (historyTarget !== target) {
-            historyTarget = target; historySequence = 0; this.events = []; this.jobs = []; this.notAnswered = [];
+            void this.keepEdit(historyTarget);
+            historyTarget = target; historySequence = 0; this.events = []; this.jobs = []; this.notAnswered = []; this.dropPlan();
             this.moreEarlier = false; this.unseen = 0; stick = true; this.pinned = true;
         }
         try {
@@ -1553,6 +1571,7 @@ export const store = createStore('convo', {
             if (first) this.moreEarlier = !!result.more;
             this.jobs = result.jobs;
             this.steeringOn = result.steering === true;
+            this.takePlan(result.plan);
             if (typeof result.assistant_name === 'string' && result.assistant_name.trim()) this.assistantName = result.assistant_name.trim().slice(0, 64);
             if (fresh.length) {
                 settleDraft(fresh);
@@ -1578,10 +1597,13 @@ export const store = createStore('convo', {
         } catch (error) { failSource('history', error); }
         finally { this.loadingEarlier = false; }
     },
-    bindTranscript(element) { scroller = element; stick = true; this.pinned = true; this.unseen = 0; this.queueSettle(); },
-    unbindTranscript(element) { if (scroller === element) scroller = null; },
+    bindTranscript(element) { scroller = element; stick = true; this.pinned = true; this.unseen = 0; watchSize(element); this.queueSettle(); },
+    unbindTranscript(element) { if (scroller === element) { scroller = null; watchSize(null); } },
     onScroll(element) {
-        stick = nearBottom(element);
+        if (nearBottom(element)) stick = true;
+        else if (element.scrollTop < seenTop && layoutOf(element) === seenLayout) stick = false;
+        else if (stick) this.queueSettle();
+        look(element);
         if (this.pinned !== stick) this.pinned = stick;
         if (stick) this.unseen = 0;
     },
@@ -1591,8 +1613,8 @@ export const store = createStore('convo', {
         settleQueued = true;
         afterRender(() => { settleQueued = false; this.settleScroll(); });
     },
-    settleScroll() { if (scroller && stick) toBottom(scroller); },
-    jumpToLatest() { stick = true; this.pinned = true; this.unseen = 0; toBottom(scroller); },
+    settleScroll() { if (scroller && stick) { toBottom(scroller); look(scroller); } },
+    jumpToLatest() { stick = true; this.pinned = true; this.unseen = 0; this.settleScroll(); },
     eventText(event) { return describeEvent(event, this.jobs).text; },
     // Content-free latency marks for this page (milliseconds), for measurement runs and developer diagnostics.
     timingReport() {
@@ -1633,6 +1655,133 @@ export const store = createStore('convo', {
             await this.history();
         } catch (error) { failSource('job', error); }                // the words stay in the field
         finally { this.steerBusy = false; }
+    },
+    // What a task is doing, in words; one that waits because its conversation is planning says so.
+    jobState(job) { return this.planning && this.plan.waiting?.includes?.(job.id) ? 'waits while planning' : String(job.status || '').replaceAll('_', ' '); },
+    // ---- planning mode (convo_modes, convo_planning): one plan per conversation, the same on every page. It comes with the history; every
+    // button here is the user's own press, decided by the journal (the voice agent sees it with its next reply and its next tool call).
+    // `planText` is what the field shows: the plan as it is, or the user's unsaved edit of revision `planBase` (which said `planFrom`). An
+    // edit is never lost: when Convo wrote under it the user chooses (`planClash`); what is typed while one is being saved goes on as the
+    // next one; when another plan or chat takes its place it is saved to its own plan, or kept here to be copied (`planLost`).
+    get planning() { return !!this.plan?.on; },
+    get planState() { return planState(this.plan); },
+    get planWaiting() {
+        const count = this.planning ? this.plan.waiting?.length || 0 : 0;
+        return count ? `${count === 1 ? 'One task waits' : count + ' tasks wait'} until planning is over.` : '';
+    },
+    get planEarlier() { return Array.isArray(this.plan?.earlier) ? this.plan.earlier : []; },
+    dropPlan() { this.plan = null; this.planOpen = false; this.planText = ''; this.planDirty = false; this.planBase = 0; this.planFrom = ''; this.planNote = ''; this.planClash = false; },
+    takePlan(plan) {
+        const next = plan && typeof plan === 'object' && plan.id ? { ...plan, waiting: Array.isArray(plan.waiting) ? [...plan.waiting] : [] } : null, before = this.plan;
+        if (!next) { if (before && !this.planDirty) this.dropPlan(); return; }
+        if (next.id !== before?.id) { void this.keepEdit(); this.planDirty = false; this.planClash = false; this.planNote = ''; }
+        if (next.on && !before?.on) this.planOpen = true;                // planning has just begun (or is found going on): the plan is shown
+        this.plan = next;
+        if (!['open', 'kept'].includes(next.status)) this.dropPlanQuestion(next.id);
+        if (!this.planDirty) { this.planText = String(next.text || ''); this.planBase = next.revision; this.planClash = false; }
+    },
+    // A question about a plan that is done with goes (the server answers it with nothing, too).
+    dropPlanQuestion(id) { if (id && this.pendingAction?.planId === id) clearAction(this.pendingAction.id); },
+    async keepEdit(target = this.target) {
+        if (!this.planDirty || !this.plan) return;
+        const edit = { id: this.plan.id, topic: this.plan.topic || '', text: this.planText }, revision = this.planBase, was = this.planFrom;
+        this.planDirty = false;
+        try { if ((await callJsonApi(endpoint, { action: 'plan_save', target, id: edit.id, text: edit.text, revision, was }))?.ok) return; }
+        catch { /* not saved: kept here */ }
+        this.planLost = edit;
+    },
+    async copyLost() {
+        try { await globalThis.navigator.clipboard.writeText(this.planLost?.text || ''); this.planLost = null; return true; }
+        catch { this.say('Copying is not allowed here: select the text and copy it.'); return false; }
+    },
+    editPlan(text) {
+        if (!this.plan) return;
+        if (!this.planDirty) { this.planBase = this.plan.revision; this.planFrom = String(this.plan.text || ''); }
+        this.planText = String(text ?? ''); this.planDirty = this.planText !== String(this.plan.text || ''); this.planNote = '';
+        if (!this.planDirty) this.planClash = false;
+    },
+    // What stood there before Convo last changed it, as an edit the user looks at and saves (or not).
+    putBack() {
+        if (!this.plan?.previous || this.planDirty) return;
+        this.editPlan(this.plan.previous);
+        this.planNote = 'This is what stood here before Convo changed it. Save to keep it.';
+    },
+    revertPlan() { this.planDirty = false; this.planClash = false; this.planNote = ''; this.planText = String(this.plan?.text || ''); this.planBase = this.plan?.revision || 0; },
+    async planCall(action, payload = {}) {
+        const target = this.target;
+        if (!target || this.planBusy) return null;
+        this.planBusy = true;
+        try {
+            const result = await callJsonApi(endpoint, { action, target, ...payload });
+            if (this.target !== target) return null;
+            if (result?.ok === false) {
+                if (result.plan !== undefined) this.takePlan(result.plan);
+                if (result.code !== 'conflict') this.planNote = String(result.error || 'That could not be done.').slice(0, 200);
+                return result;
+            }
+            if (action === 'plan_save' && this.plan?.id === payload.id) {
+                if (this.planText === payload.text) this.planDirty = false;   // it stands now: the field shows the plan again
+                else { this.planBase = result.plan?.revision ?? this.planBase; this.planFrom = payload.text; }   // typed on meanwhile: an edit of what stands now
+            }
+            this.takePlan(result.plan); settled('plan');
+            void this.history();
+            return result;
+        } catch (error) { failSource('plan', error); return null; }
+        finally { this.planBusy = false; }
+    },
+    // `look`: from a hotkey, when nobody may have been looking: what is known of the plan can be another chat's, or old.
+    async togglePlanning({ look = false } = {}) {
+        if (look && !this.active && !this.panelOpen) { await this.refresh(); await this.history(); }
+        const ending = this.planning;
+        if (ending && this.planDirty && !(await this.savePlan())) { this.planFailed(); return false; }
+        const result = ending ? await this.planCall('plan_end', { id: this.plan.id }) : await this.planCall('plan_start');
+        if (!result?.ok) { this.planFailed(); return false; }
+        if (!this.panelOpen) announce(ending ? 'Planning is over.' : 'Planning mode is on.');
+        if (ending) return true;
+        clearAction();                                                  // a question from before planning is over (the server dropped it, too)
+        this.say('Planning: nothing is started, changed or saved without your yes.');
+        return true;
+    },
+    planFailed() { if (!this.panelOpen) announce('Planning could not be changed. ' + (this.planNote || this.error || '')); },
+    // `mine`: save although Convo wrote to the plan while it was being edited (what it wrote meanwhile comes back by itself: Convo goes by
+    // the conversation and keeps what the user changed).
+    async savePlan({ mine = false } = {}) {
+        if (!this.plan || !this.planDirty) return true;
+        const result = await this.planCall('plan_save', { id: this.plan.id, text: this.planText, revision: mine ? this.plan.revision : this.planBase,
+                                                          was: mine ? String(this.plan.text || '') : this.planFrom });
+        if (result?.ok) { this.planClash = false; this.planNote = this.planDirty ? '' : 'Saved.'; return !this.planDirty; }
+        if (result?.code === 'conflict') { this.planClash = true; this.planNote = 'Convo wrote to the plan while you were editing it.'; }
+        return false;
+    },
+    async goOnPlanning() {
+        if (this.planDirty && !(await this.savePlan())) return false;
+        const result = await this.planCall('plan_start', this.plan?.status === 'handed' || !this.plan ? { new: true } : { id: this.plan.id });
+        return !!result?.ok;
+    },
+    // Another plan of this conversation, kept earlier: gone on with. The one in hand is kept in its place.
+    async openEarlier(id) {
+        if (this.planDirty && !(await this.savePlan())) return false;
+        return !!(await this.planCall('plan_start', { id }))?.ok;
+    },
+    async handOverPlan() {
+        if (!this.plan || (this.planDirty && !(await this.savePlan()))) return false;
+        const id = this.plan.id, result = await this.planCall('plan_hand_over', { id, chat: this.across ? this.work : '' });
+        if (result?.ok) { this.planNote = 'Handed over as a task.'; this.dropPlanQuestion(id); }
+        return !!result?.ok;
+    },
+    async discardPlan() {
+        if (!this.plan || !globalThis.window?.confirm?.('Discard this plan?')) return false;
+        const id = this.plan.id, typed = this.planDirty ? this.planText : null;
+        this.planDirty = false;                                          // it goes with what was typed into it
+        const result = await this.planCall('plan_drop', { id });
+        if (result?.ok) this.dropPlanQuestion(id);
+        else if (typed !== null && this.plan?.id === id) { this.planText = typed; this.planDirty = true; }      // it did not go, nor did that
+        return !!result?.ok;
+    },
+    async copyPlan() {
+        const text = [this.plan?.topic, this.planText].filter(Boolean).join('\n\n');
+        try { await globalThis.navigator.clipboard.writeText(text); this.planNote = 'Copied.'; return true; }
+        catch { this.planNote = 'Copying is not allowed here: select the text and copy it.'; return false; }
     },
     // Dictation. One owned capture: a live Convo voice session is closed cleanly first (and not resumed), and a second start while one
     // runs is a no-op. `held` is a press still down (orb hold): the host recorder records unconditionally until the press is released

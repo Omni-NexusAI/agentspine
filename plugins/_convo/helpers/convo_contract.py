@@ -123,6 +123,8 @@ DEFAULTS = {
     # One combination per action, "" = off (HOTKEY_* below). The older single `hotkey` above stays as a second one for starting and stopping.
     "hotkeys": {"toggle_conversation": "Alt+Shift+C", "mute": "Alt+Shift+M", "push_to_talk": "Alt+Shift+Space", "dictate": "Alt+Shift+D",
                 "stop_reply": "Alt+Shift+S", "open_panel": "", "open_settings": "", "run_action": "", "dismiss_action": ""},
+    # Planning mode on or off. Beside the table, not in it: an older Convo refuses a table with a key it does not know.
+    "planning_hotkey": "",
     "sidecar": {"url": "http://convo-runtime:8090", "token_env": "CONVO_SIDECAR_TOKEN", "remote": False, "managed": True},   # Convo runs its own gateway
     # provider: an Agent Zero provider id ('' = the endpoint `url` exactly as entered). key_source "provider" uses Agent Zero's
     # own key for that provider when it holds one (Convo's write-only key otherwise); "convo" always uses Convo's key. api_base
@@ -162,6 +164,9 @@ DEFAULTS = {
     # behaviour: what it takes to run a tool that is offered is decided by convo_policy.authorize.
     "voice_tools": {"web": True, "memory": True, "tasks": True, "system": True, "timers": True, "chats": True, "senses": True,
                     "interface": True},
+    # Looking at the files of the chat's project or work folder (convo_files; read-only): "local" = when the conversation model runs on
+    # your own machines, "on" = always (their text goes to the conversation model wherever it runs), "off" = never.
+    "project_files": "local",
     # Who writes the summary chapters (convo_summarizer): "conversation" (the conversation model, from its own cached start) or
     # "utility" (Agent Zero's utility model: only when it runs on your own machines, or with utility_summary_consent).
     "summary_writer": "conversation",
@@ -389,6 +394,8 @@ def validate_settings(value):
     switches = result["voice_tools"]
     if not isinstance(switches, dict) or set(switches) != set(DEFAULTS["voice_tools"]) or any(type(item) is not bool for item in switches.values()):
         raise ContractError("voice_tools must hold one true/false switch for each of: " + ", ".join(DEFAULTS["voice_tools"]))
+    if not isinstance(result["project_files"], str) or result["project_files"] not in ("local", "on", "off"):
+        raise ContractError("project_files must be one of: local, on, off")
     if not isinstance(result["summary_writer"], str) or result["summary_writer"] not in ("conversation", "utility"):
         raise ContractError("summary_writer must be one of: conversation, utility")
     if type(result["utility_summary_consent"]) is not bool:
@@ -440,6 +447,7 @@ def validate_settings(value):
         if not parts[-1] or any(p not in {"Ctrl", "Alt", "Shift", "Meta"} for p in parts[:-1]) or len(set(parts)) != len(parts):
             raise ContractError("Shortcut must use Ctrl, Alt, Shift or Meta modifiers and one key")
     _validate_hotkeys(result["hotkeys"])
+    result["planning_hotkey"] = _planning_hotkey(result)
     _validate_providers(result)
     return result
 
@@ -471,6 +479,17 @@ def _validate_hotkeys(value):
         if combination in used:
             raise ContractError("The hotkeys for " + used[combination] + " and " + action + " are the same")
         used[combination] = action
+
+
+def _planning_hotkey(result):
+    """The combination for planning mode, '' when it is off. One that cannot be used, or that another action has (an older Convo, which
+    does not know this setting, may have given it away), is off rather than a settings file nobody can open."""
+    value = result["planning_hotkey"]
+    if not isinstance(value, str) or len(value) > 40:
+        raise ContractError("The planning hotkey must be a combination like Alt+P, or empty")
+    combination, problem = _hotkey(value) if value else ("", "")
+    taken = {_hotkey(other)[0] for other in list(result["hotkeys"].values()) + [result["hotkey"]] if other}
+    return "" if problem or combination in taken else combination
 
 
 def _validate_providers(result):
@@ -568,7 +587,7 @@ def public_settings(config):
     system_one = readiness(config) if selected else {'ready': False, 'state': 'disabled', 'capabilities': {}}
     return {key: copy.deepcopy(config[key]) for key in (
         "enabled", "ambient_enabled", "remote_ambient_consent", "transcription_enabled",
-        "developer_mode", "ai_link_development_mode", "hotkey", "hotkeys", "max_audio_seconds", "echo_guard", "activation_names",
+        "developer_mode", "ai_link_development_mode", "hotkey", "hotkeys", "planning_hotkey", "max_audio_seconds", "echo_guard", "activation_names",
         "voice_message_draft", "barge_in_seconds", "end_of_turn_seconds", "noise_gate_db", "voice_name",
         "show_diagnostic_events", "show_rejected_responses", "conversation_scope", "task_chat") } | {
         "remote_processing": any(r.get("remote", False) for r in config["roles"].values()) or config["sidecar"].get("remote", False) or system_one.get('remote', False),

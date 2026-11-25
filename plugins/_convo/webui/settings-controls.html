@@ -40,6 +40,8 @@
       <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.voice_tools.chats"><span>Look at your chats<small>Lists your chats and reads a chat’s latest messages.</small></span></label>
       <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.voice_tools.senses"><span>See and listen back<small>Camera and screen pictures you share with a button, and replaying the last sounds it heard.</small></span></label>
       <label class="convo-check"><input type="checkbox" x-model="$store.convoSetup.config.voice_tools.interface"><span>Open things and change the voice’s speed<small>Opens a chat, Settings, the file browser or a link, and speaks slower or faster for this conversation.</small></span></label>
+      <label>Look at the project’s files<select x-model="$store.convoSetup.config.project_files"><template x-for="option in [['local','While it stays on my own machines'],['on','Always'],['off','Never']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.project_files" x-text="option[1]"></option></template></select></label>
+      <p class="convo-hint">Lists, reads and searches the files of the chat’s project or work folder; nothing is changed. Files and lines that look as if they held keys or passwords are left out; a secret that looks like ordinary text cannot be recognised. What it reads goes to the conversation model and into this conversation’s memory: “on my own machines” needs the conversation model, Convo’s gateway and whoever writes the summaries to run there.</p>
     </fieldset>
   </div>
   <div x-show="$store.convoSetup.section === 'Voice & Audio'" class="convo-stack">

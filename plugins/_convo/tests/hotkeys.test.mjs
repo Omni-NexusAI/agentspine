@@ -207,7 +207,7 @@ async function card({ config = plain(defaults) } = {}) {
 
 test('A row records the next combination into the draft, and nothing else on the page sees the keys', async () => {
     const f = await card();
-    assert.deepEqual(plain(f.store.hotkeyRows().map(row => row.id)), ['toggle_conversation', 'hotkey', ...ACTIONS.slice(1).map(action => action.id)]);
+    assert.deepEqual(plain(f.store.hotkeyRows().map(row => row.id)), ['toggle_conversation', 'hotkey', ...ACTIONS.slice(1).map(action => action.id), 'planning_hotkey']);
     assert.equal(f.store.hotkeyText('mute'), 'Alt+Shift+M');
     assert.equal(f.store.hotkeyText('open_panel'), 'Off');
     assert.equal(f.record('open_panel'), true);

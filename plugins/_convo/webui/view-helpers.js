@@ -31,12 +31,14 @@ export const ACTIVE_JOB = new Set(['queued', 'dispatching', 'running', 'cancel_r
 export const HIDDEN_KINDS = new Set(['context.compacted', 'assistant.generated', 'assistant.playback_started', 'user.transcript',
     'job.dispatching', 'job.running', 'job.cancel_requested', 'job.notice_claimed', 'tool.requested', 'turn.superseded',
     // Asking first (the pending-action card): the assistant says what happened, the journal rows are bookkeeping.
-    'action.asked', 'action.confirmed', 'action.declined', 'action.expired', 'action.replaced']);
+    'action.asked', 'action.confirmed', 'action.declined', 'action.expired', 'action.replaced',
+    // Planning: that voice started again in the middle of it, and an edit made in the panel.
+    'plan.resumed', 'plan.edited']);
 
 const TOOL_LABELS = { web_search: 'Web search', memory_read: 'Memory search', delegate_task: 'Task', camera_context: 'Camera look',
     recall_conversation: 'Conversation lookup', web_read: 'Page read', remember: 'Memory save', task_status: 'Task check',
-    cancel_task: 'Cancellation', steer_task: 'Task change', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer', chats: 'Chat lookup',
-    open: 'Opening', voice_speed: 'Voice speed', listen_back: 'Listening back', screen_context: 'Screen look' };
+    cancel_task: 'Cancellation', steer_task: 'Task change', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer', chats: 'Chat lookup', project_files: 'File look-up',
+    open: 'Opening', voice_speed: 'Voice speed', voice_mode: 'Voice mode', listen_back: 'Listening back', screen_context: 'Screen look' };
 const REASONS = { interrupted: 'Reply interrupted', stopped: 'Conversation stopped', retargeted: 'Voice moved to another chat' };
 const JOB_END = { 'job.completed': 'Background task completed', 'job.failed': 'Background task failed',
     'job.cancelled': 'Background task cancelled', 'job.uncertain': 'Background task outcome unconfirmed' };
@@ -46,6 +48,10 @@ const CHANGE = { added: 'Change added to the task', waiting: 'Change passed to t
 const CHANGE_STATE = { added: 'change added', waiting: 'change waiting', taken: 'change taken up', interrupted: 'interrupted with a change',
     follow_up: 'change queued after it', dropped: 'change not taken up' };
 export const changeState = job => CHANGE_STATE[job?.change] || '';
+const PLAN_STARTED = { new: 'Planning started', again: 'Planning goes on', on: 'Planning goes on' };
+const PLAN_ENDED = { kept: 'Planning ended · plan kept', handed: 'Plan handed over', dropped: 'Plan discarded' };
+const PLAN_STATE = { open: 'Planning', kept: 'Plan kept', handed: 'Plan handed over' };
+export const planState = plan => PLAN_STATE[plan?.status] || '';
 
 export function clip(value, limit) {
     const text = String(value ?? '').trim();
@@ -213,6 +219,10 @@ export function describeEvent(event, jobs = []) {
             return { role: 'activity', label: CHANGE[payload.how] || 'Change passed on', text: clip(payload.text, 240) };
         case 'job.steer_taken': case 'job.steer_dropped':
             return { role: 'activity', label: CHANGE[event.kind.slice('job.steer_'.length)], text: clip(payload.text, 240) };
+        case 'plan.started':
+            return { role: 'activity', label: PLAN_STARTED[payload.how] || 'Planning started', text: clip(payload.topic, 200) };
+        case 'plan.ended':
+            return { role: 'activity', label: PLAN_ENDED[payload.how] || 'Planning ended', text: clip(payload.topic, 200) };
         case 'turn.interrupted':
             return { role: 'activity', label: REASONS[payload.reason] || 'Turn ended early', text: '' };
         case 'turn.superseded':

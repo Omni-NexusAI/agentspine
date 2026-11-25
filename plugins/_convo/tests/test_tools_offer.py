@@ -365,9 +365,9 @@ class Turns(Scenario):
         stable = [a['system'].split('\n⁣[convo:this-turn]')[0] for a in answers]
         self.assertEqual(stable[0], stable[1])
         self.assertEqual(stable[0], stable[2])
-        self.assertEqual([a['tools'] for a in answers], [tools.offered()] * 3)
+        self.assertEqual([a['tools'] for a in answers], [tools.offered(files=True)] * 3)          # a model of the user's own may look at the project's files
         self.assertEqual([a['tool_mode'] for a in answers], ['native'] * 3)
-        self.assertIn('Your tools: ' + ', '.join(tools.offered()) + '.', stable[0])
+        self.assertIn('Your tools: ' + ', '.join(tools.offered(files=True)) + '.', stable[0])
 
     def test_a_model_without_native_tools_is_told_the_written_format_and_its_written_call_runs(self):
         async def scenario(h):

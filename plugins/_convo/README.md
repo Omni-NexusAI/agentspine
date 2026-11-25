@@ -52,6 +52,16 @@ The companion plugin `plugins/convo_d1_decider` is a development-only backend th
 - A handed-over task is queued after a short hold, so an immediate correction can replace it. The model says it is queued, never that it is done. Jobs keep the chat they were submitted for and continue when voice stops; a finished task is spoken in the conversation that asked for it.
 - Every tool use is journaled and shown in the panel, and a result reaches the model labelled as untrusted data.
 
+**Planning**
+
+- Say that you want to plan something, press Plan in the panel or set a hotkey for it. Convo may also switch it on itself when you clearly start planning, and says so: it only makes it more careful. It ends only on your word.
+- While planning it talks and looks things up, more than usual in one reply. Anything that starts, changes or saves something is asked about once ("we're still planning, do that now?") and only that one thing runs on your yes. Tasks that had not started yet wait. The voice's speed changes at once, and stopping a task you plainly ask to stop does too.
+- The plan is written in quiet moments (goal, decisions, open questions, steps, ideas set aside) by the conversation model, and stops the moment you speak. It shows in the panel, where you can edit it; what you change stands. With a conversation model on someone else's server it is written every third exchange.
+- Nothing you write in the plan is lost: an edit Convo wrote under asks which one to keep, "Put back" shows what stood there before Convo last changed it, and an unsaved edit is saved to its own plan when another one takes its place.
+- It survives a reload, a lost connection, a restart and stopping voice; the next start says that you are still planning. One plan is worked on per conversation; earlier ones are kept and can be gone on with, by name or from the panel's list. The plan in hand is put away only on your word.
+- Finishing writes the final plan, says it in a few sentences and asks whether to hand it to the chat's agent as one task. If you say no it stays in the panel, to copy, hand over later or go on with. "Yes, but …" takes your change along. It is handed over once.
+- With a conversation model on your own machines (or when you switch it on) it can also look at the files of the chat's project or work folder: read-only. Files and lines that look as if they held keys or passwords are left out; a secret that looks like ordinary text cannot be recognised, so keep such files out of the folder.
+
 **One conversation across chats**
 
 - By default a conversation belongs to the selected chat. With "One conversation across chats" (or when voice is started with no chat selected) there is one conversation, with one memory, whichever chat is open; selecting another chat only changes where work goes by default.

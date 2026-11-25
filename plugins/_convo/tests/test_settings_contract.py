@@ -193,6 +193,19 @@ class Hotkeys(unittest.TestCase):
             validate_settings({'hotkeys': {'mute': 'PRIVATE-VALUE'}})
         self.assertNotIn('PRIVATE', str(caught.exception))
 
+    def test_the_planning_hotkey_is_beside_the_table_and_never_makes_the_settings_unreadable(self):
+        self.assertEqual(validate_settings({})['planning_hotkey'], '')
+        self.assertEqual(validate_settings({'planning_hotkey': 'Shift+Alt+P'})['planning_hotkey'], 'Alt+Shift+P')     # one spelling
+        self.assertEqual(public_settings(validate_settings({'planning_hotkey': 'Alt+P'}))['planning_hotkey'], 'Alt+P')
+        # One another action has (an older Convo does not know this setting), or one that cannot be used, is off.
+        for value in ('Alt+Shift+M', 'Shift+Alt+M', 'Ctrl+Shift+Space', 'Ctrl+W', 'P', 'Alt+Nothing'):
+            with self.subTest(value):
+                self.assertEqual(validate_settings({'planning_hotkey': value})['planning_hotkey'], '')
+        self.assertEqual(validate_settings({'planning_hotkey': 'Alt+O', 'hotkeys': {'open_panel': 'Alt+O'}})['planning_hotkey'], '')
+        for value in (7, None, ['Alt+P'], 'Alt+' * 20 + 'P'):
+            with self.assertRaises(ContractError):
+                validate_settings({'planning_hotkey': value})
+
     def test_the_browser_runtime_is_told_the_hotkeys(self):
         settings = public_settings(validate_settings({'hotkeys': {'open_panel': 'F9'}}))
         self.assertEqual(settings['hotkeys'], {**DEFAULTS['hotkeys'], 'open_panel': 'F9'})
