@@ -834,13 +834,19 @@ class Dispatcher:
             self.start()
         return how
 
+    def _at_work(self, target):
+        try:
+            return bool(self.host.at_work(target))
+        except Exception:
+            return False                     # a chat that is gone does nothing
+
     def _unsettled(self, target):
         """Whether a change passed to a run in this chat that is over now has not been dealt with yet (Steering settles it a moment after
         the end). Waited for briefly, never for good."""
         waits = False
         for where in self.steers.values():
-            if where["target"] != target or (where["job"] and where["job"] in self.running):
-                continue
+            if where["target"] != target or (where["job"] in self.running if where["job"] else self._at_work(target)):
+                continue                     # that run still goes on
             where["ended"] = where["ended"] or time.monotonic()
             waits = waits or time.monotonic() - where["ended"] < UNSETTLED_SECONDS
         return waits

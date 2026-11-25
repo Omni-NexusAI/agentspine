@@ -41,7 +41,7 @@ test('Plan starts planning, End planning ends it, and the plan is shown when it 
     assert.match(store.note, /without your yes/);
     assert.equal(await store.togglePlanning(), true);
     assert.deepEqual([store.planning, store.planState], [false, 'Plan kept']);
-    assert.deepEqual(posts.map(post => [post.action, post.target, post.id]), [['plan_start', 'a', undefined], ['plan_end', 'a', 'p']]);
+    assert.deepEqual(posts.map(post => [post.action, post.target, post.id, post.fresh]), [['plan_start', 'a', undefined, true], ['plan_end', 'a', 'p', undefined]]);
 });
 
 test('A question from before planning goes with it', async () => {
@@ -154,7 +154,7 @@ test('What is typed while an edit is being saved goes on as the next edit', asyn
     store.editPlan('mine, and more');
     release();
     assert.equal(await saving, false);                                             // (what waits for a save does not go on without the rest)
-    assert.deepEqual([store.planText, store.planDirty, store.planNote], ['mine, and more', true, '']);
+    assert.deepEqual([store.planText, store.planDirty, store.planNote], ['mine, and more', true, 'Saved what was there; you have typed on since.']);
     const again = store.savePlan();
     await new Promise(resolve => setTimeout(resolve, 0));
     release();
@@ -174,17 +174,44 @@ test('An unsaved edit is saved to its own plan when another one takes its place,
         await store.history(); await tick();
         assert.deepEqual([store.plan.id, store.planText, store.planDirty], ['q', 'Goal:\n- fun', false]);
         assert.deepEqual([posts[0].action, posts[0].id, posts[0].text, posts[0].was], ['plan_save', 'p', 'mine', 'Goal:\n- dry']);
-        assert.equal(store.planLost?.text ?? null, lost);
+        assert.deepEqual(Array.from(store.planLost, item => item.text), lost ? [lost] : []);
         if (!lost) continue;
-        assert.equal(store.planLost.topic, 'a garden shed');
-        assert.equal(await store.copyLost(), true);
-        assert.deepEqual([copied, store.planLost], ['mine', null]);
+        assert.equal(store.planLost[0].topic, 'a garden shed');
+        store.editPlan('and this one');                                            // a second one does not replace the first
+        held.plan = { ...other, id: 'r', topic: 'a third' };
+        await store.history(); await tick();
+        assert.deepEqual(Array.from(store.planLost, item => item.text), ['mine', 'and this one']);
+        assert.equal(await store.copyLost(store.planLost[0]), true);
+        assert.deepEqual([copied, store.planLost.length], ['mine', 1]);
+        store.dropLost(store.planLost[0]);
+        assert.equal(store.planLost.length, 0);
     }
     const { store, posts } = await panel({ plan: open, server: { plan_save: { ok: true, plan: open } } });
     store.editPlan('mine');
     store.target = 'b';                                                            // another chat is selected
     await store.history(); await tick();
     assert.deepEqual([posts[0].action, posts[0].target, posts[0].text], ['plan_save', 'a', 'mine']);
+});
+
+test('A poll that was asked before a change of the plan does not put the older one back', async () => {
+    let answer;
+    const f = await storeFixture({ api: async (_url, payload) => {
+        if (payload.action === 'history') return answer ? answer() : { events: [], jobs: [], steering: true, plan: open };
+        if (payload.action === 'plan_save') return { ok: true, plan: { ...open, text: payload.text, revision: 4 } };
+        return undefined;
+    } });
+    f.store.target = 'a';
+    await f.store.refresh(); await f.store.history();
+    let release;
+    answer = () => new Promise(resolve => { release = () => resolve({ events: [], jobs: [], steering: true, plan: open }); });
+    const poll = f.store.history();                                                // asked now, answered after the save
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const late = release;
+    answer = null;
+    f.store.editPlan('mine');
+    await f.store.savePlan();
+    late(); await poll;
+    assert.deepEqual([f.store.planText, f.store.plan.revision, f.store.planDirty], ['mine', 4, false]);
 });
 
 test('One answer without a plan does not take an unsaved edit away', async () => {
@@ -219,9 +246,14 @@ test('The hotkey looks first when nobody was looking, and a failure is heard', a
 
 test('Going on and opening an earlier plan save an edit first; what stood there before can be put back', async () => {
     const earlier = [{ id: 'e', topic: 'a trip', updated: 1 }];
-    const full = { ...kept, earlier, previous: 'Goal:\n- as I wrote it' };
-    const { store, posts } = await panel({ plan: full, server: { plan_save: payload => ({ ok: true, plan: { ...full, text: payload.text, revision: 4 } }), plan_start: { ok: true, plan: open } } });
-    assert.deepEqual(Array.from(store.planEarlier, item => item.topic), ['a trip']);
+    const versions = [{ id: 7, by: 'convo', time: Date.now() / 1000 }, { id: 5, by: 'user', time: 1000 }];
+    const full = { ...kept, earlier, versions };
+    const { store, posts } = await panel({ plan: full, server: { plan_save: payload => ({ ok: true, plan: { ...full, text: payload.text, revision: 4 } }), plan_start: { ok: true, plan: open },
+        plan_version: payload => ({ ok: true, text: payload.version === 5 ? 'Goal:\n- as I wrote it' : 'Goal:\n- other', plan: full }) } });
+    assert.deepEqual(Array.from(store.planEarlier, item => store.earlierLabel(item)), ['a trip']);
+    assert.equal(store.earlierLabel({ topic: '', handed: true }), 'Untitled plan · handed over');
+    assert.match(store.versionLabel(versions[0]), /^Convo’s · \d/);
+    assert.match(store.versionLabel(versions[1]), /^Yours · .*\d{2}/);
     store.editPlan('mine');
     await store.goOnPlanning();
     assert.deepEqual(posts.map(post => post.action), ['plan_save', 'plan_start']);
@@ -229,11 +261,25 @@ test('Going on and opening an earlier plan save an edit first; what stood there 
     await store.openEarlier('e');
     assert.deepEqual(posts.at(-1), { action: 'plan_start', target: 'a', id: 'e' });
     store.takePlan(full);
-    store.putBack();
+    assert.equal(await store.putBack(5), true);
     assert.deepEqual([store.planText, store.planDirty], ['Goal:\n- as I wrote it', true]);      // shown first, saved only by the user
-    assert.match(store.planNote, /before Convo changed it/);
+    assert.match(store.planNote, /stood here before/);
+    assert.equal(await store.putBack(7), false);                                   // never over an edit
     await store.savePlan();
     assert.deepEqual([posts.at(-1).action, posts.at(-1).text], ['plan_save', 'Goal:\n- as I wrote it']);
+});
+
+test('Putting back never writes over what was typed meanwhile, nor into another plan', async () => {
+    const full = { ...kept, versions: [{ id: 7, by: 'convo', time: 1000 }] };
+    let meanwhile;
+    const { store } = await panel({ plan: full, server: { plan_version: () => ({ ok: true, text: 'Goal:\n- as it was', plan: meanwhile() }) } });
+    meanwhile = () => { store.editPlan('typed meanwhile'); return full; };
+    assert.equal(await store.putBack(7), false);
+    assert.equal(store.planText, 'typed meanwhile');
+    store.revertPlan();
+    meanwhile = () => ({ ...open, id: 'other', text: 'Goal:\n- another' });
+    assert.equal(await store.putBack(7), false);
+    assert.deepEqual([store.planText, store.planDirty], ['Goal:\n- another', false]);
 });
 
 test('Discarding takes what was typed with it, and leaves it when it did not work', async () => {
@@ -241,7 +287,7 @@ test('Discarding takes what was typed with it, and leaves it when it did not wor
     const gone = await panel({ plan: kept, globals, server: { plan_drop: { ok: true, plan: null } } });
     gone.store.editPlan('mine');
     assert.equal(await gone.store.discardPlan(), true);
-    assert.deepEqual([gone.store.plan, gone.store.planDirty, gone.store.planLost], [null, false, null]);
+    assert.deepEqual([gone.store.plan, gone.store.planDirty, gone.store.planLost.length], [null, false, 0]);
     const failed = await panel({ plan: kept, globals, server: { plan_drop: () => { throw new Error('no answer'); } } });
     failed.store.editPlan('mine');
     assert.equal(await failed.store.discardPlan(), false);

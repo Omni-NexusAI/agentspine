@@ -764,6 +764,7 @@ async function answerOpen(event) {
 function layoutOf(element) { return element.scrollHeight + 'x' + element.clientHeight; }
 function look(element) { seenTop = element.scrollTop; seenLayout = layoutOf(element); }
 let sizeWatch = null;
+let planMark = 0;                                             // counts up while the plan is being changed from here: a poll that overlaps is not up to date
 function watchSize(element) {
     try { sizeWatch?.disconnect?.(); } catch { /* it watched something that is gone */ }
     sizeWatch = null;
@@ -790,7 +791,7 @@ export const store = createStore('convo', {
     screenShared: false, screenOffered: false, // "Share screen": the same for a screen, window or tab chosen in the browser's own picker
     work: '', workName: '', workDebounceMs: 300, // the conversation across chats: the chat work goes to by default ('' = none) and its title
     pendingAction: null,                         // what Convo asks before going ahead ({id, label, summary, busy}): one card, Run or Dismiss
-    plan: null, planOpen: false, planText: '', planDirty: false, planBase: 0, planFrom: '', planBusy: false, planNote: '', planClash: false, planLost: null, planEarlierOpen: false,   // planning mode (below)
+    plan: null, planOpen: false, planText: '', planDirty: false, planBase: 0, planFrom: '', planBusy: false, planNote: '', planClash: false, planLost: [], planEarlierOpen: false, planVersionsOpen: false,   // planning mode (below)
     links: [], uiWaitMs: UI_WAIT_MS,             // "Open <title>" link cards from the open tool (at most three); how long a host call may take
     busyRetryMs: [250, 500, 1000, 1500, 2000],   // how long a completed turn may wait for a free server before it is reported as not answered
     owner: null, reconnecting: false, movedTo: '', outputMessage: '',   // who runs voice (status `voice_owner`); re-attaching; taken over by; output device notes
@@ -1552,7 +1553,7 @@ export const store = createStore('convo', {
     },
     // The newest page on first read, then only what is newer than what is already known.
     async history() {
-        const target = this.target;
+        const target = this.target, mark = planMark;
         if (!target) return;
         if (historyTarget !== target) {
             void this.keepEdit(historyTarget);
@@ -1571,7 +1572,7 @@ export const store = createStore('convo', {
             if (first) this.moreEarlier = !!result.more;
             this.jobs = result.jobs;
             this.steeringOn = result.steering === true;
-            this.takePlan(result.plan);
+            if (mark === planMark) this.takePlan(result.plan);              // (one asked for before a change of the plan answers with what was)
             if (typeof result.assistant_name === 'string' && result.assistant_name.trim()) this.assistantName = result.assistant_name.trim().slice(0, 64);
             if (fresh.length) {
                 settleDraft(fresh);
@@ -1662,7 +1663,8 @@ export const store = createStore('convo', {
     // button here is the user's own press, decided by the journal (the voice agent sees it with its next reply and its next tool call).
     // `planText` is what the field shows: the plan as it is, or the user's unsaved edit of revision `planBase` (which said `planFrom`). An
     // edit is never lost: when Convo wrote under it the user chooses (`planClash`); what is typed while one is being saved goes on as the
-    // next one; when another plan or chat takes its place it is saved to its own plan, or kept here to be copied (`planLost`).
+    // next one; when another plan or chat takes its place it is saved to its own plan, or kept here to be copied (`planLost`). Every text that
+    // was replaced can be looked at and put back (`planVersions`).
     get planning() { return !!this.plan?.on; },
     get planState() { return planState(this.plan); },
     get planWaiting() {
@@ -1670,6 +1672,12 @@ export const store = createStore('convo', {
         return count ? `${count === 1 ? 'One task waits' : count + ' tasks wait'} until planning is over.` : '';
     },
     get planEarlier() { return Array.isArray(this.plan?.earlier) ? this.plan.earlier : []; },
+    get planVersions() { return Array.isArray(this.plan?.versions) ? this.plan.versions : []; },
+    earlierLabel(item) { return (item.topic || 'Untitled plan') + (item.handed ? ' · handed over' : ''); },
+    versionLabel(item) {
+        const at = new Date(Number(item.time) * 1000), today = at.toDateString() === new Date().toDateString();
+        return `${item.by === 'user' ? 'Yours' : 'Convo’s'} · ${today ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : at.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}`;
+    },
     dropPlan() { this.plan = null; this.planOpen = false; this.planText = ''; this.planDirty = false; this.planBase = 0; this.planFrom = ''; this.planNote = ''; this.planClash = false; },
     takePlan(plan) {
         const next = plan && typeof plan === 'object' && plan.id ? { ...plan, waiting: Array.isArray(plan.waiting) ? [...plan.waiting] : [] } : null, before = this.plan;
@@ -1688,29 +1696,33 @@ export const store = createStore('convo', {
         this.planDirty = false;
         try { if ((await callJsonApi(endpoint, { action: 'plan_save', target, id: edit.id, text: edit.text, revision, was }))?.ok) return; }
         catch { /* not saved: kept here */ }
-        this.planLost = edit;
+        this.planLost = [...this.planLost, { ...edit, key: `${edit.id}:${Date.now()}:${this.planLost.length}` }].slice(-8);
     },
-    async copyLost() {
-        try { await globalThis.navigator.clipboard.writeText(this.planLost?.text || ''); this.planLost = null; return true; }
+    async copyLost(item) {
+        try { await globalThis.navigator.clipboard.writeText(item.text || ''); this.dropLost(item); return true; }
         catch { this.say('Copying is not allowed here: select the text and copy it.'); return false; }
     },
+    dropLost(item) { this.planLost = this.planLost.filter(entry => entry.key !== item.key); },
     editPlan(text) {
         if (!this.plan) return;
         if (!this.planDirty) { this.planBase = this.plan.revision; this.planFrom = String(this.plan.text || ''); }
         this.planText = String(text ?? ''); this.planDirty = this.planText !== String(this.plan.text || ''); this.planNote = '';
         if (!this.planDirty) this.planClash = false;
     },
-    // What stood there before Convo last changed it, as an edit the user looks at and saves (or not).
-    putBack() {
-        if (!this.plan?.previous || this.planDirty) return;
-        this.editPlan(this.plan.previous);
-        this.planNote = 'This is what stood here before Convo changed it. Save to keep it.';
+    // What stood there before, as an edit the user looks at and saves (or not).
+    async putBack(version) {
+        if (!this.plan || this.planDirty) return false;
+        const id = this.plan.id, result = await this.planCall('plan_version', { id, version });
+        if (!result?.ok || this.plan?.id !== id || this.planDirty) return false;
+        this.editPlan(result.text);
+        this.planNote = 'This is what stood here before. Save to keep it.';
+        return true;
     },
     revertPlan() { this.planDirty = false; this.planClash = false; this.planNote = ''; this.planText = String(this.plan?.text || ''); this.planBase = this.plan?.revision || 0; },
     async planCall(action, payload = {}) {
         const target = this.target;
         if (!target || this.planBusy) return null;
-        this.planBusy = true;
+        this.planBusy = true; planMark++;
         try {
             const result = await callJsonApi(endpoint, { action, target, ...payload });
             if (this.target !== target) return null;
@@ -1727,14 +1739,14 @@ export const store = createStore('convo', {
             void this.history();
             return result;
         } catch (error) { failSource('plan', error); return null; }
-        finally { this.planBusy = false; }
+        finally { this.planBusy = false; planMark++; }
     },
     // `look`: from a hotkey, when nobody may have been looking: what is known of the plan can be another chat's, or old.
     async togglePlanning({ look = false } = {}) {
         if (look && !this.active && !this.panelOpen) { await this.refresh(); await this.history(); }
         const ending = this.planning;
         if (ending && this.planDirty && !(await this.savePlan())) { this.planFailed(); return false; }
-        const result = ending ? await this.planCall('plan_end', { id: this.plan.id }) : await this.planCall('plan_start');
+        const result = ending ? await this.planCall('plan_end', { id: this.plan.id }) : await this.planCall('plan_start', { fresh: true });
         if (!result?.ok) { this.planFailed(); return false; }
         if (!this.panelOpen) announce(ending ? 'Planning is over.' : 'Planning mode is on.');
         if (ending) return true;
@@ -1749,7 +1761,7 @@ export const store = createStore('convo', {
         if (!this.plan || !this.planDirty) return true;
         const result = await this.planCall('plan_save', { id: this.plan.id, text: this.planText, revision: mine ? this.plan.revision : this.planBase,
                                                           was: mine ? String(this.plan.text || '') : this.planFrom });
-        if (result?.ok) { this.planClash = false; this.planNote = this.planDirty ? '' : 'Saved.'; return !this.planDirty; }
+        if (result?.ok) { this.planClash = false; this.planNote = this.planDirty ? 'Saved what was there; you have typed on since.' : 'Saved.'; return !this.planDirty; }
         if (result?.code === 'conflict') { this.planClash = true; this.planNote = 'Convo wrote to the plan while you were editing it.'; }
         return false;
     },

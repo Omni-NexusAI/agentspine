@@ -20,7 +20,6 @@ LIST_ENTRIES, LIST_SEEN = 80, 5000
 TEXT_LIMIT = 2200               # characters of one answer (convo_tools.RESULT_LIMIT keeps 2400)
 LINE_LIMIT = 200                # characters of a line that are shown, and
 CHECK_LIMIT = 2000              # that are looked at for a key: no more of a line ever reaches a pattern
-BLOCK_LINES = 400               # a private key without its end is left out for at most this many lines
 
 # Folders that are never opened, and files that are never shown: their names say that they hold keys, sign-ins or other people's data.
 NOISE = frozenset(('node_modules', '__pycache__', 'venv', 'site-packages', 'bower_components'))
@@ -36,11 +35,11 @@ LEFT_OUT = '[left out: this line looks like a key or password]'
 # What a key or password looks like, by the name it stands beside or by its own shape. Every pattern is simple and gets a bounded text.
 _STRONG = frozenset(('secret', 'secrets', 'password', 'passwords', 'passwd', 'passwort', 'kennwort', 'passphrase', 'pwd', 'pass', 'pw', 'credential', 'credentials', 'apikey', 'apikeys',
                      'privatekey', 'accesskey', 'secretkey', 'accountkey', 'authkey'))
-_KEYED = frozenset(('api', 'access', 'private', 'secret', 'account', 'encryption', 'signing', 'auth', 'master', 'license', 'licence', 'ssh', 'service', 'session', 'shared', 'storage',
-                    'client', 'consumer', 'webhook', 'deploy', 'admin', 'root', 'app'))
+_KEYED = frozenset(('api', 'access', 'private', 'secret', 'account', 'encryption', 'signing', 'auth', 'master', 'license', 'licence', 'ssh', 'storage', 'consumer', 'webhook', 'deploy'))
 _WEAK = frozenset(('token', 'tokens', 'auth', 'authorization', 'bearer', 'cookie', 'session', 'sid', 'sig', 'signature', 'key', 'keys', 'otp', 'salt', 'nonce', 'cert'))
 _NOTHING = frozenset(('', 'true', 'false', 'none', 'null', 'nil', 'yes', 'no', 'on', 'off', 'required', 'optional', 'str', 'string', 'text', 'int', 'bool', 'undefined', 'empty', 'todo', 'tbd',
                       'changeme', 'example', 'placeholder', 'here', 'ok', 'failed', 'passed'))
+_PATH = re.compile(r'[A-Za-z_]{1,60}(?:\.[A-Za-z_]{1,60}){1,8}')
 _SPLIT = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+')
 _RUN = re.compile(r'[A-Za-z0-9_.+/~-]{16,}')
 _HEADER = re.compile(r'\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}', re.I)
@@ -48,8 +47,21 @@ _IN_ADDRESS = re.compile(r'://[^/\s:@]{1,100}:[^/\s@]{1,200}@')
 _ADDRESS = re.compile(r'hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/|[?&](?:sig|token|key|signature|access_token|api_?key)=[^&\s]{8,}', re.I)
 _TAG = re.compile(r'<\s{0,4}([A-Za-z][A-Za-z0-9_.-]{0,60})[^<>]{0,200}>\s{0,8}([^<\s][^<]{2,200})')
 _PREFIXES = ('sk-', 'sk_live_', 'sk_test_', 'rk_live_', 'rk_test_', 'whsec_', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'hf_', 'xoxa-', 'xoxb-', 'xoxp-', 'xoxr-',
-             'xoxs-', 'xapp-', 'AKIA', 'ASIA', 'AIza', 'ya29.', 'SG.', 'npm_', 'pypi-', 'shpat_', 'dop_v1_', 'eyJ', 'AGE-SECRET-KEY-', 'gsk_', 'nvapi-', 'r8_', 'tvly-', 'lin_api_', 'ntn_', 'secret_')
-_BEGIN, _END = re.compile(r'-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY|^PuTTY-User-Key-File|^Private-Lines:', re.I), re.compile(r'-----END [A-Z0-9 ]{0,40}PRIVATE KEY|^Private-MAC:', re.I)
+             'xoxs-', 'xapp-', 'AKIA', 'ASIA', 'AIza', 'ya29.', 'SG.', 'npm_', 'pypi-', 'shpat_', 'dop_v1_', 'eyJ', 'AGE-SECRET-KEY-', 'gsk_', 'nvapi-', 'r8_', 'tvly-', 'lin_api_', 'ntn_', 'secret_',
+             'MII', 'MIGH', 'MHcC', 'MC4C', 'b3BlbnNzaC1rZXk')          # (how the text of a private key begins)
+_BEGIN = re.compile(r'-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY|^PuTTY-User-Key-File|^Private-Lines:', re.I)
+_BODY, _BODY_HEAD = re.compile(r'[A-Za-z0-9+/=]{8,}'), re.compile(r'(?:Proc-Type|DEK-Info|Comment|Version|Encryption|Public-Lines|Private-Lines|Private-MAC|PuTTY-User-Key-File)[-0-9A-Za-z]{0,20}:', re.I)
+# A name and its value without a ':' or '=' between them.
+_OPTION = re.compile(r'(?:^|[\s"\'`])--?([A-Za-z][A-Za-z-]{1,40})[ =]{1,4}(\S{1,200})')
+_ENV = re.compile(r'^\s{0,20}(?:ENV|ARG|SET|SETX|SETENV|EXPORT)\s{1,8}([A-Za-z_][A-Za-z0-9_]{0,60})\s{1,8}(\S.{0,200})$', re.I)
+_PAIR = re.compile(r'["\']([A-Za-z][A-Za-z0-9_. -]{1,60})["\']\s{0,8}(?:,|=>|\]\s{0,4}=)\s{0,8}["\']([^"\']{1,200})["\']')
+_CALL = re.compile(r'([A-Za-z][A-Za-z0-9_]{2,60})\(\s{0,8}["\']([^"\']{3,200})["\']\s{0,4}\)')
+_USER = re.compile(r'(?:^|\s)(?:-u|--user)[ =]{1,4}["\']?[^\s:"\']{1,80}:[^\s"\']{3,}|(?:^|\s)(?:sshpass\s+-p|mysql\b.{0,80}\s-p|docker login\b.{0,80}\s-p)\s{0,2}[^\s-]\S{3,}', re.I)
+_SQL = re.compile(r'\b(?:identified\s{1,4}(?:with\s{1,4}\S{1,60}\s{1,4})?by|password)\s{1,4}["\'][^"\']{3,}["\']', re.I)
+_LOGIN = re.compile(r'\blogin\s{1,4}\S{1,80}\s{1,4}password\s{1,4}\S{3,}|:\$(?:apr1|2[aby]|5|6|argon2\w{0,3})\$', re.I)
+_PIN = re.compile(r'\bpin(?:\s{1,4}code)?\s{0,4}(?:is|ist|:|=)\s{0,4}\d{4,8}\b', re.I)
+_ALONE = re.compile(r'^\s{0,20}([A-Z][A-Z0-9_]{3,60})\s{1,8}(\S{6,200})\s{0,20}$')
+_IS = re.compile(r'\b(?:password|passphrase|passwort)\s{1,4}(?:is|ist|es|est|:)\s{1,4}(\S{4,})', re.I)
 
 
 def _kinds(text):
@@ -59,6 +71,8 @@ def _kinds(text):
 
 def _looks_made(value):
     """Whether a value looks made rather than written: long enough, and letters with digits, or upper and lower case mixed inside."""
+    if '(' in value or _PATH.fullmatch(value):
+        return False                                    # a call, or a name in a program
     upper, lower, digits = _kinds(value)
     inner = value[1:]
     return len(value) >= 8 and ((digits and (upper or lower)) or (any(c.isupper() for c in inner) and lower >= 2 and not value.isidentifier()))
@@ -69,11 +83,13 @@ def _names_a_secret(name, value):
     name, value = name.rstrip(' \t"\'])'), value.strip(' \t"\',;')
     words = [word.lower() for word in _SPLIT.findall(name[-60:])][-4:]
     plain = value.lower().rstrip('.')
-    if not words or plain in _NOTHING or not any(c.isalnum() for c in value) or (value.isdigit() and len(value) < 6):
+    first = value.split()[0].strip('"\',;') if value.split() else ''
+    if not words or plain in _NOTHING or not any(c.isalnum() for c in value):
         return False
+    if first.isdigit() and len(first) < (6 if words[-1] in ('pass', 'pw') or not any(word in _STRONG for word in words[-3:]) else 4):
+        return False                                    # (a count; a short number is a password only where it says so)
     if any(word in _STRONG for word in words[-3:]) or (words[-1] in ('key', 'keys') and len(words) > 1 and words[-2] in _KEYED):
         return len(value) >= 4
-    first = value.split()[0].strip('"\',;') if value.split() else ''
     return words[-1] in _WEAK and _looks_made(first)
 
 
@@ -85,8 +101,10 @@ def _is_key(run):
         return True
     for part in re.split(r'[./:~]', run):
         upper, lower, digits = _kinds(part)
-        if len(part) >= 24 and upper >= 2 and lower >= 2 and digits >= 3:
-            return True
+        if len(part) >= 24 and upper >= 2 and lower >= 2 and digits:
+            pieces = _SPLIT.findall(part)               # a name in a program is made of words, a key is not
+            if sum(map(len, pieces)) < (4 if digits >= 3 else 2.8) * len(pieces):
+                return True
         bare = part[2:] if part.startswith('0x') else part
         if len(bare) >= 32 and digits >= 4 and all(c in '0123456789abcdefABCDEF' for c in bare) and digits < len(bare):
             return True
@@ -96,7 +114,18 @@ def _is_key(run):
 def looks_like_a_key(line):
     """Whether a line looks as if it held a key or a password."""
     line = line[:CHECK_LIMIT]
-    if _HEADER.search(line) or _IN_ADDRESS.search(line) or _ADDRESS.search(line) or _BEGIN.search(line):
+    if any(pattern.search(line) for pattern in (_HEADER, _IN_ADDRESS, _ADDRESS, _USER, _SQL, _LOGIN)):
+        return True
+    begins = _BEGIN.search(line)
+    if begins and _BODY.search(line[begins.end():].replace('PRIVATE KEY', '').replace('-', '').replace('\\n', ' ').lstrip()):
+        return True                     # the whole key on one line; only to mention how one begins is no key
+    for pattern in (_OPTION, _ENV, _PAIR, _CALL):
+        if any(_names_a_secret(name, value) for name, value in pattern.findall(line)):
+            return True
+    if any(_looks_made(value.strip('"\'.,;')) for value in _IS.findall(line)) or _PIN.search(line):
+        return True
+    alone = _ALONE.match(line)
+    if alone and _names_a_secret(alone.group(1), alone.group(2)) and _looks_made(alone.group(2)):
         return True
     for at, sign in enumerate(line):
         # (not '::', '==', '=>', '!=', ':=' twice, '://')
@@ -109,17 +138,27 @@ def looks_like_a_key(line):
 
 
 def _in_blocks(lines):
-    """The numbers (from 0) of the lines that belong to a private key written out over several lines, its two ends included."""
-    inside, found = 0, set()
+    """The numbers (from 0) of the lines that belong to a private key written out over several lines, its two ends included: from where it
+    begins for as long as the lines are key text. A sentence that only mentions how a key begins starts nothing."""
+    found, begun = set(), None
     for number, line in enumerate(lines):
-        line = line[:200]
-        if _BEGIN.search(line):
-            inside = BLOCK_LINES
-        if inside:
-            found.add(number)
-            inside -= 1
-            if _END.search(line):
-                inside = 0
+        if begun is None:
+            if 'PRIVATE KEY' in line.upper()[:CHECK_LIMIT] or line.startswith(('PuTTY-User-Key-File', 'Private-Lines:')):
+                begins = _BEGIN.search(line[:CHECK_LIMIT])
+                if begins and '-----END' not in line[begins.end():]:
+                    begun = number
+            continue
+        bare = line[:400].replace('\\n', '').replace('\\r', '').strip().strip('"\'`,+;>|#*/ ')
+        end = '-----END' in line
+        if end or not bare or _BODY.fullmatch(bare) or (_BODY_HEAD.match(bare) and number - begun < 12):
+            if bare:
+                found.update(range(begun, number + 1))
+            if end:
+                begun = None
+            continue
+        begun = None
+        if _BEGIN.search(line[:CHECK_LIMIT]) and '-----END' not in line:
+            begun = number
     return found
 
 OUTSIDE = 'that is outside the folder that can be looked at'

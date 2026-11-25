@@ -109,9 +109,10 @@ sufficient; every section also needs a live check with real models, a real brows
       is not switched on.
 - [ ] The first sound comes no later than without planning, on the model in use.
 - [ ] The written plan is what was said: decisions are the user's, nothing is invented, an edit in the panel stands, and nothing a model
-      writes can lose what stood there.
+      writes can lose what stood there. Throwing most of a plan over still works, an exchange later.
 - [ ] It survives a reload, a lost connection, stopping voice and a restart; the next start says so, also when the user speaks first; handing
-      over gives the whole plan, once, also when the user goes on talking.
+      over gives the whole plan, once, also when the user goes on talking; it can be taken back until its task is made, and a plan whose
+      task was not carried out is there again.
 
 ## Languages
 

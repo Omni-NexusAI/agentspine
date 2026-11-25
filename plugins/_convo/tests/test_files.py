@@ -3,6 +3,8 @@ because it may hold keys, the bounds, which conversations are offered it, and wh
 import importlib
 import json
 import os
+import random
+import string
 import sys
 import tempfile
 import types
@@ -182,12 +184,30 @@ class Look(unittest.TestCase):
             'MY_OWN_KEY=abcdef0123456789', 'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG', '<password>hunter2hunter2</password>', '"pass": "abcdefghijk"', "'apiKey': 'abcd-efgh'",
             'S~G.abcdefghijklmnop.qrstuvwxyzABCDEFGHIJ', 'ya~29.a0AfH6SMBxxxxxxxx', 'npm~_abcdefghijklmnopqrstuvwxyz0123456789', 'export GH_TOKEN="abc~12345def"', 'session=8f14e45f~ceea167a5a36dedd4bea2543',
             'https://x.test/cb?state=1&access_token=abc~defgh1234', 'MIIEow~IBAAKCAQEA0abcdEFGH12345678ijklMNOP', 'const token = "a1b2~c3d4e5"', 'Set-Cookie: sid=s%3AaBc~123dEf456', 'Passwort: geheim123',
-            'the api key: 3f9a~8b7c6d5e', 'password=hunter2 # change it'))
+            'the api key: 3f9a~8b7c6d5e', 'password=hunter2 # change it', 'deploy --password hunter2hunter2 --host x', 'deploy --token 8f3k~d92ls0', 'run --api-key=abcd~1234efgh',
+            'ENV DB_PASSWORD hunter2hunter2', '  arg  API_TOKEN  abc~123def456', 'define("DB_PASSWORD", "hunter2hunter2");', 'os.environ["API_KEY"] = "abcd~1234efgh"', "'password' => 'hunter2'",
+            'setPassword("hunter2hunter2")', 'curl -u admin:hunter2hunter2 https://example.com/api', 'curl --user me:hunter2hunter2 x', 'sshpass -p hunter2hunter2 ssh me@host',
+            'mysql -h db -u root -phunter2hunter2', 'CREATE USER me IDENTIFIED BY "hunter2hunter2"', "ALTER ROLE me PASSWORD 'hunter2hunter2'",
+            'machine api.example.com login me password hunter2hunter2', 'me:$2~y$10$abcdefghijklmnopqrstuv', 'The admin password is hunter2hunter2',
+            'PASSWORD hunter2hunter2', 'wifi password: 1234', 'my pin is 4711', 'PIN: 4711',
+            '"private_key": "-----BEGIN PRIVATE ~KEY-----\\nMIIEvQIBADANBg\\n-----END PRIVATE ~KEY-----\\n",'))
     ORDINARY = ('def tokenize(text):', 'tokens = 12', 'max_tokens = 1024', 'the password is asked for later', 'password:', 'password: ""', 'secret = None', 'pass: true', 'passed: 12, failed: 3',
                 'A key idea: keep it simple', 'Key decisions: use wood', 'https://example.com/a:b', 'sort_key = name', 'primary key: id', 'the token: a small wooden coin', 'x == secret',
                 'for key, value in items.items():', 'key = row["id"]', 'Monkey: ape', 'color: #c8aa72;', 'std::pair<int, int> token;', 'import keyword', 'session = self.store.start("browser", "a")',
                 'test_the_pinned_files_match_system_ones_canonical_hashes', 'src/Components/Button2Test/Index3.tsx', 'docs/2026/11/25/MeetingNotes.md', '2026-11-25T00:33:00+00:00',
-                'Bearer of good news', 'Steps: level the ground, then build the frame', 'sk-learn-contrib-examples', 'npm_config_registry_url', 'lambda: pass', 'auth: required', 'if a <= b and c >= d: pass')
+                'Bearer of good news', 'Steps: level the ground, then build the frame', 'sk-learn-contrib-examples', 'npm_config_registry_url', 'lambda: pass', 'auth: required', 'if a <= b and c >= d: pass',
+                'A private key begins with `-----BEGIN PRIVATE KEY-----`.', 'the password is asked for later', 'the password is required', 'git log --oneline --all', 'pip install --upgrade pip',
+                'ENV PATH /usr/bin', 'setTitle("Garden shed")', 'define("DB_HOST", "localhost");', 'self.assertEqual("a", "b")', 'curl -u me https://example.com', 'grep -p pattern file', 'python -u main.py',
+                'self.session = aiohttp.ClientSession()', 'token = getToken()', 'auth = HTTPBasicAuth(user)', 'app key: Escape', 'The session key: F5', 'Authorized: yes',
+                'pass: 12 tests', 'getUserById2023Version3HandlerFactory()', 'pin: 12', 'README hunter', 'TOKEN COUNT', 'passwords are kept elsewhere')
+
+    def test_made_up_keys_are_seen_beside_a_name_and_mostly_alone(self):
+        rnd = random.Random(7)
+        letters = string.ascii_letters + string.digits
+        for size, alone in ((24, .9), (32, .95), (40, .97)):
+            made = [''.join(rnd.choice(letters) for _ in range(size)) for _ in range(300)]
+            self.assertTrue(all(files.looks_like_a_key('API_KEY=' + key) for key in made), size)
+            self.assertGreaterEqual(sum(files.looks_like_a_key('the one from before: ' + key) for key in made) / len(made), alone, size)
 
     def test_what_is_taken_for_a_key_and_what_is_not(self):
         for line in self.KEYS:
@@ -205,9 +225,27 @@ class Look(unittest.TestCase):
         self.assertEqual((told.count(files.LEFT_OUT), '1: How to deploy' in told, '10: and then restart' in told), (8, True, True))
         self.assertNotIn('MIIE', files.look(str(self.root), path='deploy.md', from_line=5))        # also when it began before what is read
         self.assertNotIn('MIIE03', files.look(str(self.root), query='MIIE03').replace('"MIIE03"', ''))
-        (self.root / 'cut.md').write_text('\n'.join(text[:5] + ['more'] * 1000), encoding='utf-8')      # no end: not the whole rest of the file either
-        self.assertEqual(len(files._in_blocks(text[:5] + ['more'] * 1000)), files.BLOCK_LINES)
-        self.assertEqual(files._in_blocks(['-----BEGIN CERTIFICATE-----', 'x']), set())
+        self.assertEqual(files._in_blocks(text[:5] + ['and then more words'] * 1000), {1, 2, 3, 4})      # no end: only what is key text
+        self.assertEqual(files._in_blocks(['-----BEGIN CERTIFICATE-----', 'MIIEabcdefghijklmnop']), set())
+        # Only to mention how a key begins hides nothing; a key on one line hides that line.
+        doc = ['# Keys', 'A private key begins with `-----BEGIN PRIVATE KEY-----`.'] + ['Ordinary sentence %d.' % n for n in range(20)]
+        self.assertEqual(files._in_blocks(doc), set())
+        self.assertEqual(files._in_blocks(['"k": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBg\\n-----END PRIVATE KEY-----"', 'ordinaryword', 'anotherword']), set())
+        (self.root / 'doc.md').write_text('\n'.join(doc), encoding='utf-8')
+        self.assertNotIn(files.LEFT_OUT, files.look(str(self.root), path='doc.md'))
+        one = ['{', '  "private_key": "-----BEGIN PRIVATE KEY-----\\n' + 'MIIEvQIBADANBg' * 200 + '\\n-----END PRIVATE KEY-----\\n",'] + ['  "setting_%d": "value %d",' % (n, n) for n in range(20)]
+        (self.root / 'account.json').write_text('\n'.join(one), encoding='utf-8')
+        told = files.look(str(self.root), path='account.json')
+        self.assertNotIn('MIIE', told)
+        self.assertEqual((told.count(files.LEFT_OUT), 'setting_19' in told), (1, True))
+        # Written out in a program, a YAML block, with headers, and in PuTTY's own way.
+        for lines in (['key = (', '  "-----BEGIN RSA PRIVATE KEY-----\\n"', '  "MIIEabcdefghijklmnop\\n" +', '  "QRSTUVWXYZabcdef\\n"', '  "-----END RSA PRIVATE KEY-----"', ')'],
+                      ['key: |', '    -----BEGIN EC PRIVATE KEY-----', '    Proc-Type: 4,ENCRYPTED', '    DEK-Info: AES-128-CBC,ABCDEF0123456789', '', '    MIIEabcdefghijklmnop', '    -----END EC PRIVATE KEY-----', 'next: 1'],
+                      ['PuTTY-User-Key-File-3: ssh-rsa', 'Encryption: none', 'Comment: mine', 'Public-Lines: 1', 'AAAAB3NzaC1yc2EAAAA', 'Private-Lines: 1', 'AAABAQCabcdefgh', 'Private-MAC: 0123456789abcdef']):
+            (self.root / 'k.txt').write_text('\n'.join(lines), encoding='utf-8')
+            told = files.look(str(self.root), path='k.txt')
+            for secret in ('MIIE', 'QRSTUV', 'AAABAQ'):
+                self.assertNotIn(secret, told)
 
     def test_no_line_can_hold_anything_up(self):
         import time

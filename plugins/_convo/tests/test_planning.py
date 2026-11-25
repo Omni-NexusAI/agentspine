@@ -119,19 +119,18 @@ class Kept(unittest.TestCase):
 
     def test_a_kept_plan_is_found_by_its_name_and_the_open_one_is_put_away_for_it(self):
         shed, trip, party = self.kept('a garden shed'), self.kept('our trip to Lisbon'), self.kept('')
-        for name, found in (('a garden shed', shed), ('The garden shed', shed), ('garden shed', shed), ('trip to Lisbon', trip), ('OUR TRIP TO LISBON', trip),
-                            ('a boat', None), ('the', None), ('', None), ('our garden', None)):
+        for name, found in (('a garden shed', shed), ('A Garden Shed!', shed), ('OUR TRIP TO LISBON', trip), ('our trip  to lisbon', trip), ('a boat', None), ('', None)):
             self.assertEqual((self.plans.match('a', name) or {}).get('id'), found, name)
         self.assertIsNone(self.plans.match('b', 'a garden shed'))                      # another conversation's
         self.assertEqual([plan['id'] for plan in self.plans.earlier('a')], [party, trip, shed])
         open_, _ = self.plans.begin('a', 'a boat')
-        self.assertEqual(self.plans.about('a', 'the garden shed')[0::2], ('again', None))       # nothing is written in the open one yet
+        self.assertEqual(self.plans.about('a', 'A garden shed')[0::2], ('again', None))         # nothing is written in the open one yet
         self.plans.write(open_['id'], 'Goal:\n- sail', revision=0, by='convo')
-        how, plan, away = self.plans.about('a', 'the garden shed')
+        how, plan, away = self.plans.about('a', 'A garden shed')
         self.assertEqual((how, plan['id'], away['id']), ('again', shed, open_['id']))
-        self.assertEqual([self.plans.about('a', topic)[0] for topic in ('a boat', 'the boat a', '', 'something else')], ['on'] * 4)
+        self.assertEqual([self.plans.about('a', topic)[0] for topic in ('a boat', 'A BOAT', '', 'something else')], ['on'] * 4)
         self.assertEqual(self.plans.about('a', '', True)[0::2], ('new', self.plans.get(open_['id'])))
-        back, how = self.plans.begin('a', 'the garden shed')
+        back, how = self.plans.begin('a', 'A garden shed')
         self.assertEqual((back['id'], how, self.plans.get(open_['id'])['status']), (shed, 'again', 'kept'))
         chosen, how = self.plans.begin('a', plan_id=trip)                              # chosen in the panel
         self.assertEqual((chosen['id'], how, self.plans.get(shed)['status']), (trip, 'again', 'kept'))
@@ -142,25 +141,89 @@ class Kept(unittest.TestCase):
         self.time += planning.AGAIN_SECONDS + 1
         self.assertEqual(self.plans.earlier('a'), [])                                  # too old to be gone on with by itself
 
-    def test_two_plans_that_fit_a_name_equally_well_are_not_guessed_between(self):
-        self.kept('garden shed roof')
-        self.kept('garden shed floor')
-        self.assertIsNone(self.plans.match('a', 'garden shed'))
-        self.assertIsNotNone(self.plans.match('a', 'the garden shed floor'))
+    def test_a_similar_name_is_another_plans_name(self):
+        for kept, asked in (('a trip to Lisbon', 'a trip to Madrid'), ('the report for Q1', 'the report for Q2'), ('release 1.4 checklist', 'release 1.5 checklist'),
+                            ('a birthday party for Anna', 'a birthday party for Tom'), ('eine Reise nach Rom', 'eine Reise nach Wien'), ('a garden shed', 'a garden fence'),
+                            ('a surprise for my wife', 'a surprise for my boss'), ('garden shed', 'the garden shed'), ('京都旅行', '大阪旅行')):
+            plan = self.kept(kept)
+            self.assertIsNone(self.plans.match('a', asked), asked)
+            self.assertEqual(self.plans.about('a', asked)[:2], ('new', None), asked)
+            self.assertEqual(self.plans.match('a', kept)['id'], plan)
+        twice = self.kept('a garden shed')                                             # two of the same name: the newer one
+        self.assertEqual(self.plans.match('a', 'a garden shed')['id'], twice)
 
-    def test_what_stood_there_before_convo_changed_it_can_be_put_back(self):
+    def test_a_plan_with_nothing_in_it_is_not_listed(self):
+        self.kept('an empty one', text='')
+        shed = self.kept('a garden shed')
+        self.assertEqual([plan['id'] for plan in self.plans.earlier('a')], [shed])
+        self.assertIsNone(self.plans.match('a', 'an empty one'))
+
+    def test_an_earlier_plan_is_opened_by_its_own_id_unless_it_was_discarded(self):
+        shed = self.kept('a garden shed')
+        self.plans.hand_over(shed, 'a')
+        again, how = self.plans.begin('a', plan_id=shed)                               # from the panel's list: one that was handed over, too
+        self.assertEqual((again['id'], how, again['status']), (shed, 'again', 'open'))
+        self.plans.end(shed, 'dropped')
+        with self.assertRaises(ValueError) as caught:
+            self.plans.begin('a', plan_id=shed)
+        self.assertEqual((str(caught.exception), self.plans.open('a')), (planning.GONE, None))
+
+    def test_every_text_that_was_replaced_can_be_found_again(self):
         plan, _ = self.plans.begin('a', 'x')
         plan = self.plans.write(plan['id'], 'Goal:\n- one', revision=0, by='convo')
-        self.assertEqual(self.plans.view('a')['previous'], '')                         # there was nothing before
-        plan = self.plans.write(plan['id'], 'Goal:\n- two', revision=plan['revision'], by='convo')
-        self.assertEqual(self.plans.view('a')['previous'], 'Goal:\n- one')
-        plan = self.plans.write(plan['id'], 'Goal:\n- mine', revision=plan['revision'], by='user')
-        self.assertEqual(self.plans.view('a')['previous'], '')
-        for text in ('Goal:\n- three', 'Goal:\n- four'):                              # the user's own words stay, however often Convo writes
-            plan = self.plans.write(plan['id'], text, revision=plan['revision'], by='convo')
-            self.assertEqual(self.plans.view('a')['previous'], 'Goal:\n- mine')
-        plan = self.plans.write(plan['id'], plan['previous'], revision=plan['revision'], by='user')     # put back, as an edit of theirs
-        self.assertEqual((plan['text'], plan['by'], self.plans.view('a')['previous']), ('Goal:\n- mine', 'user', ''))
+        self.assertEqual(self.plans.view('a')['versions'], [])                         # there was nothing before
+        for text, by in (('Goal:\n- two', 'convo'), ('Goal:\n- mine', 'user'), ('Goal:\n- three', 'convo'), ('Goal:\n- four', 'convo')):
+            self.time += 1
+            plan = self.plans.write(plan['id'], text, revision=plan['revision'], by=by)
+        versions = self.plans.view('a')['versions']
+        self.assertEqual([(self.plans.version(plan['id'], item['id']), item['by']) for item in versions],
+                         [('Goal:\n- three', 'convo'), ('Goal:\n- mine', 'user'), ('Goal:\n- two', 'convo'), ('Goal:\n- one', 'convo')])
+        plan = self.plans.write(plan['id'], 'Goal:\n- mine', revision=plan['revision'], by='user')       # put back, as an edit of theirs
+        self.assertEqual([self.plans.version(plan['id'], item['id']) for item in self.plans.versions(plan)],
+                         ['Goal:\n- four', 'Goal:\n- three', 'Goal:\n- two', 'Goal:\n- one'])        # (what stands there now is not listed)
+        for n in range(planning.VERSIONS + 10):                                        # bounded, and the user's own last words stay
+            plan = self.plans.write(plan['id'], 'Goal:\n- %d' % n, revision=plan['revision'], by='convo')
+        rows = self.store.db.execute('SELECT text,written_by FROM plan_versions WHERE plan=?', (plan['id'],)).fetchall()
+        self.assertEqual((len(rows), [row['text'] for row in rows if row['written_by'] == 'user']), (planning.VERSIONS + 1, ['Goal:\n- mine']))
+        self.assertLessEqual(len(self.plans.versions(plan)), planning.VERSIONS_SHOWN)
+        other, _ = self.plans.begin('b', 'y')
+        for wrong in ((other['id'], versions[0]['id']), (plan['id'], 99999), (plan['id'], 'x')):
+            with self.assertRaises(ValueError):
+                self.plans.version(*wrong)
+
+    def test_a_plan_whose_task_was_not_carried_out_is_kept_again(self):
+        for how, back in (('cancelled', True), ('failed', True), ('uncertain', True), ('completed', False), ('queued', False)):
+            with self.subTest(how):
+                plan, _ = self.plans.begin('a', 'plan ' + how, new=True)
+                self.plans.write(plan['id'], KEPT, revision=0, by='user')
+                job = self.plans.hand_over(plan['id'], 'a')
+                for before, after in {'cancelled': [('queued', 'cancelled')], 'queued': []}.get(how, [('queued', 'dispatching'), ('dispatching', 'running'), ('running', how)]):
+                    self.store.transition(job['id'], before, after)
+                self.assertEqual(self.plans.view('a')['status'], 'kept' if back else 'handed')
+                if back:
+                    self.assertEqual(self.plans.hand_over(plan['id'], 'a')['status'], 'queued')        # and can be handed over again
+                else:
+                    with self.assertRaises(ValueError):
+                        self.plans.hand_over(plan['id'], 'a')
+                self.plans.end(plan['id'], 'dropped')
+
+    def test_a_plan_that_was_handed_over_can_be_gone_on_with(self):
+        plan, _ = self.plans.begin('a', 'a garden shed')
+        self.plans.write(plan['id'], KEPT, revision=0, by='user')
+        job = self.plans.hand_over(plan['id'], 'a')
+        self.assertEqual([(item['topic'], item['status']) for item in self.plans.earlier('a')], [('a garden shed', 'handed')])
+        self.assertEqual(self.plans.begin('a')[1], 'new')                              # not by itself
+        again, how = self.plans.begin('a', 'a garden shed')                            # but when it is asked for
+        self.assertEqual((again['id'], how, again['text'], self.store.job(job['id'])['status']), (plan['id'], 'again', KEPT, 'queued'))
+
+    def test_the_users_own_lines_that_a_rewriting_lost_are_kept_word_for_word(self):
+        mine = 'Goal:\n- two bikes\n\nDecisions:\n- never on a Sunday\n- wood, from the mill in the next village\n\nSteps:\n- level the ground'
+        text = 'Goal:\n- a dry place for two bikes\n\nDecisions:\n- wood from the mill in the village\n\nSteps:\n- level the ground\n- paint it on Saturday'
+        self.assertEqual(planning.lost_lines(mine, text), ['never on a Sunday'])
+        kept = planning.with_own_words(text + '\n\nSet aside:\n- metal', mine)
+        self.assertIn('Own words:\n- never on a Sunday\n\nSet aside:\n- metal', kept)
+        self.assertEqual(planning.tidy(kept)[0], kept)                                 # the next writing may take them in, or leave them
+        self.assertEqual(planning.with_own_words(text, text), text)
 
     def test_an_old_kept_plan_a_handed_one_and_a_discarded_one_are_not_opened_again(self):
         for status, age in (('kept', planning.AGAIN_SECONDS + 1), ('handed', 0), ('dropped', 0)):
@@ -169,7 +232,7 @@ class Kept(unittest.TestCase):
                 self.plans.write(plan['id'], 'Goal:\n- x', revision=0, by='convo')
                 self.plans.hand_over(plan['id'], 'a') if status == 'handed' else self.plans.end(plan['id'], status)
                 self.time += age + 1
-                fresh, how = self.plans.begin('a')
+                fresh, how = self.plans.begin('a')                                     # (nothing is named: not by itself)
                 self.assertEqual(how, 'new')
                 self.plans.end(fresh['id'], 'dropped')
 
@@ -503,9 +566,13 @@ class Floor(unittest.IsolatedAsyncioTestCase):
         for asked, then, counts in ((finish, keep, True), (keep, finish, True), (finish, over, False), (over, finish, False), (over, plan, False), (plan, finish, False),
                                     (plan, call('planning', 'new', topic='y'), True), (over, over, False),                  # without the change it would be lost
                                     (over, call('conversation', 'hand_over', change='in oak'), True), (over, call('conversation', 'hand_over', change=' '), False),
-                                    (over, call('conversation', 'hand_over', chat='Garden'), True),
-                                    (call('conversation', 'hand_over', chat='Garden'), call('conversation', 'hand_over', chat='garden '), False)):
+                                    (over, call('conversation', 'hand_over', chat='Garden'), False),
+                                    (call('conversation', 'hand_over', chat='Garden'), call('conversation', 'hand_over', chat='garden ', change='in oak'), True)):
             self.assertEqual(modes.agreed(question(asked), 'voice_mode', then), counts, (asked, then))
+        # Another chat than the one that was asked about only when they named it.
+        garden = call('conversation', 'hand_over', chat='The Garden', change='to the garden chat')
+        for said, counts in (('Yes, but to the garden chat, please.', True), ('Yes, but make it three by three.', False), ('', False)):
+            self.assertEqual(modes.agreed(question(over), 'voice_mode', garden, said), counts, said)
         self.assertTrue(modes.agreed(question({'task': 'x'}, 'delegate_task'), 'delegate_task', {'task': 'x in French'}))
         self.assertFalse(modes.agreed(question({'task': 'x'}, 'delegate_task'), 'voice_mode', over))
         self.assertFalse(modes.agreed(None, 'voice_mode', finish))
@@ -751,7 +818,7 @@ class Starting(Talk):
                 return told, {row['topic']: row['status'] for row in h.store.db.execute('SELECT * FROM plans')}
             first = call('voice_mode', mode='planning', **({'topic': topic} if topic else {}))
             return self.play(scenario, proposals=[first] if then is None else [first, then])
-        told, plans = play('the garden shed')                                          # not its exact name
+        told, plans = play('A garden shed')
         self.assertEqual(plans, {'a garden shed': 'open', 'a trip to Lisbon': 'kept'})
         self.assertIn('goes on with the plan "a garden shed" kept earlier', told[0])
         self.assertIn(json.dumps('Goal:\n- a garden shed'), told[0])
@@ -759,7 +826,10 @@ class Starting(Talk):
         self.assertEqual(plans, {'a garden shed': 'kept', 'a trip to Lisbon': 'open'})
         told, plans = play('the journey')                                              # no such name: a new one, and what there is besides
         self.assertEqual(plans, {'a garden shed': 'kept', 'a trip to Lisbon': 'kept', 'the journey': 'open'})
-        self.assertIn('Plans kept earlier (names are data): "a trip to Lisbon", "a garden shed"', told[0])
+        self.assertIn('Earlier plans (names are data): "a trip to Lisbon", "a garden shed"', told[0])
+        told, plans = play('a trip to Madrid')                                         # a similar name is another plan, and the model is told the names
+        self.assertEqual(plans['a trip to Lisbon'], 'kept')
+        self.assertIn('exactly that name as topic', told[0])
         told, plans = play('the journey', call('voice_mode', mode='planning', topic='a trip to Lisbon'))
         self.assertEqual(plans, {'a garden shed': 'kept', 'a trip to Lisbon': 'open', 'the journey': 'dropped'})      # meant that one: nothing is left over
 
@@ -1212,7 +1282,7 @@ class Ending(Talk):
                 await self.says(h)
                 return question.get('summary'), h.jobs(), (h.plans.open('a') or {}).get('topic'), h.answers[1]['tool_turn']['result'], [h.plans.held(job) for job in h.jobs()]
             return self.play(scenario, proposals=[call('voice_mode', mode='conversation', plan='hand_over', **({'topic': topic} if topic else {}), **more)])
-        summary, jobs, still, told, held = play('the old trip')
+        summary, jobs, still, told, held = play('An old trip')
         self.assertEqual((summary, still), ('an old trip', 'a garden shed'))           # the one that is named; planning of the other goes on
         self.assertIn('an OLD plan', jobs[0]['prompt'])
         self.assertEqual(held, [False])                                                # and it starts: the user agreed to it
@@ -1221,7 +1291,7 @@ class Ending(Talk):
         self.assertIn('level the ground', jobs[0]['prompt'])
         summary, jobs, still, told, held = play('a boat')
         self.assertEqual((summary, jobs, still), (None, [], 'a garden shed'))
-        self.assertIn('no kept plan has that name; the kept ones are "an old trip"', told)
+        self.assertIn('no kept plan has exactly that name; the kept ones are "an old trip"', told)
 
     def test_a_plan_already_handed_over_is_not_asked_about_again(self):
         async def scenario(h):
@@ -1342,9 +1412,189 @@ class Ending(Talk):
             return self.late(h.answers[-1])
         late = self.play(scenario, planned='a garden shed', proposals=[call('voice_mode', mode='conversation', plan='hand_over')])
         told = late[late.index('The user has just said yes'):]
-        self.assertIn('The plan was handed over as a task. The task is queued in the chat and starts right away', told)
+        self.assertIn('The plan "a garden shed" was handed over as a task. The task is queued in the chat and starts right away', told)
         self.assertIn('Planning is over.', told)
         self.assertNotIn('waits until planning is over', told)
+
+    # ── the second look of 2026-11-25 ──
+    SAY = [('So here is the plan for the garden shed that the two of us have worked out together today. ', .3),
+           ('First you level the ground behind the house and you let it settle for about two weeks. ', 2.0),
+           ('Then you build the frame from the wood that we talked about a moment ago, not from metal. ', 2.0),
+           ('Shall I hand it over to the main chat now, so that it is carried out for you there?', 2.0)]
+    HAND = call('voice_mode', mode='conversation', plan='hand_over')
+
+    @staticmethod
+    async def heard(h):
+        for _, payload in h.audible():
+            if payload.get('type') == 'audio.phrase' and payload['phrase_id'] in h.state['phrases']:
+                await h.playback(payload['turn_id'], payload['phrase_id'])
+
+    def test_agreeing_while_the_plan_is_read_out_is_no_answer_to_the_question_at_its_end(self):
+        async def early(h):
+            h.asked_for, h.follow_deltas = 'YES', self.SAY
+            await h.candidate('t', h.audio('ask'), final=True)
+            for _ in range(80):
+                await h.advance(.25)
+                if any('here is the plan' in text for text in self.spoken(h)):
+                    break
+            question = dict(h.state['pending'])
+            h.proposals, h.reading, h.model_deltas = [], 'YES', [('Good.', .2)]
+            await h.candidate('v', h.audio('next'), final=True)                        # "yes, exactly", to the first sentence
+            await h.advance(4)
+            await h.settle()
+            return question['heard'], h.readings, h.jobs(), h.plans.shown('a')['status']
+        self.assertEqual(self.play(early, planned='a garden shed', proposals=[END]), (None, [], [], 'kept'))
+
+        async def after(h):
+            h.asked_for, h.follow_deltas = 'YES', self.SAY
+            await self.ask(h)
+            spoken, question = self.spoken(h), dict(h.state['pending'])
+            cards = [p['label'] for _, p in h.events('action.pending')]
+            h.proposals, h.reading = [], 'YES'
+            await self.says(h)
+            return spoken[-1], question['heard'] is not None, cards, len(h.jobs())
+        self.assertEqual(self.play(after, planned='a garden shed', proposals=[END]), (self.SAY[-1][0], True, ['Hand over the plan'], 1))
+
+    def test_nor_is_it_when_the_whole_reply_is_spoken_at_once(self):
+        async def scenario(h):
+            h.asked_for, h.follow_deltas = 'YES', [(''.join(text for text, _ in self.SAY), .3)]
+            await h.candidate('t', h.audio('ask'), final=True)
+            for _ in range(160):
+                await h.advance(.25)
+                if any('here is the plan' in text for text in self.spoken(h)):
+                    break
+            lead, heard = self.spoken(h)[-1], h.state['pending']['heard']              # the plan is being heard; the question is not yet
+            await h.settle()
+            return lead, heard, self.spoken(h)[-1], h.state['pending']['heard'] is not None
+        lead, heard, last, then = self.play(scenario, planned='a garden shed', proposals=[END], config={'first_clause_speech': False}, tts_delay=3.0)
+        self.assertEqual((lead, heard), (''.join(text for text, _ in self.SAY[:3]).strip(), None))
+        self.assertEqual((last, then), (self.SAY[3][0], True))
+
+    def preparing(self, then, **options):
+        """A hand-over in the middle of planning was agreed to, and its final text is still being written."""
+        async def scenario(h):
+            plan = h.plans.open('a')
+            h.plans.write(plan['id'], KEPT, revision=plan['revision'], by='user')
+            await self.ask(h)
+            h.proposals, h.reading, h.plan_delay = [], 'YES', 20.0
+            await self.heard(h)
+            await h.advance(2)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.advance(4)
+            result = await then(h)
+            await h.advance(40)
+            await h.settle()
+            return result, [job['status'] for job in h.jobs()], h.plans.get(plan['id'])['status'], [p['message'] for _, p in h.events('notice') if p.get('kind') == 'info']
+        return self.play(scenario, planned='a garden shed', proposals=[self.HAND], **options)
+
+    def test_a_yes_can_be_taken_back_by_voice_until_its_task_is_made(self):
+        async def then(h):
+            h.proposals, h.reading, h.asked_for = [call('cancel_task', what='the plan')], 'NO', 'YES'
+            before = len(h.answers)
+            await h.candidate('v', h.audio('ask'), final=True)                         # "no, stop, do not hand it over"
+            await h.advance(8)
+            return self.late(h.answers[before]), [a['tool_turn']['result'] for a in h.answers[before:] if a.get('tool_turn')][-1]
+        (late, told), jobs, status, _ = self.preparing(then)
+        self.assertIn('"The plan: a garden shed" is being written up and is handed over in a moment', late)
+        self.assertIn('The plan is not handed over after all; it is still here', told)
+        self.assertEqual((jobs, status), ([], 'open'))
+
+    def test_stop_takes_it_back_too_and_so_does_ending_planning_in_the_panel(self):
+        async def stopped(h): await h.interrupt()
+        _, jobs, status, notices = self.preparing(stopped)
+        self.assertEqual((jobs, status), ([], 'open'))
+        self.assertIn('The plan: a garden shed was not handed over; it is still here.', notices)
+
+        async def ended(h):
+            h.plans.end(h.plans.open('a')['id'])
+            h.proposals = []
+            await h.candidate('v', h.audio('next'), final=True)
+        _, jobs, status, notices = self.preparing(ended)
+        self.assertEqual((jobs, status), ([], 'kept'))
+        self.assertIn('The plan could not be handed over: planning was ended in the panel meanwhile, so it was not handed over. It is still here.', notices)
+
+        async def discarded(h):
+            h.plans.end(h.plans.open('a')['id'], 'dropped')
+        self.assertEqual(self.preparing(discarded)[1:3], ([], 'dropped'))
+
+    def test_run_in_the_panel_can_be_taken_back_too(self):
+        async def scenario(h):
+            await self.ask(h)
+            record = h.state['pending']
+            await self.heard(h)
+            h.plan_delay = 20.0
+            await h.handler.process('convo.action', {**h.ids(), 'id': record['id'], 'run': True}, 'browser')
+            await h.advance(3)
+            await h.interrupt()
+            await h.advance(40)
+            return len(h.jobs()), h.plans.shown('a')['status'], self.errors(h)
+        self.assertEqual(self.play(scenario, planned='a garden shed', proposals=[self.HAND])[:2], (0, 'open'))
+
+    def test_what_is_said_right_after_the_yes_does_not_take_it_back(self):
+        async def scenario(h):
+            h.asked_for = 'YES'
+            await self.ask(h)                                                          # planning is over, the hand-over is asked about
+            h.proposals, h.reading, h.model_deltas = [], 'YES', [('Done, I handed it over.', 4.0)]
+            await self.heard(h)
+            await h.advance(2)
+            await h.candidate('u', h.audio('next', seconds=.6), final=True)            # "yes"
+            await h.advance(1.5)
+            h.model_deltas = [('You are welcome.', .3)]
+            await h.candidate('v', h.audio('more', seconds=.6), final=True)            # "and thank you", before the reply is heard
+            await h.advance(8)
+            await h.settle()
+            return [p.get('superseded') for _, p in h.events('turn.superseded')], [job['status'] for job in h.jobs()], h.plans.shown('a')['status']
+        superseded, jobs, status = self.play(scenario, planned='a garden shed', proposals=[END], classifier={
+            'ask': script(PLAINLY, .2), 'next': script(PLAINLY, .2), 'more': script(PLAINLY, .2)})
+        self.assertEqual((superseded, jobs, status), ([], ['queued'], 'handed'))
+
+    def test_one_yes_with_a_change_is_for_one_call(self):
+        for question, calls, name in ((call('set_timer', minutes=5), [call('set_timer', minutes=10), call('set_timer', minutes=20), call('set_timer', minutes=30)], 'set_timer'),
+                                      (call('remember', text='the shed is wood'), [call('remember', text='the shed is stone'), call('remember', text='something else')], 'remember'),
+                                      (DELEGATE_TASK, [call('delegate_task', task='Write it in French'), call('delegate_task', task='Order the timber')], 'delegate_task')):
+            async def scenario(h):
+                await self.ask(h)
+                h.proposals, h.reading = [calls], 'CHANGE'
+                await self.says(h)
+                return len(h.jobs()) if name == 'delegate_task' else len([entry for entry in self.kept(h, 'u') if entry['name'] == name]), (h.state.get('pending') or {}).get('name')
+            with self.subTest(name):
+                self.assertEqual(self.play(scenario, planned='a garden shed', proposals=[question]), (1, name))      # the next one is asked about
+
+    def test_another_chat_than_the_one_asked_about_only_when_they_named_it(self):
+        def play(words):
+            async def scenario(h):
+                h.asked_for = 'YES'
+                await self.ask(h)
+                h.asked_for = 'NO'
+                h.proposals, h.reading = [call('voice_mode', mode='conversation', plan='hand_over', chat='Kitchen')], 'CHANGE'
+                h.model_deltas = [('USER: %s\nLANGUAGE: English\nAlright.' % words, .1)]
+                await self.says(h)
+                return [(job['target'], job['prompt'].splitlines()[-1]) for job in h.jobs()], (h.state.get('pending') or {}).get('summary')
+            return self.play(scenario, planned='a garden shed', chats=[('k', 'Kitchen')], proposals=[END])
+        self.assertEqual(play('Yes, but give it to the kitchen chat.'), ([('k', '- Yes, but give it to the kitchen chat.')], None))
+        self.assertEqual(play('Yes, but make it three by three.'), ([], 'a garden shed; chat: Kitchen; change: Yes, but make it three by three.'))
+
+    def test_nothing_goes_on_once_convo_is_off_also_for_a_page_that_is_away(self):
+        async def then(h):
+            h.state['page'] = 'page-12345678'
+            await h.handler.on_disconnect('browser')                                   # the page slept: the conversation is kept for it
+            await h.handler.disable('browser')
+            return len(h.sidecar.log)
+        _, jobs, status, _ = self.preparing(then)
+        self.assertEqual((jobs, status), ([], 'open'))
+
+    def test_another_plan_begun_meanwhile_neither_holds_the_agreed_task_nor_is_called_over(self):
+        async def then(h):
+            h.plans.begin('a', 'the holiday', new=True)                                # "New plan", on another page
+            h.proposals = []
+            await h.advance(30)
+            late = [self.late(a) for a in h.answers if 'The user has just said yes' in self.late(a)]
+            return [h.plans.held(job) for job in h.jobs()], (h.plans.open('a') or {}).get('topic'), late
+        (held, planning_now, late), jobs, status, _ = self.preparing(then)
+        self.assertEqual((held, planning_now, status), ([False], 'the holiday', 'handed'))
+        told = late[0][late[0].index('The user has just said yes'):]
+        self.assertIn('was handed over as a task', told)
+        self.assertNotIn('Planning is over', told)
 
     def test_going_on_opens_the_same_plan_again_with_what_is_written(self):
         async def scenario(h):
@@ -1464,8 +1714,7 @@ class Writing(Talk):
         self.assertTrue(events and events[0]['on'])
 
     def test_only_a_whole_answer_replaces_what_is_written(self):
-        long = 'Goal:\n- a dry place for the bikes\n\nDecisions:\n' + '\n'.join('- decision %d, at some length so that it counts' % n for n in range(12))
-        for text, finish, taken in ((WRITTEN, 'stop', True), (WRITTEN, 'length', False), (WRITTEN, 'content_filter', False), (WRITTEN, None, False),
+        for text, finish, taken in ((WRITTEN, 'stop', True), (WRITTEN, 'STOP', True), (WRITTEN, 'end_turn', True), (WRITTEN, 'model_length', False), (WRITTEN, 'length', False), (WRITTEN, 'content_filter', False), (WRITTEN, None, False),
                                     (WRITTEN, '', True), (WRITTEN, 'None', True),       # a server that does not say: not when it is shorter
                                     ('Goal:\n- a dr', '', False), ('Goal:\n- a dr', 'stop', True), ('x' * 20000, 'stop', False)):
             async def scenario(h):
@@ -1476,14 +1725,46 @@ class Writing(Talk):
             with self.subTest((text[:20], finish)):
                 plan = self.play(scenario, planned='x')
                 self.assertEqual(plan['text'] != 'Goal:\n- bikes, dry', taken)
-                self.assertEqual(plan['previous'], 'Goal:\n- bikes, dry' if taken else '')        # and what stood there can be put back
 
-        async def lost(h):
-            h.plans.write(h.plans.open('a')['id'], long, revision=0, by='user')
-            h.plan_texts = ['Goal:\n- a dry place for the bikes\n\nDecisions:\n- several'] * 2
+    def test_a_plan_that_was_thrown_over_is_taken_when_it_still_says_so_an_exchange_later(self):
+        long = 'Goal:\n- a dry place for the bikes\n\nDecisions:\n' + '\n'.join('- decision %d, at some length so that it counts' % n for n in range(12))
+        short = 'Goal:\n- a dry place for the bikes\n\nDecisions:\n- buy a ready-made box'
+
+        async def scenario(h):
+            h.plans.write(h.plans.open('a')['id'], long, revision=0, by='convo')
+            h.plan_texts = [short] * 8
+            await self.ask(h)
+            await modes.keep(h.handler, 'browser', h.state, h.state['session'])        # written again in that quiet moment: the same slip would be, too
+            once = h.plans.open('a')['text']
+            await self.says(h)
+            later = h.plans.open('a')
+            return once, later['text'], [h.plans.version(later['id'], item['id']) for item in h.plans.versions(later)]
+        self.assertEqual(self.play(scenario, planned='x'), (long, short, [long]))
+
+        async def finished(h):                                                         # at the end of planning the user hears it before anything is done
+            h.plans.write(h.plans.open('a')['id'], long, revision=0, by='convo')
+            h.plan_texts, h.asked_for = [short] * 8, 'YES'
+            await self.ask(h)
+            return h.plans.shown('a')['text'], h.jobs()
+        self.assertEqual(self.play(finished, planned='x', proposals=[END]), (short, []))
+
+        async def handed(h):                                                           # handed over in the middle of planning it is not heard: what stood in the panel goes
+            h.plans.write(h.plans.open('a')['id'], long, revision=0, by='convo')
+            await self.ask(h)
+            h.plans.write(h.plans.open('a')['id'], long, revision=h.plans.open('a')['revision'], by='convo')
+            h.state.pop('plan_shrank', None)
+            h.proposals, h.reading, h.plan_texts = [], 'YES', [short] * 8
+            await self.says(h)
+            return 'decision 11' in h.jobs()[0]['prompt']
+        self.assertTrue(self.play(handed, planned='x', proposals=[call('voice_mode', mode='conversation', plan='hand_over')]))
+
+    def test_what_the_user_wrote_themselves_is_not_lost_in_the_next_writing(self):
+        async def scenario(h):
+            h.plans.write(h.plans.open('a')['id'], 'Goal:\n- two bikes\n\nDecisions:\n- never on a Sunday', revision=0, by='user')
+            h.plan_texts = ['Goal:\n- two bikes\n\nSteps:\n- paint it']
             await self.ask(h)
             return h.plans.open('a')['text']
-        self.assertEqual(self.play(lost, planned='x'), long)                           # most of it was gone: a slip, not kept
+        self.assertIn('Own words:\n- never on a Sunday', self.play(scenario, planned='x'))
 
     def test_there_is_room_to_write_out_what_is_already_there(self):
         def play(text, **more):
@@ -1815,6 +2096,31 @@ class Panel(unittest.IsolatedAsyncioTestCase):
         await self.call('plan_save', id=first['id'], text='Goal:\n- a dry place for the bikes\n- and the tools', revision=first['revision'])
         second = (await self.call('plan_start', topic='a party', new=True))['plan']
         self.assertEqual([item['topic'] for item in second['earlier']], ['a dry place for the bikes'])
+
+    async def test_a_text_that_was_replaced_is_given_back_and_only_this_plans_own(self):
+        plan = (await self.call('plan_start', topic='x'))['plan']
+        for text in ('Goal:\n- one', 'Goal:\n- two'):
+            plan = (await self.call('plan_save', id=plan['id'], text=text, revision=plan['revision']))['plan']
+        self.assertEqual([item['by'] for item in plan['versions']], ['user'])
+        version = plan['versions'][0]['id']
+        got = await self.call('plan_version', id=plan['id'], version=version)
+        self.assertEqual((got['ok'], got['text'], got['plan']['text'], got['plan']['revision']), (True, 'Goal:\n- one', 'Goal:\n- two', plan['revision']))    # reading changes nothing
+        other = (await self.call('plan_start', topic='y', new=True))['plan']
+        for wrong in ({'id': other['id'], 'version': version}, {'id': plan['id'], 'version': 10 ** 9}, {'id': plan['id'], 'version': 'x'},
+                      {'id': plan['id'], 'version': True}, {'id': plan['id']}, {'id': 'gone', 'version': version}):
+            answer = await self.call('plan_version', **wrong)
+            self.assertEqual((answer['ok'], answer['error'], 'text' in answer), (False, planning.GONE, False), wrong)
+        self.assertFalse((await self.call('plan_version', 'b', id=plan['id'], version=version))['ok'])              # another conversation's
+
+    async def test_the_plan_button_begins_a_new_plan_unless_one_is_being_worked_on(self):
+        first = (await self.call('plan_start', fresh=True))['plan']
+        self.assertTrue(first['on'])
+        await self.call('plan_save', id=first['id'], text=KEPT, revision=first['revision'])
+        same = (await self.call('plan_start', fresh=True))['plan']                     # a page that was not up to date
+        self.assertEqual((same['id'], same['on'], same['text']), (first['id'], True, KEPT))
+        await self.call('plan_end', id=first['id'])
+        other = (await self.call('plan_start', fresh=True))['plan']                    # the one kept last is not gone on with by the way
+        self.assertEqual((other['id'] == first['id'], other['text'], [item['id'] for item in other['earlier']]), (False, '', [first['id']]))
 
     async def test_an_edit_made_before_the_plan_was_ended_is_no_conflict(self):
         plan = (await self.call('plan_start', topic='x'))['plan']

@@ -59,7 +59,7 @@ def plan_view(m, store, target):
         return None
 
 
-PLAN_ACTIONS = {'plan_start', 'plan_end', 'plan_save', 'plan_hand_over', 'plan_drop'}
+PLAN_ACTIONS = {'plan_start', 'plan_end', 'plan_save', 'plan_hand_over', 'plan_drop', 'plan_version'}
 
 
 def plan_action(m, s, target, action, data):
@@ -71,12 +71,19 @@ def plan_action(m, s, target, action, data):
     session = s.store.session(owner['session'], active=False) if owner and owner.get('target') == target else None
     try:
         if action == 'plan_start':
-            kept.begin(target, str(data.get('topic') or ''), new=data.get('new') is True, plan_id=str(data.get('id') or ''), session=session)
+            # `fresh`: the Plan button. It begins a new plan unless one is being worked on (a page that was not up to date): the one kept last
+            # is gone on with by its own button, never by the way.
+            new = data.get('new') is True or (data.get('fresh') is True and kept.open(target) is None)
+            kept.begin(target, str(data.get('topic') or ''), new=new, plan_id=str(data.get('id') or ''), session=session)
             return {'ok': True, 'plan': kept.view(target)}
+        kept.settle()
         plan = kept.get(str(data.get('id') or ''))
         if plan is None or plan['target'] != target:
             raise ValueError('That plan is no longer there')
         job = None
+        if action == 'plan_version':
+            version = data.get('version')
+            return {'ok': True, 'text': kept.version(plan['id'], version if type(version) is int else 0), 'plan': kept.view(target)}
         if action == 'plan_save':
             kept.write(plan['id'], data.get('text'), revision=data.get('revision'), by='user', topic=data.get('topic') or '',
                        was=data.get('was') if isinstance(data.get('was'), str) else None)

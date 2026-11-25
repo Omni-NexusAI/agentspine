@@ -129,6 +129,31 @@ class Dispatching(unittest.TestCase):
         self.assertEqual(self.host.begun[:2], ['Task 1', 'Task 2'])
         self.assertIn('Use euros', [job['prompt'] for job in self.store.jobs('a')])           # a task of its own
 
+    def test_nor_does_one_to_work_the_user_began_however_long_the_task_waited_behind_it(self):
+        d = self.make()
+        self.host.busy = True                                                                 # the chat's own work, begun by the user
+        self.assertEqual(d.steer_chat(self.session['id'], 't', 'a', 'use euros'), 'waiting')
+        second = self.job('Task 2', 'k2')
+        with patch.object(convo_host.time, 'monotonic', side_effect=lambda: self.clock):
+            for self.clock in (100.0, 110.0, 130.0):                                          # it writes a long final answer
+                d.tick()
+            self.host.busy, self.clock = False, 130.25                                        # and ends without another step
+            d.tick()
+            self.assertEqual(self.store.job(second['id'])['status'], 'queued')
+            self.host.states = dict.fromkeys(self.host.states, 'undelivered')
+            d.tick()
+            self.assertEqual(self.changes(), [('use euros', 'follow_up')])
+
+    def test_nothing_begins_again_after_the_user_stopped_it(self):
+        d = self.make()
+        self.host.busy = True
+        d.steer_chat(self.session['id'], 't', 'a', 'and add the prices')
+        self.host.busy = False
+        self.host.states = dict.fromkeys(self.host.states, 'stopped')
+        d.tick()
+        d.tick()
+        self.assertEqual((self.changes(), self.store.jobs('a'), self.host.begun), ([('and add the prices', 'dropped')], [], []))
+
     def test_a_change_that_is_never_settled_does_not_hold_the_chat_up_for_good(self):
         d = self.make()
         first = self.job('Task 1')

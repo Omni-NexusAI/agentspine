@@ -56,7 +56,7 @@ def steer(context, text):
 
 
 def status(context, item):
-    """waiting, delivered, undelivered, held, sent, or '' (unknown: Agent Zero restarted, or the plugin is off)."""
+    """waiting, delivered, undelivered, stopped, held, sent, or '' (unknown: Agent Zero restarted, or the plugin is off)."""
     rules = module()
     try:
         return rules.status(context, item) if rules is not None else ''

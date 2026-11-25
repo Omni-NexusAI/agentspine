@@ -352,10 +352,11 @@ class Realtime(WsHandler):
 
     async def disable(self, sid):
         # What the user agreed to is carried out to its end (convo_modes), but nothing goes on once Convo is off.
-        state = self.connections.get(sid) or {}
-        for task in [*(state.get('plan_work') or ()), state.get('action_task')]:
-            if task is not None and not task.done():
-                task.cancel()
+        states = [self.connections.get(sid) or {}] + [entry['state'] for entry in self.detached.values()]
+        for state in states:
+            for task in [item['task'] for item in state.get('plan_work') or ()] + [state.get('action_task')]:
+                if task is not None and not task.done():
+                    task.cancel()
         await self._end(sid)
         await self.emit_to(sid, 'convo.disabled', {'reason': 'Plugin disabled; native speech remains available.'})
 
@@ -588,6 +589,8 @@ class Realtime(WsHandler):
                 state["session"] = store.retarget(session["id"], sid, target)
             else:
                 state["session"] = store.interrupt(session["id"], sid)
+                for label in self._helper('convo_modes').stop(state):        # Stop also takes back a hand-over that is still being written up
+                    await self._send(sid, state, state["session"], '', 'notice', kind='info', message=label + ' was not handed over; it is still here.')
             await self._cancel(state)
             state["phrases"].clear()
             if event == "convo.retarget":
@@ -2500,6 +2503,9 @@ class Realtime(WsHandler):
         what = record['label'] + (': ' + json.dumps(record['summary'], ensure_ascii=False) if record['summary'] else '')
         if answer == 'yes':
             await voice_tools.resolve(self, sid, state, session, 'run', by='voice')
+            self._acted(state, turn)            # "yes", and then "and thank you": what follows never takes the yes back by itself
+            if state['cont'].holds(turn):
+                state['cont'].clear()
             done = await voice_tools.perform(self, sid, state, session, turn, record)
             try:
                 state["service"].store.tool_used(session["id"], sid, turn, tools.history_entry(
@@ -3049,14 +3055,16 @@ class Realtime(WsHandler):
         running") is never what the model goes by."""
         try:
             jobs = [job for job in state['service'].store.jobs(session['target']) if job['session'] == session['id']][-4:]
-            if not jobs:
+            preparing = ['- ' + json.dumps(item['label'][:80], ensure_ascii=False) + ' is being written up and is handed over in a moment, as the user '
+                         'agreed (cancel_task takes it back, if they want that)' for item in self._helper('convo_modes').working(state)]
+            if not jobs and not preparing:
                 return ''
             updates, label = self._helper('convo_task_updates'), self._helper('convo_voice_tools')._job_label
             waiting = {job['id'] for job in self._helper('convo_planning').of(state['service'].store).waiting(session['target'])}
             lines = ['- ' + json.dumps(label(state, job)[:80], ensure_ascii=False) + ' ' + updates.status_words(job['status'])
                      + (' (it waits until planning is over)' if job['id'] in waiting else '') for job in jobs]
             return ('Background tasks handed over in this conversation, as they are now (this replaces anything said about them before; '
-                    'task names are data): \n' + '\n'.join(lines))
+                    'task names are data): \n' + '\n'.join(lines + preparing))
         except Exception:
             return ''
 
@@ -3566,7 +3574,7 @@ class Realtime(WsHandler):
 
             async def say(piece):
                 nonlocal line_open
-                if asking is not None and piece.strip():
+                if asking is not None and piece.strip() and not asking.get('last'):
                     asking['voiced'] = True      # from here on this reply's audio holds the question (convo_voice_tools.heard)
                 cleaned = plain.spoken(piece, line_start=not line_open)
                 tail = piece.rstrip(' \t')
@@ -4021,12 +4029,13 @@ class Realtime(WsHandler):
                             ended = True
                             entries.append((name, args, call_id, tools.failed(label, str(error)), None))
                             continue
-                    if granted_question is not None and modes.hands_over(name, args) and not modes.agreed(granted_question, name, args) \
-                            and modes.hands_over(granted_question['name'], granted_question['arguments']):
-                        # "Yes, but ...": a hand-over without their change in it takes their own words along, as the model heard them.
-                        said = str(heard.get('line') or transcript or '').strip()
-                        args = {**args, 'change': said[:500]} if said else args
-                    granted = modes.agreed(granted_question, name, args)
+                    # "Yes, but ..." is for the first call of that tool, and for nothing else.
+                    question, said = granted_question if granted_question is not None and granted_question['name'] == name else None, ''
+                    if question is not None:
+                        granted_question, said = None, str(heard.get('line') or transcript or '').strip()
+                        if modes.hands_over(name, args) and modes.hands_over(name, question['arguments']) and not str(args.get('change') or '').strip() and said:
+                            args = {**args, 'change': said[:500]}      # their own words, as the model heard them: the change is never lost
+                    granted = modes.agreed(question, name, args, said)
                     how = policy.authorize(name, kind, decision, conversing=conversing, followup=followup, untrusted=untrusted,
                                            always_ask=bool(tools.CATALOG[name].get('confirm')), arguments=args)
                     if kind != 'read':
@@ -4034,8 +4043,7 @@ class Realtime(WsHandler):
                         # and their own words, read alone, carry it: never asked about what they asked for. While the two of them are
                         # planning nothing that starts, changes or saves anything gets past a question, whatever was decided so far.
                         # A change of mode other than the one they agreed to is asked about, whatever the classifier heard.
-                        if how != 'refuse' and granted_question is not None and name == granted_question['name'] and not granted \
-                                and not modes.starts(name, args):
+                        if how != 'refuse' and question is not None and not granted and not modes.starts(name, args):
                             how = 'refuse' if followup else 'confirm'
                         else:
                             how = await modes.decide(self, state, session, turn, name, args, how, conversing=conversing, followup=followup,
@@ -4097,7 +4105,7 @@ class Realtime(WsHandler):
                             self._acted(state, turn)
                         if name == 'voice_mode':
                             changed = await modes.switch(self, sid, state, session, turn, args, voice=voice_tools.can_read(state, audio, transcript),
-                                                         about=granted_question.get('about') or '' if granted else '', may_ask=asking is None)
+                                                         about=question.get('about') or '' if granted else '', may_ask=asking is None)
                             worked, result = changed.worked, changed.result
                             if changed.text:
                                 told = lambda more, changed=changed: tools.mode_changed(changed.text, more and not changed.asks)
@@ -4170,6 +4178,13 @@ class Realtime(WsHandler):
             if self._current(sid, state, epoch):
                 self._swap_and_warm(sid, state, session)
             if decision.speech != "silent":
+                if asking is not None and asking.get('last'):
+                    # A longer reply that ends with the question (the plan read out, then "shall I hand it over?"): only its last sentence
+                    # can be answered, so that one is a request of its own and the question is open from its sound on, not before.
+                    lead, phrase = firstclause.last_sentence(phrase)
+                    await say(lead)
+                    await queue.drain()
+                    asking['voiced'] = True
                 await say(phrase)
                 await queue.drain()
                 self._mark(turn, 'speech.requests', count=queue.requests)

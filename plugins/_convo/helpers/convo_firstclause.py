@@ -26,6 +26,7 @@ import re
 
 SENTENCE_CHARS = '.?!'
 CLOSERS = '"\')]”’»'
+WIDE, WIDE_CLOSERS = '。！？｡؟۔।॥', '」』）】'      # sentence marks of other scripts (no space has to follow them), and what may close a quotation there
 FIRST_MIN = 3             # characters in the first sentence
 # Words the first request needs: a short first sentence ("Good evening, sir.") waits for the next one. Measured 2026-11-09 on the
 # user's audio.cpp (convo-live-test/tts_variants_20261109.py, 3 seeds): alone it was voiced higher and brighter than the rest; merged,
@@ -78,6 +79,24 @@ def _last_sentence_end(text, limit):
             if end and end <= limit:
                 last = end
     return last
+
+
+def last_sentence(text):
+    """(everything before the last full sentence, that sentence), in any script: a reply's question that comes at its end. The whole text is
+    one sentence when no other ends inside it."""
+    body, cut = text.rstrip(), 0
+    for index, mark in enumerate(body):
+        if mark in WIDE:
+            end = index + 1
+            while end < len(body) and body[end] in WIDE + CLOSERS + WIDE_CLOSERS:
+                end += 1
+        elif mark in SENTENCE_CHARS:
+            end = _sentence_end(body, index)
+        else:
+            continue
+        if end and end < len(body):
+            cut = end
+    return text[:cut], text[cut:]
 
 
 class FirstClause:

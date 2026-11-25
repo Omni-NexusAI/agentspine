@@ -211,7 +211,7 @@ def answerable(state, began):
     return record if record is not None and record.get('heard') is not None and began >= record['heard'] else None
 
 
-async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label=None, summary=None, about=''):
+async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label=None, summary=None, about='', last=False):
     """Keep one pending action. A newer question replaces an older one. Nothing is started. The question is asked aloud, by the model
     in the user's language; the panel shows it (Run / Dismiss) once its first words are heard (`heard`), never before: a card that
     came seconds ahead of the question was all the user got, and what they were saying meanwhile was taken for its answer
@@ -220,7 +220,7 @@ async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label
     await resolve(rt, sid, state, session, 'replaced')
     record = {'id': uuid.uuid4().hex, 'name': name, 'arguments': dict(args), 'summary': tools.summary(name, args) if summary is None else summary,
               'turn': turn, 'label': label or tools.CATALOG[name].get('ask') or tools.LABEL[name], 'prepared': prepared, 'heard': None,
-              'voiced': False, 'planning': _planning_since(state), 'about': about}
+              'voiced': False, 'planning': _planning_since(state), 'about': about, 'last': last}
     state['pending'] = record
     state['service'].store.append(session["id"], sid, session["epoch"], turn, "action.asked",
                                   {"id": record['id'], "name": name, "summary": record['summary']})
@@ -543,10 +543,13 @@ async def _cancel(rt, state, session, what, kind=''):
     by how many of the words occur in its text as whole words, then by how much of its text those words cover (so a small word
     shared with a long task never beats the timer the words name), then by recency. Nothing in common with any candidate
     cancels nothing."""
-    s = state["service"]
+    s, modes = state["service"], rt._helper('convo_modes')
     jobs = [] if kind == 'timer' else [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'running')]
     pending_timers = [] if kind == 'task' else list(reversed(timers(s).pending(TIMER_SCOPE)))
-    candidates = [('task', job, _job_label(state, job)) for job in jobs] + [('timer', timer, str(timer.get('label') or '')) for timer in pending_timers]
+    # A plan the user agreed to hand over that is still being written up: the newest thing there is to take back.
+    preparing = [] if kind == 'timer' else modes.working(state)
+    candidates = ([('plan', item, item['label']) for item in preparing] + [('task', job, _job_label(state, job)) for job in jobs]
+                  + [('timer', timer, str(timer.get('label') or '')) for timer in pending_timers])
     if not candidates:
         return False, ('no timer is set' if kind == 'timer' else 'no task is queued or running' if kind == 'task'
                        else 'no task is queued or running and no timer is set')
@@ -564,6 +567,9 @@ async def _cancel(rt, state, session, what, kind=''):
             return False, 'nothing that is running or set matches that'
         # The kind was named and no label matches the words (an unlabelled timer, "the timer"): the most recent of that kind.
     which, item, label = chosen
+    if which == 'plan':
+        modes.stop(state)
+        return True, 'The plan is not handed over after all; it is still here.'
     if which == 'task':
         try:
             s.dispatcher.cancel(item['id'])
