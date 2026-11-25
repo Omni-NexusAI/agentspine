@@ -175,6 +175,16 @@ class Kept(unittest.TestCase):
             self.plans.begin('a', plan_id=shed)
         self.assertEqual((str(caught.exception), self.plans.open('a')), (planning.GONE, None))
 
+    def test_what_the_user_discards_is_gone(self):
+        plan, _ = self.plans.begin('a', 'x')
+        for text in ('Goal:\n- one', 'Goal:\n- two'):
+            plan = self.plans.write(plan['id'], text, revision=plan['revision'], by='user')
+        other = self.kept('another')
+        self.plans.write(other, 'Goal:\n- y', revision=self.plans.get(other)['revision'], by='user')
+        self.plans.end(plan['id'], 'dropped')
+        self.assertEqual((self.plans.get(plan['id'])['text'], self.store.db.execute('SELECT count(*) FROM plan_versions WHERE plan=?', (plan['id'],)).fetchone()[0]), ('', 0))
+        self.assertEqual(len(self.plans.versions(self.plans.get(other))), 1)           # nothing of another plan goes with it
+
     def test_every_text_that_was_replaced_can_be_found_again(self):
         plan, _ = self.plans.begin('a', 'x')
         plan = self.plans.write(plan['id'], 'Goal:\n- one', revision=0, by='convo')

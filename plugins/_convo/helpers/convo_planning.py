@@ -393,13 +393,17 @@ class Plans:
         return plan
 
     def end(self, plan_id, status='kept', *, session=None, turn=''):
-        """Planning is over ('kept' or 'dropped'). An ended plan may still be dropped; keeping one that is over already changes nothing."""
+        """Planning is over ('kept' or 'dropped'). An ended plan may still be dropped; keeping one that is over already changes nothing. What the
+        user discards is gone: its text, and every text it replaced."""
         if status not in ('kept', 'dropped'):
             raise ValueError('Unknown end of a plan')
         with self.store.transaction():
             plan = self.get(plan_id)
             if plan is None or plan['status'] == 'dropped':
                 raise ValueError(GONE)
+            if status == 'dropped':
+                self.store.db.execute("UPDATE plans SET text='' WHERE id=?", (plan['id'],))
+                self.store.db.execute('DELETE FROM plan_versions WHERE plan=?', (plan['id'],))
             return self._end(plan, status, session, turn) if status == 'dropped' or plan['status'] == 'open' else plan
 
     @staticmethod
