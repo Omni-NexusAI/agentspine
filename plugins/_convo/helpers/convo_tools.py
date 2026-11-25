@@ -99,6 +99,20 @@ CATALOG = {
                                          'chat': _text('Only when the user names a particular chat by its title: that title, or "new" '
                                                        'when they ask for a new chat. "The main chat" and "the agent" are not titles: '
                                                        'leave this out for them.', required=False, limit=200)}},
+    'steer_task': {
+        'group': 'tasks', 'kind': 'work', 'small': False, 'label': 'task change', 'activity': 'Passing the change on…',
+        'ask': 'Change work in progress',
+        'description': "Add to, change or correct work that is already going on in an Agent Zero chat: a task handed over from this "
+                       "conversation, started or not, or whatever the chat's agent is doing now. The work is not stopped; the change "
+                       "goes in at its next step. Use it when the user wants something about work in progress done differently or "
+                       "added to it; a new piece of work is delegate_task, stopping work is cancel_task.",
+        'primary': 'change', 'arguments': {'change': _text('The change, stated completely so it makes sense without this conversation.',
+                                                           limit=8000),
+                                           'what': _text('Which work: a few words from the task. Leave out when only one thing is going '
+                                                         'on.', required=False, limit=300),
+                                           'chat': _text('Only when the user names a particular chat by its title. "The main chat" and '
+                                                         '"the agent" are not titles: leave this out for them.', required=False,
+                                                         limit=200)}},
     'task_status': {
         'group': 'tasks', 'kind': 'read', 'small': True, 'label': 'task check', 'activity': 'Checking on the tasks…',
         'description': "How the tasks handed over from this conversation are going, whether the chat's agent is busy right now, "
@@ -179,7 +193,7 @@ ORDER = tuple(CATALOG)
 GROUPS = ('web', 'memory', 'tasks', 'system', 'timers', 'chats', 'senses', 'interface')
 # Offered only while their condition holds (part of the conversation summarised; a camera or a screen shared with a model that
 # takes images); every other tool of a conversation is the same on each of its requests.
-CONDITIONAL = {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen'}
+CONDITIONAL = {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen', 'steer_task': 'steering'}
 # Tables derived from the catalog (the names older code and the gateway read).
 KNOWN = {name: tool['primary'] for name, tool in CATALOG.items()}
 READ_ONLY = {name for name, tool in CATALOG.items() if tool['kind'] == 'read'}
@@ -216,13 +230,14 @@ def schemas(names):
     return [schema(name) for name in ORDER if name in set(names or ())]
 
 
-def offered(*, recall=False, camera=False, screen=False, groups=None, mode='native', audio=True):
+def offered(*, recall=False, camera=False, screen=False, steering=False, groups=None, mode='native', audio=True):
     """The tools a conversation offers, in a fixed order. The same on every request of the conversation (a tool's follow-up too),
     so the start of the request never changes: only a chapter swap adds `recall_conversation`, and only sharing or stopping the
-    camera or the screen (with a model that accepts images) adds or removes their tools. `groups` is the saved permission switches
+    camera or the screen (with a model that accepts images) adds or removes their tools. `steering`: the Steering plugin was on when
+    the voice session started. `groups` is the saved permission switches
     (settings `voice_tools`: a group switched off is not offered; None or a missing key means on). A model that takes its tools in
     writing (`mode` 'text') is offered the small set only. `listen_back` needs a model that hears audio."""
-    conditions = {'recall': recall, 'camera': camera, 'screen': screen}
+    conditions = {'recall': recall, 'camera': camera, 'screen': screen, 'steering': steering}
     groups = groups if isinstance(groups, dict) else {}
     names = []
     for name in ORDER:

@@ -2282,8 +2282,17 @@ class Realtime(WsHandler):
         # The user's permission switches (settings `voice_tools`), a shared camera or screen with a model that takes images, and
         # the small set for a model that takes its tools in writing (convo_tools.offered).
         return tools.offered(recall=recall, camera=bool(state.get('camera')) and images, screen=bool(state.get('screen')) and images,
-                             groups=config.get('voice_tools'), mode=mode,
+                             steering=self._steering(state), groups=config.get('voice_tools'), mode=mode,
                              audio=bool(isinstance(capabilities, dict) and capabilities.get('audio_input'))), mode
+
+    def _steering(self, state):
+        """Whether the Steering plugin was on when this voice session started (read once: the tools of a conversation do not change)."""
+        if 'steering' not in state:
+            try:
+                state['steering'] = self._helper('convo_steering').available()
+            except Exception:
+                state['steering'] = False
+        return state['steering']
 
     def _measured(self, state):
         """The conversation model's measured capability record (convo_tools.measured: Convo's data folder), or {}. Never raises."""

@@ -35,11 +35,17 @@ export const HIDDEN_KINDS = new Set(['context.compacted', 'assistant.generated',
 
 const TOOL_LABELS = { web_search: 'Web search', memory_read: 'Memory search', delegate_task: 'Task', camera_context: 'Camera look',
     recall_conversation: 'Conversation lookup', web_read: 'Page read', remember: 'Memory save', task_status: 'Task check',
-    cancel_task: 'Cancellation', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer', chats: 'Chat lookup',
+    cancel_task: 'Cancellation', steer_task: 'Task change', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer', chats: 'Chat lookup',
     open: 'Opening', voice_speed: 'Voice speed', listen_back: 'Listening back', screen_context: 'Screen look' };
 const REASONS = { interrupted: 'Reply interrupted', stopped: 'Conversation stopped', retargeted: 'Voice moved to another chat' };
 const JOB_END = { 'job.completed': 'Background task completed', 'job.failed': 'Background task failed',
     'job.cancelled': 'Background task cancelled', 'job.uncertain': 'Background task outcome unconfirmed' };
+// A change passed to work that is going on (`how`), and what became of it.
+const CHANGE = { added: 'Change added to the task', waiting: 'Change passed to the work in progress', interrupted: 'Change sent, interrupting the work',
+    taken: 'Change taken up', dropped: 'Change not taken up' };
+const CHANGE_STATE = { added: 'change added', waiting: 'change waiting', taken: 'change taken up', interrupted: 'interrupted with a change',
+    follow_up: 'change queued after it', dropped: 'change not taken up' };
+export const changeState = job => CHANGE_STATE[job?.change] || '';
 
 export function clip(value, limit) {
     const text = String(value ?? '').trim();
@@ -203,6 +209,10 @@ export function describeEvent(event, jobs = []) {
             return { role: 'user', label: 'You · transcript', text: payload.text || '' };
         case 'job.queued':
             return { role: 'activity', label: 'Background task queued', text: clip(job?.prompt, 240) };
+        case 'job.steered':
+            return { role: 'activity', label: CHANGE[payload.how] || 'Change passed on', text: clip(payload.text, 240) };
+        case 'job.steer_taken': case 'job.steer_dropped':
+            return { role: 'activity', label: CHANGE[event.kind.slice('job.steer_'.length)], text: clip(payload.text, 240) };
         case 'turn.interrupted':
             return { role: 'activity', label: REASONS[payload.reason] || 'Turn ended early', text: '' };
         case 'turn.superseded':

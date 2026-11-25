@@ -3,7 +3,7 @@ import { callJsonApi } from '/js/api.js';
 import { createNamespacedClient } from '/js/websocket.js';
 import { getCurrentContextId, getCurrentContext, openModal } from '/js/shortcuts.js';
 import { AudioSession } from './audio.js';
-import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
+import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, changeState, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
 import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
 import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, soundKey, soundSource } from './sound-setup.js';
@@ -761,7 +761,7 @@ export const store = createStore('convo', {
     settings: null, settingsRevision: '', session: null, state: 'off', error: '', errorQuiet: false, errorShowMs: ERROR_SHOW_MS, problems: [], loading: '', unavailable: '', activity: '',
     muted: false, talking: false, mutedOver: '',   // the user's mute; push-to-talk held while muted; what the assistant does while muted (the chip)
     mode: 'active', target: '', selected: '', runtime: null,
-    events: [], jobs: [], draft: '', dictating: false, panelOpen: false, busy: false,
+    events: [], jobs: [], steeringOn: false, steerOpen: '', steerText: '', steerBusy: false, draft: '', dictating: false, panelOpen: false, busy: false,
     dictationMode: '', dictationHolding: false, pressing: false, capturing: false,   // orb gesture: '' | 'latched' | 'ptt'; the press still down; a press heading for the latch time
     moreEarlier: false, loadingEarlier: false, unseen: 0, pinned: true,
     inputLevel: 0, outputLevel: 0, targetName: '', hearing: false, policyHold: false, holdSafetyMs: 8000, note: '',
@@ -1217,7 +1217,7 @@ export const store = createStore('convo', {
                     jobChats.set(String(event.job_id), event.chat.slice(0, 80));
                     while (jobChats.size > 64) jobChats.delete(jobChats.keys().next().value);
                 }
-                if (event.type === 'job.queued' || (event.type === 'state' && event.state === 'listening')) void this.history();
+                if (event.type === 'job.queued' || event.type === 'job.steered' || (event.type === 'state' && event.state === 'listening')) void this.history();
             });
             const response = await request('start', { target: chat, mode: this.mode, page: pageId(), device: deviceName(),
                 ...(takeover ? { takeover: String(takeover) } : {}) }, ownedClient);
@@ -1552,6 +1552,7 @@ export const store = createStore('convo', {
             historySequence = Math.max(historySequence, ...result.events.map(e => e.seq));
             if (first) this.moreEarlier = !!result.more;
             this.jobs = result.jobs;
+            this.steeringOn = result.steering === true;
             if (typeof result.assistant_name === 'string' && result.assistant_name.trim()) this.assistantName = result.assistant_name.trim().slice(0, 64);
             if (fresh.length) {
                 settleDraft(fresh);
@@ -1611,9 +1612,27 @@ export const store = createStore('convo', {
         finally { noticePending = false; }
     },
     async cancelJob(job) { try { await callJsonApi(endpoint, { action: 'cancel_job', target: job.target, job_id: job.id }); settled('job'); await this.history(); } catch (error) { failSource('job', error); } },
+    // A change to a task from the panel: one field at a time, under its task. With the Steering plugin it goes in at the task's next step;
+    // without it a running task is interrupted, and the button says so.
+    canSteer(job) { return job.status === 'queued' || job.status === 'running'; },
+    steerLabel(job) { return this.steeringOn || job.status === 'queued' ? 'Steer' : 'Interrupt'; },
+    steerHint(job) {
+        return job.status === 'queued' ? 'Adds to this task before it starts' : this.steeringOn ? 'The task goes on and takes the change in at its next step'
+            : 'Sends a message that interrupts the step this task is on (the Steering plugin is off)';
+    },
+    changeState(job) { return changeState(job); },
+    openSteer(job) { this.steerOpen = this.steerOpen === job.id ? '' : job.id; this.steerText = ''; },
+    closeSteer() { this.steerOpen = ''; this.steerText = ''; },
     async steerJob(job) {
-        const text = window.prompt('Explicitly steer this running job:');
-        if (text?.trim()) try { await callJsonApi(endpoint, { action: 'steer_job', target: job.target, job_id: job.id, text }); settled('job'); } catch (error) { failSource('job', error); }
+        const text = this.steerText.trim();
+        if (!text || this.steerBusy) return;
+        this.steerBusy = true;
+        try {
+            await callJsonApi(endpoint, { action: 'steer_job', target: job.target, job_id: job.id, text });
+            this.closeSteer(); settled('job');
+            await this.history();
+        } catch (error) { failSource('job', error); }                // the words stay in the field
+        finally { this.steerBusy = false; }
     },
     // Dictation. One owned capture: a live Convo voice session is closed cleanly first (and not resumed), and a second start while one
     // runs is a no-op. `held` is a press still down (orb hold): the host recorder records unconditionally until the press is released

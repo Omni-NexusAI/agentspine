@@ -39,6 +39,14 @@ def assistant_name(config, host, target):
     return name or 'Convo'
 
 
+def steering_on(m):
+    """Whether a change to a running task goes in at its next step (the Steering plugin is on) or interrupts it. Never fails a read."""
+    try:
+        return importlib.import_module(m.__package__ + '.convo_steering').available()
+    except Exception:
+        return False
+
+
 def module():
     root = Path(__file__).resolve().parent.parent
     prefix = "usr.plugins" if root.parent.parent.name == "usr" else "plugins"
@@ -243,7 +251,12 @@ class Conversation(ApiHandler):
         s.host.context(target)
         if action == "history":
             page = s.store.history_page(target, after=input.get("after", 0), tail=input.get("tail"), before=input.get("before"))
-            return {"ok": True, **page, "jobs": s.store.jobs(target), "assistant_name": assistant_name(m.settings(), s.host, target)}
+            jobs = s.store.jobs(target)
+            changes = {}
+            for change in s.store.steers([job["id"] for job in jobs if job["status"] in ("queued", "dispatching", "running")] or ["-"]):
+                changes[change["job"]] = change["status"]          # the newest change of each task still going on
+            return {"ok": True, **page, "jobs": [{**job, "change": changes[job["id"]]} if job["id"] in changes else job for job in jobs],
+                    "steering": steering_on(m), "assistant_name": assistant_name(m.settings(), s.host, target)}
         if action in {"cancel_job", "steer_job"}:
             job = s.store.job(str(input.get("job_id", "")))
             if job["target"] != target:
@@ -251,9 +264,6 @@ class Conversation(ApiHandler):
             if action == "cancel_job":
                 s.dispatcher.cancel(job["id"])
             else:
-                text = str(input.get("text", "")).strip()
-                if not text or len(text) > 16000:
-                    raise ValueError("Provide a bounded steering instruction")
-                s.dispatcher.steer(job["id"], text)
+                return {"ok": True, "how": s.dispatcher.steer(job["id"], input.get("text", "")), "job": s.store.job(job["id"])}
             return {"ok": True, "job": s.store.job(job["id"])}
         raise ValueError("Unsupported Convo operation")

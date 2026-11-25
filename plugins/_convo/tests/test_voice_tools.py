@@ -25,7 +25,7 @@ voice_tools = importlib.import_module('plugins._convo.helpers.convo_voice_tools'
 # The tools as the interface spec lists them: (kind, the permission switch they belong to).
 SPEC = {
     'web_search': ('read', 'web'), 'web_read': ('read', 'web'), 'memory_read': ('read', 'memory'), 'remember': ('work', 'memory'),
-    'delegate_task': ('work', 'tasks'), 'task_status': ('read', 'tasks'), 'cancel_task': ('work', 'tasks'),
+    'delegate_task': ('work', 'tasks'), 'steer_task': ('work', 'tasks'), 'task_status': ('read', 'tasks'), 'cancel_task': ('work', 'tasks'),
     'system_status': ('read', 'system'), 'world_time': ('read', 'system'), 'set_timer': ('quick', 'timers'), 'chats': ('read', 'chats'),
     'open': ('quick', 'interface'), 'voice_speed': ('quick', 'interface'), 'listen_back': ('read', 'senses'),
     'recall_conversation': ('read', 'always'), 'camera_context': ('read', 'senses'), 'screen_context': ('read', 'senses'),
@@ -42,8 +42,8 @@ def gateway():
 
 
 class Catalog(unittest.TestCase):
-    def test_there_are_seventeen_tools_each_of_a_known_kind_and_group(self):
-        self.assertEqual(len(tools.CATALOG), 17)
+    def test_there_are_eighteen_tools_each_of_a_known_kind_and_group(self):
+        self.assertEqual(len(tools.CATALOG), 18)
         self.assertEqual({name: (tool['kind'], tool['group']) for name, tool in tools.CATALOG.items()}, SPEC)
         self.assertEqual(tools.ORDER, tuple(tools.CATALOG))
         self.assertEqual(set(tools.GROUPS), {group for _, group in SPEC.values()} - {'always'})
@@ -61,17 +61,18 @@ class Catalog(unittest.TestCase):
     def test_a_conversation_is_offered_everything_in_one_order_except_what_needs_a_condition(self):
         self.assertEqual(tools.offered(), ALWAYS)
         self.assertEqual(len(ALWAYS), 14)
-        self.assertEqual(tools.CONDITIONAL, {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen'})
+        self.assertEqual(tools.CONDITIONAL, {'recall_conversation': 'recall', 'camera_context': 'camera', 'screen_context': 'screen',
+                                             'steer_task': 'steering'})
         for name, flag in tools.CONDITIONAL.items():
             with self.subTest(name):
                 self.assertEqual(tools.offered(**{flag: True}), [tool for tool in tools.ORDER if tool in ALWAYS or tool == name])
-        self.assertEqual(tools.offered(recall=True, camera=True, screen=True), list(tools.ORDER))
+        self.assertEqual(tools.offered(recall=True, camera=True, screen=True, steering=True), list(tools.ORDER))
 
     def test_a_group_switched_off_removes_exactly_its_tools(self):
         self.assertEqual(tools.offered(groups={'web': False}), [name for name in ALWAYS if name not in ('web_search', 'web_read')])
         for group in tools.GROUPS:
             with self.subTest(group):
-                left = tools.offered(recall=True, camera=True, screen=True, groups={group: False})
+                left = tools.offered(recall=True, camera=True, screen=True, steering=True, groups={group: False})
                 self.assertEqual(left, [name for name in tools.ORDER if SPEC[name][1] != group])
         everything_off = tools.offered(recall=True, camera=True, screen=True, groups={group: False for group in tools.GROUPS})
         self.assertEqual(everything_off, ['recall_conversation'])           # looking back through this conversation has no switch

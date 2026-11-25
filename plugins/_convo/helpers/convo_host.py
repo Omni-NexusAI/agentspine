@@ -14,6 +14,7 @@ import threading
 import time
 from concurrent.futures import Future
 
+from . import convo_steering
 from .convo_store import encoded
 
 logger = logging.getLogger("_convo")
@@ -204,7 +205,7 @@ class Host:
             if lifecycle.state().blocked or not lifecycle.enabled():
                 return None
             context = self.context(job["target"])
-            if context.is_running() or message_queue.get_queue(context):
+            if context.is_running() or message_queue.get_queue(context) or convo_steering.busy(context):
                 return None
             task = context.communicate(UserMessage(job["prompt"]))
             future = getattr(task, "_future", None)
@@ -216,7 +217,9 @@ class Host:
     def available(self, target):
         from helpers import message_queue
         context = self.context(target)
-        return not context.is_running() and not message_queue.get_queue(context)
+        # An agent may be at work in a chat Agent Zero does not call running (a sub-agent, a scheduled task): a task handed over
+        # now would be taken for a message to that work.
+        return not context.is_running() and not message_queue.get_queue(context) and not convo_steering.busy(context)
 
     def cancel(self, job, future):
         with self.dispatch_lock:
@@ -226,12 +229,39 @@ class Host:
             context.task.kill()
 
     def steer(self, job, future, text):
+        """Pass a change to the run that is doing this job. Its id with the Steering plugin (it goes in at the next step), '' without
+        (Agent Zero's own interruption)."""
         from agent import UserMessage
         with self.dispatch_lock:
             context = self.context(job["target"])
             if getattr(context.task, "_future", None) is not future or not context.is_running():
                 raise ValueError("Target is no longer executing this job")
-            context.communicate(UserMessage(text))
+            kept = convo_steering.steer(context, text)
+            if not kept:
+                context.communicate(UserMessage(text))
+            return kept
+
+    def steer_chat(self, target, text):
+        """Pass a change to whatever the agent of this chat is doing, also when Convo did not start it. Its id, or '' when the Steering
+        plugin is off or nothing is going on there."""
+        return convo_steering.steer(self.context(target), text)
+
+    def steer_state(self, target, item):
+        try:
+            return convo_steering.status(self.context(target), item)
+        except ValueError:
+            return ""
+
+    def steer_forget(self, target, item):
+        try:
+            convo_steering.forget(self.context(target), item)
+        except ValueError:
+            pass
+
+    def at_work(self, target):
+        """Whether the agent of this chat is doing something now."""
+        context = self.context(target)
+        return context.is_running() or convo_steering.busy(context)
 
     def log(self, job, state):
         """The task's mark in its chat. The agent's own answer is the record of a task that finished: a line after it would open a
@@ -644,6 +674,7 @@ class Dispatcher:
     def __init__(self, store, host):
         self.store, self.host = store, host
         self.running = {}
+        self.steers = {}               # changes passed to a run and not taken up yet: id -> {"job", "target"}
         self.lock = threading.RLock()
         self.wake = threading.Event()
         self.closed = threading.Event()
@@ -693,6 +724,7 @@ class Dispatcher:
                 self.store.transition(job_id, job["status"], status, result)
                 self.host.log(self.store.job(job_id), status)
                 del self.running[job_id]
+            self._follow_steers()
             if self.paused.is_set():
                 return  # Observe already-submitted work; never dispatch while disabled.
             with self.store.lock:
@@ -709,7 +741,7 @@ class Dispatcher:
                 if not self.store.transition(job["id"], "queued", "dispatching"):
                     continue
                 try:
-                    future = self.host.begin(job)
+                    future = self.host.begin({**job, "prompt": self.store.job_text(job)})
                     if future is None:
                         self.store.transition(job["id"], "dispatching", "queued")
                         continue
@@ -729,12 +761,66 @@ class Dispatcher:
             self.host.cancel(job, future)
             return self.store.transition(job_id, "running", "cancel_requested")
 
-    def steer(self, job_id, text):
+    def steer(self, job_id, text, turn=None):
+        """Add to or change a task. One that has not started gets it into its text; one at work gets it at its next step (Steering
+        plugin), or as Agent Zero's own interruption without it. Returns 'added', 'waiting' or 'interrupted'."""
+        text = str(text or "").strip()
+        if not text or len(text) > 16000:
+            raise ValueError("Provide a bounded steering instruction")
         with self.lock:
+            job = self.store.job(job_id)
+            turn = job["turn"] if turn is None else turn
+            if job["status"] == "queued":
+                # Under this lock the task cannot start meanwhile (tick holds it, too).
+                if len(self.store.job_text(job)) + len(text) > 15900:
+                    raise ValueError("The task would become too long")
+                self.store.steered(job["session"], turn, job["target"], text, "added", job=job_id)
+                return "added"
             future = self.running.get(job_id)
             if future is None:
                 raise ValueError("Job is not running in this process")
-            self.host.steer(self.store.job(job_id), future, text)
+            kept = self.host.steer(job, future, text)
+            return self._steered(job["session"], turn, job["target"], text, kept, job_id)
+
+    def steer_chat(self, session_id, turn, target, text):
+        """Pass a change to what a chat's agent is doing, whoever started it. Returns 'waiting', or '' when nothing is going on there or
+        the Steering plugin is off."""
+        with self.lock:
+            job_id = next((job_id for job_id in self.running if self.store.job(job_id)["target"] == target), "")
+            if job_id:
+                return self.steer(job_id, text, turn)
+            kept = self.host.steer_chat(target, text)
+            return self._steered(session_id, turn, target, text, kept) if kept else ""
+
+    def _steered(self, session_id, turn, target, text, kept, job_id=""):
+        how = "waiting" if kept else "interrupted"
+        self.store.steered(session_id, turn, target, text, how, job=job_id, steer_id=kept or "")
+        if kept:
+            self.steers[kept] = {"job": job_id, "target": target}
+            self.start()
+        return how
+
+    def _follow_steers(self):
+        """What became of the changes that were waiting: in the run, or too late for it. One too late for a run that ended normally becomes
+        a task of its own; one whose run was stopped or failed is dropped."""
+        for steer_id, where in list(self.steers.items()):
+            state = self.host.steer_state(where["target"], steer_id)
+            if state == "waiting":
+                continue
+            if where["job"] and where["job"] in self.running and state != "delivered":
+                continue                     # its run's end is seen on the next tick
+            del self.steers[steer_id]
+            if state == "delivered":
+                self.store.steer_status(steer_id, "taken")
+                continue
+            self.host.steer_forget(where["target"], steer_id)
+            ended = self.store.job(where["job"])["status"] if where["job"] else "completed"
+            if state == "undelivered" and ended == "completed":
+                self.store.follow_up(steer_id)
+            elif state == "sent":
+                self.store.steer_status(steer_id, "taken")
+            else:
+                self.store.steer_status(steer_id, "dropped")
 
 
 class Compactor:

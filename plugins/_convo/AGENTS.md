@@ -371,6 +371,18 @@
   for it in table `job_scope` (older code ignores the table and still dispatches the job): its events, its place in the list and
   its completion notice stay with that conversation, also in a later voice session. A chat's own conversation is unchanged, and
   may hand a task to a named chat the same way.
+- A change to work that is going on (`steer_task`, the panel's Steer; `Dispatcher.steer`/`steer_chat`, table `job_steers`, which an older
+  Convo ignores): the Steering plugin (`plugins/steering`, optional; `helpers/convo_steering.py` is the only place that imports it) keeps
+  it for the next step of the run, `caller=True`, so Convo says what became of it. A task still `queued` gets it into its text when it starts
+  (`Store.job_text`; `jobs.prompt` itself never changes, since it is what the request key stands for); a running one, or whatever a chat's
+  agent is doing, at its next step; without the plugin a running task is interrupted as before, the button reads "Interrupt", and the
+  voice tool is not offered (`CONDITIONAL` `steering`, read once per voice session). Followed on the dispatcher's tick (`_follow_steers`):
+  `taken`; too late for a run that ended normally = `follow_up`, a task of its own in the same chat and conversation, so its answer is
+  said; run stopped, failed or lost = `dropped`. Journal: `job.steered {how}`, `job.steer_taken`, `job.steer_dropped`. Which work
+  is meant: the named chat, else the only task going on, else the one the model's words point at (a lookup of an identifier, as `_cancel`),
+  else what the conversation's chat is doing; several and nothing to tell them apart = the user is asked. `steer_task` is `work`
+  (`convo_policy.authorize`) and not in the small set until measured. `Host.available`/`begin` treat a chat whose agent works unseen (a
+  sub-agent, a scheduled task: `convo_steering.busy`) as busy. Tests: `test_steer_task.py`, `steer-panel.test.mjs`.
 - A finished task's result (`_notice`): recorded in the notice's turn as a `task_status` use before anything is spoken, so the model
   knows it whether or not it could be said; asked for in at most two sentences, spoken through the reply's own speech queue (`_say`:
   requests of at most `MERGE_LIMIT` characters, never one long one; measured live 2026-11-24: 1100 characters in one request met the

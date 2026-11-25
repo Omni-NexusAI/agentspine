@@ -38,7 +38,8 @@ ASKED = ("You are given one utterance a person said to their voice assistant. De
          "the assistant to %s. Any wording and any language counts. Reply with exactly one word and nothing else: YES if they ask for "
          "it; NO if they do not (a remark, a question about it, an answer, something else); OTHER if it is unclear.")
 ASKED_FOR = {'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
-             'cancel_task': 'stop or cancel a task, a timer or work that is going on'}
+             'cancel_task': 'stop or cancel a task, a timer or work that is going on',
+             'steer_task': 'change, correct or add something to work that another agent or chat is already doing or has been given'}
 # The last check before speech the classifier took for talk to someone else is left unanswered: is it the user still talking to the
 # assistant about what the two of them were talking about? The decision model cannot tell (measured 2026-11-24 on 96 labelled clips,
 # .runtime/convo-live-test/context_sweep_20261124.py: told the conversation, it reads side talk and a television as belonging to it as
@@ -442,6 +443,8 @@ async def act(rt, sid, state, session, turn, name, args, config):
             return True, 'A timer for %s is set%s%s.' % (_minutes(seconds), ' (%s)' % label if label else '', ', due at ' + at if at else '')
         if name == 'cancel_task':
             return await _cancel(rt, state, session, str(args.get('what') or ''), str(args.get('kind') or ''))
+        if name == 'steer_task':
+            return await _steer(rt, sid, state, session, turn, args)
         if name == 'voice_speed':
             state['speed'] = SPEEDS[args['speed']]
             role = config["roles"]["tts"]
@@ -505,6 +508,54 @@ async def _cancel(rt, state, session, what, kind=''):
         return True, 'The task "%s" was cancelled.' % label[:80]
     timers(s).cancel(TIMER_SCOPE, str(item['id']))
     return True, 'The timer%s was cancelled.' % (' "%s"' % label if label else '')
+
+
+async def _steer(rt, sid, state, session, turn, args):
+    """Pass a change to work that is going on (`steer_task`). Which work: the chat the model names; else, among this conversation's
+    tasks that are waiting or running, the one its words point at (as `_cancel` looks one up), or the only one; else whatever the
+    conversation's chat is doing. More than one and nothing to tell them apart by: the model asks the user. Nothing going on: it is
+    told so, and that new work is handed over instead."""
+    s, host = state["service"], state["service"].host
+    change, what = str(args['change']).strip(), str(args.get('what') or '')
+    jobs = [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'dispatching', 'running')]
+    chat, chat_name = '', ''
+    if str(args.get('chat') or '').strip():
+        found = await host.find_chat(' '.join(str(args['chat']).split()))
+        chat, chat_name = found['id'], found['name']
+        jobs = [job for job in jobs if job['target'] == chat]
+    job = jobs[0] if len(jobs) == 1 else None
+    wanted = set(_words(what))
+    if len(jobs) > 1 and wanted:
+        def fit(candidate):
+            text = set(_words(_job_label(state, candidate)))
+            shared = len(wanted & text)
+            return shared, (shared / len(text) if text else 0.0)
+        best = max(jobs, key=fit)
+        job = best if fit(best)[0] and [fit(candidate) for candidate in jobs].count(fit(best)) == 1 else None
+    if len(jobs) > 1 and job is None:
+        return False, 'more than one task is going on (%s); ask the user which one is meant' % '; '.join(
+            json.dumps(_job_label(state, candidate)[:60], ensure_ascii=False) for candidate in jobs[:4])
+    label = ''
+    if job is not None:
+        label = _job_label(state, job)[:80]
+        try:
+            how = s.dispatcher.steer(job['id'], change, turn)
+        except ValueError:
+            return False, 'that task has just ended or is only just starting; check its state before saying anything about it'
+        target = job['target']
+    else:
+        target = chat or rt._work(state, session)
+        how = s.dispatcher.steer_chat(session["id"], turn, target, change) if target and host.at_work(target) else ''
+        if not how:
+            return False, ('nothing is going on%s, so there is nothing to change; hand over new work instead if that is what the user wants'
+                           % (' in the chat "%s"' % chat_name[:60] if chat_name else ''))
+    await rt._send(sid, state, session, turn, "job.steered", job_id=job['id'] if job else '', target=target, how=how)
+    named = 'the task "%s"' % label if label else ('the chat "%s"' % chat_name[:60] if chat_name else 'what the chat\'s agent is doing')
+    if how == 'added':
+        return True, 'The change was added to %s, which has not started yet.' % named
+    if how == 'interrupted':
+        return True, 'The change was sent to %s; the step it was on was interrupted for it.' % named
+    return True, 'The change was passed to %s. The work goes on and takes it in at its next step; do not say it is done.' % named
 
 
 def _words(text):
@@ -665,6 +716,11 @@ async def _page(rt, url, limit):
     return text + ('\n[The page is longer; this is its beginning.]' if page.get('truncated') else '')
 
 
+# What became of a change passed to work in progress (Store.steered), in words for the model.
+STEER_WORDS = {'added': 'part of the task', 'waiting': 'not taken in yet', 'taken': 'taken in', 'interrupted': 'taken in by interrupting',
+               'follow_up': 'came too late and became a task of its own', 'dropped': 'not taken in: the work was stopped or failed'}
+
+
 def _status(rt, state, session):
     """This conversation's tasks, whether the chat is busy, and the timers that are set."""
     s = state["service"]
@@ -674,6 +730,8 @@ def _status(rt, state, session):
              'failed': 'failed', 'cancelled': 'cancelled', 'cancel_requested': 'being cancelled', 'uncertain': 'outcome unknown (interrupted by a restart)'}
     for job in jobs:
         line = '- "%s": %s' % (_job_label(state, job)[:100], words.get(job['status'], job['status']))
+        for change in s.store.steers([job['id']])[-3:]:
+            line += '. Change from the user (%s): %s' % (STEER_WORDS.get(change['status'], change['status']), change['text'][:160])
         result = ' '.join(str(job.get('result') or '').split())
         if job['status'] in ('completed', 'failed') and result:
             line += '. Result: ' + result[:300]
