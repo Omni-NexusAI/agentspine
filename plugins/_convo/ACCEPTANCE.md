@@ -111,8 +111,8 @@ sufficient; every section also needs a live check with real models, a real brows
 - [ ] The written plan is what was said: decisions are the user's, nothing is invented, an edit in the panel stands, and nothing a model
       writes can lose what stood there. Throwing most of a plan over still works: an exchange later, or when planning is finished.
 - [ ] It survives a reload, a lost connection, stopping voice and a restart; the next start says so, also when the user speaks first; handing
-      over gives the whole plan, once, also when the user goes on talking; it can be taken back until its task is made, and a plan whose
-      task was not carried out is there again. Agreeing while the plan is read out is not taken for the yes to handing it over.
+      over gives the plan as it was read out, once, also when the user goes on talking, and a plan whose task was not carried out is there
+      again. Agreeing while the plan is read out is not taken for the yes to handing it over.
 
 ## Languages
 

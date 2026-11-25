@@ -27,9 +27,11 @@ class LastSentence(unittest.TestCase):
                            ('It costs 3.50. Shall I, Dr. Smith?', ' Shall I, Dr. Smith?'), ('You said "wait." Shall I go on? ', ' Shall I go on? '),
                            ('先平整地面。然后搭架子。要我交给主聊天吗？', '要我交给主聊天吗？'), ('まず地面をならします。「次に枠です。」引き渡しますか？', '引き渡しますか？'),
                            ('पहले ज़मीन समतल करें। क्या मैं इसे सौंप दूँ?', ' क्या मैं इसे सौंप दूँ?'), ('أولا نسوي الأرض. هل أسلمها؟', ' هل أسلمها؟'),
-                           ('', ''), ('   ', '   '), ('no mark at all', 'no mark at all'), ('One here. Two', ' Two')):
+                           ('', ''), ('   ', '   '), ('no mark at all', 'no mark at all'), ('One here. Two', ' Two'),
+                           ('First this. Shall I hand it over? 🙂', ' Shall I hand it over? 🙂'), ('First this. Shall I? **', ' Shall I? **'), ('要我交给主聊天吗？😊', '要我交给主聊天吗？😊'), ('🙂', '🙂')):
             lead, end = module.last_sentence(text)
             self.assertEqual((lead + end, end), (text, last))
+        self.assertEqual([module.wordless(text) for text in ('', ' ', '🙂', '***', '…?!', 'a', '吗', 'हाँ', '3')], [True] * 5 + [False] * 4)
 
 
 class ShortFirstSentence(unittest.TestCase):

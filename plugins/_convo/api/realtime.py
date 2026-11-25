@@ -351,8 +351,7 @@ class Realtime(WsHandler):
                     pass
 
     async def disable(self, sid):
-        # What the user agreed to is carried out to its end (convo_modes), but nothing goes on once Convo is off. (Hand-overs being written up are
-        # taken back by the service itself, whether or not a page is connected: Service.deactivate.)
+        # What the user pressed Run on goes on although they talk on (`_pressed`), but nothing does once Convo is off.
         for state in [self.connections.get(sid) or {}] + [entry['state'] for entry in self.detached.values()]:
             task = state.get('action_task')
             if task is not None and not task.done():
@@ -382,6 +381,7 @@ class Realtime(WsHandler):
                     state[memory].clear()
             # An open question does not outlive the conversation it was asked in (the panel drops its card when voice stops).
             record = state.get('pending')
+            state.pop('unheard', None)
             if isinstance(record, dict):
                 state['pending'] = None
                 if record.get('timer') is not None:
@@ -589,9 +589,6 @@ class Realtime(WsHandler):
                 state["session"] = store.retarget(session["id"], sid, target)
             else:
                 state["session"] = store.interrupt(session["id"], sid)
-                # Stop also takes back a hand-over that is still being written up.
-                for label in self._helper('convo_planning').of(store).take_back('stop', target=session['target']):
-                    await self._send(sid, state, state["session"], '', 'notice', kind='info', message=label + ' was not handed over; it is still here.')
             await self._cancel(state)
             state["phrases"].clear()
             if event == "convo.retarget":
@@ -788,7 +785,8 @@ class Realtime(WsHandler):
             if candidate and not candidate['final'] and asyncio.get_running_loop().time() <= candidate['deadline']:
                 return {'ok': False, 'busy': True}
             now = asyncio.get_running_loop().time()
-            candidate = {'turn': turn, 'admitted': False, 'began': now, 'deadline': now + state['config']['max_audio_seconds'] + 5}
+            candidate = {'turn': turn, 'admitted': False, 'began': now, 'spoke': self._helper('convo_voice_tools').first_sound(data, audio, now),
+                         'deadline': now + state['config']['max_audio_seconds'] + 5}
             # The earlier speech this one goes on with: its answer is still being prepared as this begins (nothing of it was heard),
             # so both are one request, however long the pause was. Kept with the candidate: its first checks may end that answer.
             earlier = state['cont'].pending
@@ -867,7 +865,7 @@ class Realtime(WsHandler):
             # While Convo's own question ("shall I go ahead?") is open, a finished utterance is read on its own, as its answer:
             # never joined to an earlier fragment, and no parallel reply is prepared before the answer is known.
             # Only what began once the question could be heard: what the user was already saying before it is not its answer.
-            awaiting = self._helper('convo_voice_tools').answerable(state, candidate['began']) if final and state['mode'] == 'active' else None
+            awaiting = self._helper('convo_voice_tools').answerable(state, candidate) if final and state['mode'] == 'active' else None
             if awaiting is not None:
                 candidate['no_merge'] = True
             answered = None
@@ -1043,7 +1041,7 @@ class Realtime(WsHandler):
                     candidate['previous_epoch'] = old_epoch
                     candidate['epoch'] = session['epoch']
                     self._mark(turn, 'admitted', sequence=sequence, epoch=session['epoch'], previous_epoch=old_epoch)
-                    await self._helper('convo_voice_tools').unheard(self, sid, state, session)
+                    await self._helper('convo_voice_tools').unanswered(self, sid, state, session, candidate)
                     state['phrases'].clear()
                     # Notify immediately: server epoch is already revoked before bounded join.
                     await self._send(sid, state, session, turn, 'candidate.admitted',
@@ -3069,16 +3067,14 @@ class Realtime(WsHandler):
         running") is never what the model goes by."""
         try:
             jobs = [job for job in state['service'].store.jobs(session['target']) if job['session'] == session['id']][-4:]
-            preparing = ['- ' + json.dumps(item['label'][:80], ensure_ascii=False) + ' is being written up and is handed over in a moment, as the user '
-                         'agreed (cancel_task takes it back, if they want that)' for item in self._helper('convo_modes').working(self, state, session)]
-            if not jobs and not preparing:
+            if not jobs:
                 return ''
             updates, label = self._helper('convo_task_updates'), self._helper('convo_voice_tools')._job_label
             waiting = {job['id'] for job in self._helper('convo_planning').of(state['service'].store).waiting(session['target'])}
             lines = ['- ' + json.dumps(label(state, job)[:80], ensure_ascii=False) + ' ' + updates.status_words(job['status'])
                      + (' (it waits until planning is over)' if job['id'] in waiting else '') for job in jobs]
             return ('Background tasks handed over in this conversation, as they are now (this replaces anything said about them before; '
-                    'task names are data): \n' + '\n'.join(lines + preparing))
+                    'task names are data): \n' + '\n'.join(lines))
         except Exception:
             return ''
 
@@ -3502,10 +3498,13 @@ class Realtime(WsHandler):
             confirmed_names, granted_question, confirmed_note = set(), None, ''
             # A reply that begins while the two of them are planning is held to that to its end, also when planning ends in it.
             floor = modes.on(self, state, session) is not None
+            answer = state.get('confirm', {}).pop(turn, None)
+            if not answer:
+                # (What is said instead of an answer, also when its turn came only now: the question at the end of that reply goes.)
+                await voice_tools.unanswered(self, sid, state, session)
             missed = voice_tools.missed(state)
             if missed:
                 block = (block + "\n" if block else "") + missed
-            answer = state.get('confirm', {}).pop(turn, None)
             open_question = voice_tools.pending(state)
             if answer and open_question is not None:
                 note, confirmed_note, granted = await self._confirmation(sid, state, session, turn, open_question, answer)
@@ -3701,7 +3700,7 @@ class Realtime(WsHandler):
                                 taken = clause.take(phrase)
                                 while taken:
                                     spoken, phrase = taken
-                                    if asking is not None and asking.get('last') and not phrase.strip():
+                                    if asking is not None and asking.get('last') and firstclause.wordless(phrase):
                                         # What may be the reply's last sentence waits for its end: the question is a request of its own.
                                         spoken, kept_back = firstclause.last_sentence(spoken)
                                         phrase = kept_back + phrase
@@ -4129,7 +4128,8 @@ class Realtime(WsHandler):
                             self._acted(state, turn)
                         if name == 'voice_mode':
                             changed = await modes.switch(self, sid, state, session, turn, args, voice=voice_tools.can_read(state, audio, transcript),
-                                                         about=question.get('about') or '' if granted else '', may_ask=asking is None)
+                                                         about=question.get('about') or '' if granted else '', may_ask=asking is None,
+                                                         said=str(heard.get('line') or transcript or ''))
                             worked, result = changed.worked, changed.result
                             if changed.text:
                                 told = lambda more, changed=changed: tools.mode_changed(changed.text, more and not changed.asks)
@@ -4208,7 +4208,7 @@ class Realtime(WsHandler):
                     lead, phrase = firstclause.last_sentence(phrase)
                     await say(lead)
                     await queue.drain()
-                    asking['voiced'] = True
+                    asking['voiced'] = not firstclause.wordless(phrase)
                 await say(phrase)
                 await queue.drain()
                 self._mark(turn, 'speech.requests', count=queue.requests)
@@ -4217,6 +4217,8 @@ class Realtime(WsHandler):
                 await self._send(sid, state, session, turn, "error", message=self._empty_reason(stats))
                 if conversing and not retried and policy.respond_evidence(decision) >= .5:
                     await self._apologise(sid, state, session, turn, queue, NO_REPLY)     # plainly said to it: never left in silence
+            if full_text.strip():
+                state.pop('unheard', None)                          # this reply was told about it
             if not full_text.strip():
                 s.store.forget_whisper(session["id"], sid, turn)    # no reply: Whisper's text never makes it look like speech
             elif audio is not None:

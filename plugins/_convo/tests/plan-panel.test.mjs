@@ -287,7 +287,13 @@ test('Discarding takes what was typed with it, and leaves it when it did not wor
     const gone = await panel({ plan: kept, globals, server: { plan_drop: { ok: true, plan: null } } });
     gone.store.editPlan('mine');
     assert.equal(await gone.store.discardPlan(), true);
+    assert.deepEqual(gone.posts.at(-1), { action: 'plan_drop', target: 'a', id: 'p', status: 'kept' });      // what it was seen to be: one that was handed over meanwhile is not discarded
     assert.deepEqual([gone.store.plan, gone.store.planDirty, gone.store.planLost.length], [null, false, 0]);
+    const handed = { ...kept, status: 'handed', revision: 4 };
+    const late_ = await panel({ plan: kept, globals, server: { plan_drop: { ok: false, code: 'invalid', error: 'That plan was already handed over', plan: handed } } });
+    late_.store.editPlan('mine');
+    assert.equal(await late_.store.discardPlan(), false);
+    assert.deepEqual([late_.store.plan.status, late_.store.planNote, late_.store.planText, late_.store.planDirty], ['handed', 'That plan was already handed over', 'mine', true]);
     const failed = await panel({ plan: kept, globals, server: { plan_drop: () => { throw new Error('no answer'); } } });
     failed.store.editPlan('mine');
     assert.equal(await failed.store.discardPlan(), false);
@@ -324,6 +330,18 @@ test('A question about a plan goes with the plan', async () => {
     store.takePlan(kept); ask('another');
     await store.handOverPlan();
     assert.equal(store.pendingAction.id, 'q');                                     // a question about another plan stays
+    // One asked about a plan that was handed over already ("take the task back") stays while it is, and while an old answer still shows it open.
+    const back = { type: 'action.pending', session_id: 's', epoch: 0, id: 'b', label: 'Take the task back', summary: 'a garden shed', seconds: 40, plan_id: 'p', plan_status: 'handed' };
+    store.takePlan(handed); handlers['convo.event']({ data: back });
+    store.takePlan({ ...handed, revision: 9 });
+    assert.equal(store.pendingAction?.id, 'b');
+    store.takePlan({ ...handed, status: 'dropped' });
+    assert.equal(store.pendingAction, null);
+    handlers['convo.event']({ data: { ...back, id: 'k', plan_status: 'kept' } });
+    store.takePlan(open);
+    assert.equal(store.pendingAction?.id, 'k');
+    store.takePlan(handed);
+    assert.equal(store.pendingAction, null);
     await store.stop();
 });
 
@@ -476,4 +494,17 @@ test('The markup: a labelled button, a labelled field that is not a second scrol
     assert.equal((html.match(/overflow-y:auto/g) || []).length, 1);
     for (const button of card.match(/<button[^>]*>/g)) assert.match(button, /type="button"/);
     assert.match(html, /<button type="button" class="button convo-plan-button"[^>]*:aria-pressed=/);
+});
+
+test('Going on with a plan whose task waited says that it was taken back', async () => {
+    const handed = { ...kept, status: 'handed' };
+    for (const taken of [true, false]) {
+        const { store } = await panel({ plan: handed, server: { plan_start: { ok: true, plan: open, ...(taken ? { taken: true } : {}) } } });
+        assert.equal(await store.openEarlier('p'), true);
+        assert.equal(store.planNote, taken ? 'Its task had not started and was taken back.' : '');
+        store.takePlan(kept);                                          // a page that was not up to date: it was handed over meanwhile
+        store.planNote = '';
+        assert.equal(await store.goOnPlanning(), true);
+        assert.equal(store.planNote, taken ? 'Its task had not started and was taken back.' : '');
+    }
 });

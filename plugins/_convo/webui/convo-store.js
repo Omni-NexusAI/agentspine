@@ -364,6 +364,8 @@ function noteNotAnswered(turn, reason) {
 const voicedOf = meta => (Number.isFinite(meta?.voiced_s) && meta.voiced_s >= 0 ? meta.voiced_s : undefined);
 // The audio's pre-roll (sound kept from before the speech began, audio.js PRE_ROLL_SECONDS): the server subtracts it from "short".
 const preRollField = meta => (Number.isFinite(meta?.pre_roll_s) && meta.pre_roll_s > 0 ? { pre_roll_s: meta.pre_roll_s } : {});
+// How long ago the utterance's first sound was, as it is sent (it may have waited): what began before a question is no answer to it.
+const onsetField = candidate => (Number.isFinite(candidate?.began) ? { onset_s: Math.max(0, Math.round(clock() - candidate.began) / 1000) } : {});
 // An overlap probe also carries this device's "Interrupt after" (`barge_in_s`, 0.4-2.0): the server's safety yield uses it for that probe.
 function overlapFields(candidate, voiced, final = false) {
     const fields = {};
@@ -381,6 +383,7 @@ function beginCandidate(attempt) {
     if (store.clipArmed) { clipCapture = { label: store.clipArmed, attempt }; store.clipArmed = ''; store.clipNote = 'Recording the test clip…'; return; }
     setHearing(true); lastActivity = Date.now();
     candidateCapture = resumeAbandoned(attempt) || { turn_id: crypto.randomUUID(), sequence: 0, attempt, final: false };
+    candidateCapture.began = clock() - (audio?.boundary?.spokenFor?.() ?? 0) * 1000;
     candidates.set(candidateCapture.turn_id, candidateCapture); orderOf(candidateCapture.turn_id);
     mark(candidateCapture.turn_id, 'onset', audio?.boundary?.onsetAt || clock());
     while (candidates.size > 16) candidates.delete(candidates.keys().next().value);
@@ -421,7 +424,7 @@ async function sendCandidate(value, attempt, final, meta = null) {
             item.candidate.sentAt ||= Date.now();
             try {
                 await request('candidate', { ...identity(), turn_id: item.candidate.turn_id,
-                    sequence: item.sequence, final: item.final, audio: item.value, ...overlapFields(item.candidate, item.voiced, item.final), ...(item.lead || {}) });
+                    sequence: item.sequence, final: item.final, audio: item.value, ...overlapFields(item.candidate, item.voiced, item.final), ...(item.lead || {}), ...onsetField(item.candidate) });
             } catch (error) {
                 if (item.candidate.attempt !== generation || !store.session || item.candidate.dropped) continue;   // ended or muted meanwhile
                 if (error.kind === 'stale') continue;                                         // an older epoch: nothing to decide any more
@@ -681,7 +684,7 @@ function showAction(event) {
     if (!id) return;
     clearAction();
     const seconds = Number(event.seconds);
-    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false, ...(event.plan_id ? { planId: String(event.plan_id) } : {}) };
+    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false, ...(event.plan_id ? { planId: String(event.plan_id), planStatus: String(event.plan_status || '') } : {}) };
     actionTimer = setTimeout(() => clearAction(id), Math.min(ACTION_MAX_SECONDS, seconds > 0 ? seconds : ACTION_SECONDS) * 1000);
 }
 
@@ -764,6 +767,7 @@ async function answerOpen(event) {
 function layoutOf(element) { return element.scrollHeight + 'x' + element.clientHeight; }
 function look(element) { seenTop = element.scrollTop; seenLayout = layoutOf(element); }
 let sizeWatch = null;
+const TAKEN_BACK = 'Its task had not started and was taken back.';
 let planMark = 0;                                             // counts up while the plan is being changed from here: a poll that overlaps is not up to date
 function watchSize(element) {
     try { sizeWatch?.disconnect?.(); } catch { /* it watched something that is gone */ }
@@ -1494,7 +1498,7 @@ export const store = createStore('convo', {
             if (attempt !== generation || ids.epoch !== this.session?.epoch || reattaching) return;
             if (!candidate) return;
             candidate.sequence++; candidate.final = true;
-            await request('candidate', { ...ids, turn_id, sequence: candidate.sequence, final: true, transcript, ...overlapFields(candidate, voicedOf(meta), true) });
+            await request('candidate', { ...ids, turn_id, sequence: candidate.sequence, final: true, transcript, ...overlapFields(candidate, voicedOf(meta), true), ...onsetField(candidate) });
         } catch (error) { failTurn(error, turn_id); }
     },
     // Advanced synthesis controls (synthesis-setup.js): a profile and overrides for this voice session, from its next reply; nothing
@@ -1685,11 +1689,14 @@ export const store = createStore('convo', {
         if (next.id !== before?.id) { void this.keepEdit(); this.planDirty = false; this.planClash = false; this.planNote = ''; }
         if (next.on && !before?.on) this.planOpen = true;                // planning has just begun (or is found going on): the plan is shown
         this.plan = next;
-        if (!['open', 'kept'].includes(next.status)) this.dropPlanQuestion(next.id);
+        if (!['open', 'kept'].includes(next.status)) this.dropPlanQuestion(next.id, next.status);
         if (!this.planDirty) { this.planText = String(next.text || ''); this.planBase = next.revision; this.planClash = false; }
     },
-    // A question about a plan that is done with goes (the server answers it with nothing, too).
-    dropPlanQuestion(id) { if (id && this.pendingAction?.planId === id) clearAction(this.pendingAction.id); },
+    // A question about a plan that is done with goes (the server answers it with nothing, too); not one asked about a plan that was so already.
+    dropPlanQuestion(id, status = '') {
+        const asked = this.pendingAction;
+        if (id && asked?.planId === id && (!status || asked.planStatus !== status)) clearAction(asked.id);
+    },
     async keepEdit(target = this.target) {
         if (!this.planDirty || !this.plan) return;
         const edit = { id: this.plan.id, topic: this.plan.topic || '', text: this.planText }, revision = this.planBase, was = this.planFrom;
@@ -1768,12 +1775,15 @@ export const store = createStore('convo', {
     async goOnPlanning() {
         if (this.planDirty && !(await this.savePlan())) return false;
         const result = await this.planCall('plan_start', this.plan?.status === 'handed' || !this.plan ? { new: true } : { id: this.plan.id });
+        if (result?.taken) this.planNote = TAKEN_BACK;
         return !!result?.ok;
     },
     // Another plan of this conversation, kept earlier: gone on with. The one in hand is kept in its place.
     async openEarlier(id) {
         if (this.planDirty && !(await this.savePlan())) return false;
-        return !!(await this.planCall('plan_start', { id }))?.ok;
+        const result = await this.planCall('plan_start', { id });
+        if (result?.taken) this.planNote = TAKEN_BACK;
+        return !!result?.ok;
     },
     async handOverPlan() {
         if (!this.plan || (this.planDirty && !(await this.savePlan()))) return false;
@@ -1785,7 +1795,7 @@ export const store = createStore('convo', {
         if (!this.plan || !globalThis.window?.confirm?.('Discard this plan?')) return false;
         const id = this.plan.id, typed = this.planDirty ? { planText: this.planText, planBase: this.planBase, planFrom: this.planFrom } : null;
         this.planDirty = false;                                          // it goes with what was typed into it
-        const result = await this.planCall('plan_drop', { id });
+        const result = await this.planCall('plan_drop', { id, status: this.plan.status });
         if (result?.ok) this.dropPlanQuestion(id);
         else if (typed && this.plan?.id === id) Object.assign(this, typed, { planDirty: true });      // it did not go, nor did that: an edit of what stood there then
         return !!result?.ok;

@@ -22,6 +22,7 @@ import wave
 
 logger = logging.getLogger(__name__)
 
+ANSWER_AFTER = 1.0         # seconds a question at the end of a longer reply has been heard before what the user begins to say can be its answer
 PLAYED_MARGIN = 2.5        # seconds after a question should have begun to play, when the page does not say that it did (a start-up buffer included)
 PENDING_SECONDS = 40.0     # an unanswered "shall I go ahead?" is dropped after this long (the question itself takes a few seconds)
 READ_SECONDS = 6.0         # the isolated yes / no reading of an answer may take this long before the question simply stays open
@@ -193,24 +194,38 @@ def pending(state):
 
 
 def _moved_on(state, record):
-    """Whether the plan a question is about is no longer there to be asked about: handed over or discarded (in the panel, on another page),
-    or, for a question about ending planning, over already."""
+    """Whether the plan a question is about is no longer what it was when it was asked: handed over, discarded, ended or opened again (in the
+    panel, on another page)."""
     if not record.get('about'):
         return False
     try:
-        from .convo_modes import change
         from .convo_planning import of
         plan = of(state['service'].store).get(record['about'])
-        return plan is None or plan['status'] not in (('open', 'kept') if change(record['arguments']) == 'hand_over' else ('open',))
+        return plan is None or plan['status'] != record['stands']
     except Exception:
         return False
 
 
-def answerable(state, began):
-    """The open question an utterance that began at `began` can be the answer to: one the user had begun to hear (or see) by then.
-    What they were already saying before it is not an answer to it."""
+def first_sound(data, audio, now):
+    """When the first sound of an utterance was made, by its first message (`now`). The page says how long ago that was (`onset_s`); for one that
+    does not, by how much audio there is so far (without the sound kept from before it, `pre_roll_s`)."""
+    def number(name, most):
+        value = data.get(name)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= most else None
+    since = number('onset_s', 600)
+    if since is None:
+        since = max(0.0, (Ring._length(audio) or 0.0) - (number('pre_roll_s', 2) or 0.0)) if isinstance(audio, str) else 0.0
+    return now - since
+
+
+def answerable(state, candidate):
+    """The open question this utterance can be the answer to: one the user had begun to hear (or see) before it began (`began`: when its first
+    message came). What they were already saying before it is not an answer to it. One at the end of a longer reply comes right after
+    something that invites agreement: it has been heard for a moment before the first sound of its answer (`spoke`), and it was spoken."""
     record = pending(state)
-    return record if record is not None and record.get('heard') is not None and began >= record['heard'] else None
+    if record is None or record.get('heard') is None or record.get('silent'):
+        return None
+    return record if (candidate['spoke'] >= record['heard'] + ANSWER_AFTER if record.get('last') else candidate['began'] >= record['heard']) else None
 
 
 async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label=None, summary=None, about='', last=False):
@@ -222,7 +237,13 @@ async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label
     await resolve(rt, sid, state, session, 'replaced')
     record = {'id': uuid.uuid4().hex, 'name': name, 'arguments': dict(args), 'summary': tools.summary(name, args) if summary is None else summary,
               'turn': turn, 'label': label or tools.CATALOG[name].get('ask') or tools.LABEL[name], 'prepared': prepared, 'heard': None,
-              'voiced': False, 'planning': _planning_since(state), 'about': about, 'last': last, 'phrase': ''}
+              'voiced': False, 'planning': _planning_since(state), 'about': about, 'stands': '', 'last': last, 'phrase': ''}
+    if about:
+        try:
+            from .convo_planning import of
+            record['stands'] = (of(state['service'].store).get(about) or {}).get('status', '')
+        except Exception:
+            pass
     state['pending'] = record
     state['service'].store.append(session["id"], sid, session["epoch"], turn, "action.asked",
                                   {"id": record['id'], "name": name, "summary": record['summary']})
@@ -230,14 +251,14 @@ async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label
     return record
 
 
-async def show(rt, sid, state, session, record):
-    """The question can now be answered: its card is shown and its time starts."""
+async def show(rt, sid, state, session, record, silent=False):
+    """The question can now be answered: its card is shown and its time starts. `silent`: it was never spoken, so only its card answers it."""
     if record.get('heard') is not None or pending(state) is not record:
         return
     waited = record.get('timer')
     if waited is not None and waited is not asyncio.current_task():
         waited.cancel()
-    record['heard'] = asyncio.get_running_loop().time()
+    record['heard'], record['silent'] = asyncio.get_running_loop().time(), silent
     rt._mark(record['turn'], 'action.shown', tool=record['name'])
 
     async def expire():
@@ -246,7 +267,8 @@ async def show(rt, sid, state, session, record):
             await resolve(rt, sid, state, state.get('session') or session, 'expired')
     record['timer'] = asyncio.ensure_future(expire())
     await rt._send(sid, state, session, record['turn'], 'action.pending', id=record['id'], name=record['name'], label=record['label'],
-                   summary=record['summary'], seconds=int(PENDING_SECONDS), **({'plan_id': record['about']} if record.get('about') else {}))
+                   summary=record['summary'], seconds=int(PENDING_SECONDS),
+                   **({'plan_id': record['about'], 'plan_status': record['stands']} if record.get('about') else {}))
 
 
 async def heard(rt, sid, state, session, turn, phrase=''):
@@ -269,25 +291,28 @@ async def playing(rt, sid, state, session, phrase):
         await show(rt, sid, state, session, record)
 
 
-async def unheard(rt, sid, state, session):
-    """The user spoke and what was still to be played is dropped: a question at its end that nobody heard goes with it."""
+async def unanswered(rt, sid, state, session, candidate=None):
+    """The user said something (the utterance `candidate`) that is not the answer to a question at the end of a reply: that question goes. Only the
+    very next thing they say, begun once they had heard it, can answer it."""
     record = pending(state)
-    if record is not None and record.get('phrase') and record.get('heard') is None:
+    if record is not None and record.get('last') and (candidate is None or answerable(state, candidate) is not record):
         await resolve(rt, sid, state, session, 'replaced', by='unheard')
         _missed(state, record)
 
 
 def _missed(state, record):
-    """The question at the end of a reply was not heard: the next reply is told, so that it can be asked again when it still fits."""
+    """The question at the end of a reply was not answered: the next reply is told, so that it can be asked again when it still fits."""
     if record.get('last'):
         state['unheard'] = record['label'] + (': ' + json.dumps(record['summary'], ensure_ascii=False) if record['summary'] else '')
 
 
 def missed(state):
-    """What the reply to what was said instead is told about a question nobody heard ('' when there was none), once."""
-    what = state.pop('unheard', None)
-    return ('Your last reply was cut off before the user heard the question at its end (' + what + '). Nothing was asked and nothing was started; what '
-            'they say now is not its answer. When it still fits what they want, make that call again (they are asked then).') if what else ''
+    """What a reply is told about a question that went ('' when there was none): the one to what was said instead, and when that one says nothing
+    (it was noise, or it was cut off as well) the next. `state['unheard']` goes once a reply has been given."""
+    what = state.get('unheard')
+    return ('The user spoke before they could hear or answer the question at the end of your last reply (' + what + '). Nothing was agreed to and '
+            'nothing was started, and what they say now is not its answer. When it still fits what they want, make that call again: they are asked '
+            'then.') if what else ''
 
 
 async def asked_aloud(rt, sid, state, session, turn, over):
@@ -300,15 +325,17 @@ async def asked_aloud(rt, sid, state, session, turn, over):
     if over:
         await resolve(rt, sid, state, state.get('session') or session, 'replaced', by='unheard')
         _missed(state, record)
-    elif record.get('phrase') in state['phrases']:
+    elif not record.get('last'):
+        await show(rt, sid, state, session, record)
+    elif record['phrase'] not in state['phrases']:
+        await show(rt, sid, state, session, record, silent=True)      # its sentence could not be spoken: its card alone answers it
+    else:
         # It was sent and is still to be played: the page says when (`playing`). Without a word from it, after the time that takes.
         async def in_time(seconds):
             await asyncio.sleep(seconds)
             if state.get('pending') is record:
                 await show(rt, sid, state, state.get('session') or session, record)
         record['timer'] = asyncio.ensure_future(in_time(rt._until_played(state, record['phrase']) + PLAYED_MARGIN))
-    else:
-        await show(rt, sid, state, session, record)
 
 
 async def resolve(rt, sid, state, session, outcome, by=''):
@@ -589,15 +616,11 @@ async def _cancel(rt, state, session, what, kind=''):
     This is a lookup of an identifier among the user's own tasks and timers, not a reading of intent: each candidate is scored
     by how many of the words occur in its text as whole words, then by how much of its text those words cover (so a small word
     shared with a long task never beats the timer the words name), then by recency. Nothing in common with any candidate
-    cancels nothing. A plan that is being written up to be handed over is taken back unless the words clearly name a task or a timer: that is the
-    newest thing there is, "no, do not hand it over" names it in many ways, and taking it back loses nothing (the plan is still here)."""
-    s, modes = state["service"], rt._helper('convo_modes')
+    cancels nothing."""
+    s = state["service"]
     jobs = [] if kind == 'timer' else [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'running')]
     pending_timers = [] if kind == 'task' else list(reversed(timers(s).pending(TIMER_SCOPE)))
-    preparing = [] if kind == 'timer' else list(reversed(modes.working(rt, state, session)))
-    plan_name = lambda label: label.partition(': ')[2] if label.startswith('The plan: ') else '' if label == 'The plan' else label
-    candidates = ([('plan', item, item['label']) for item in preparing] + [('task', job, _job_label(state, job)) for job in jobs]
-                  + [('timer', timer, str(timer.get('label') or '')) for timer in pending_timers])
+    candidates = [('task', job, _job_label(state, job)) for job in jobs] + [('timer', timer, str(timer.get('label') or '')) for timer in pending_timers]
     if not candidates:
         return False, ('no timer is set' if kind == 'timer' else 'no task is queued or running' if kind == 'task'
                        else 'no task is queued or running and no timer is set')
@@ -605,22 +628,16 @@ async def _cancel(rt, state, session, what, kind=''):
     chosen = candidates[0]
     if wanted:
         def fit(candidate):
-            text = set(_words(plan_name(candidate[2]) if preparing else candidate[2]))
+            text = set(_words(candidate[2]))
             shared = len(wanted & text)
             return shared, (shared / len(text) if text else 0.0)
         best = max(candidates, key=fit)            # max keeps the first of equals: the most recent
-        if preparing and best[0] != 'plan' and fit(best)[0] < 2 and fit(best)[1] < .5:
-            best = max(candidates[:len(preparing)], key=fit)
         if fit(best)[0]:
             chosen = best
-        elif not kind and not preparing:
+        elif not kind:
             return False, 'nothing that is running or set matches that'
         # The kind was named and no label matches the words (an unlabelled timer, "the timer"): the most recent of that kind.
     which, item, label = chosen
-    if which == 'plan':
-        if not modes.plans(rt, state).take_back('voice', plan_id=item['plan'], target=session['target']):
-            return False, 'it has just been handed over; its task can be cancelled instead'
-        return True, 'The plan%s is not handed over after all; it is still here.' % (' "%s"' % plan_name(label)[:80] if plan_name(label) else '')
     if which == 'task':
         try:
             s.dispatcher.cancel(item['id'])
@@ -640,30 +657,22 @@ async def _steer(rt, sid, state, session, turn, args):
     change, what = str(args['change']).strip(), str(args.get('what') or '')
     jobs = [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'dispatching', 'running')]
     chat, chat_name = '', ''
-    # A plan that is just being written up to be handed over is work that is going on, too: what they say now goes along with it.
-    modes = rt._helper('convo_modes')
-    preparing = list(reversed(modes.working(rt, state, session)))
     if str(args.get('chat') or '').strip():
         found = await host.find_chat(' '.join(str(args['chat']).split()))
         chat, chat_name = found['id'], found['name']
-        jobs, preparing = [job for job in jobs if job['target'] == chat], []
-    going_on = [(item, item['label']) for item in preparing] + [(job, _job_label(state, job)) for job in jobs]
-    job = going_on[0][0] if len(going_on) == 1 else None
+        jobs = [job for job in jobs if job['target'] == chat]
+    job = jobs[0] if len(jobs) == 1 else None
     wanted = set(_words(what))
-    if len(going_on) > 1 and wanted:
+    if len(jobs) > 1 and wanted:
         def fit(candidate):
-            text = set(_words(candidate[1]))
+            text = set(_words(_job_label(state, candidate)))
             shared = len(wanted & text)
             return shared, (shared / len(text) if text else 0.0)
-        best = max(going_on, key=fit)
-        job = best[0] if fit(best)[0] and [fit(candidate) for candidate in going_on].count(fit(best)) == 1 else None
-    if len(going_on) > 1 and job is None:
+        best = max(jobs, key=fit)
+        job = best if fit(best)[0] and [fit(candidate) for candidate in jobs].count(fit(best)) == 1 else None
+    if len(jobs) > 1 and job is None:
         return False, 'more than one task is going on (%s); ask the user which one is meant' % '; '.join(
-            json.dumps(name[:60], ensure_ascii=False) for _, name in going_on[:4])
-    if any(job is item for item in preparing):
-        if not modes.plans(rt, state).add_to(job, change):
-            return False, 'that plan has just been handed over; its task can be changed instead'
-        return True, 'The change was added to %s, which is just being written up and is handed over in a moment.' % json.dumps(job['label'][:80], ensure_ascii=False)
+            json.dumps(_job_label(state, candidate)[:60], ensure_ascii=False) for candidate in jobs[:4])
     label = ''
     if job is not None:
         label = _job_label(state, job)[:80]

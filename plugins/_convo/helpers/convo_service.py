@@ -225,11 +225,6 @@ class Service:
             self.connections.clear()
             retiring = list(self.retiring_connections.items())
         self.dispatcher.pause()
-        try:
-            from . import convo_planning
-            convo_planning.of(self.store).take_back('off')      # a plan being written up to be handed over: nothing starts once Convo is off
-        except Exception:
-            pass
         whisper = getattr(self, 'whisper', None)
         if whisper is not None:
             try:

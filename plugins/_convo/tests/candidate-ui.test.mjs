@@ -265,3 +265,18 @@ test('A host-masked fault still reads as one, and a stale or busy answer is not 
     const g=await fixture(t,{respond:event=>event==='convo.start'?refused({stale:true}):null});
     assert.equal(g.store.error,'Stale voice operation withheld.');
 });
+
+test('What is sent says how long ago its first sound was, also when it had to wait', async t => {
+    let busy = 1;
+    const f = await fixture(t, { respond: (event, data) => event === 'convo.candidate' && data.final && busy-- > 0 ? refused({ busy: true }) : null });
+    f.mic.boundary = { spokenFor: () => .45 };                        // admitted after .45 s of voice (held back meanwhile, or not)
+    f.mic.onStart();
+    f.mic.onProbe('bounded-wave');
+    await settle(60);
+    f.mic.onTurn('final-wave');
+    await settle(60);
+    const sent = f.sent();
+    assert.deepEqual(sent.map(item => item.final), [false, true, true]);
+    assert.ok(sent[0].onset_s >= .45 && sent[0].onset_s < .5, String(sent[0].onset_s));
+    assert.ok(sent[1].onset_s >= .5 && sent[2].onset_s > sent[1].onset_s, JSON.stringify(sent.map(item => item.onset_s)));   // sent again later: it began as long ago as it did
+});

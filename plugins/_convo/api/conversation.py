@@ -74,8 +74,8 @@ def plan_action(m, s, target, action, data):
             # `fresh`: the Plan button. It begins a new plan unless one is being worked on (a page that was not up to date): the one kept last
             # is gone on with by its own button, never by the way.
             new = data.get('new') is True or (data.get('fresh') is True and kept.open(target) is None)
-            kept.begin(target, str(data.get('topic') or ''), new=new, plan_id=str(data.get('id') or ''), session=session)
-            return {'ok': True, 'plan': kept.view(target)}
+            begun, _ = kept.begin(target, str(data.get('topic') or ''), new=new, plan_id=str(data.get('id') or ''), session=session)
+            return {'ok': True, 'plan': kept.view(target), **({'taken': True} if begun.get('taken') else {})}
         kept.settle()
         plan = kept.get(str(data.get('id') or ''))
         if plan is None or plan['target'] != target:
@@ -84,8 +84,8 @@ def plan_action(m, s, target, action, data):
         if action == 'plan_version':
             version = data.get('version')
             return {'ok': True, 'text': kept.version(plan['id'], version if type(version) is int else 0), 'plan': kept.view(target)}
-        if action in ('plan_end', 'plan_drop', 'plan_hand_over'):
-            kept.take_back('panel', plan_id=plan['id'])        # one that is being written up after a yes by voice: this press decides instead
+        if action == 'plan_drop' and plan['status'] == 'handed' and data.get('status') in ('open', 'kept'):
+            raise ValueError(kept.HANDED)                      # (a page that was not up to date: its task runs, so it was not discarded)
         if action == 'plan_save':
             kept.write(plan['id'], data.get('text'), revision=data.get('revision'), by='user', topic=data.get('topic') or '',
                        was=data.get('was') if isinstance(data.get('was'), str) else None)

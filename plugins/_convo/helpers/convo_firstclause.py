@@ -81,9 +81,14 @@ def _last_sentence_end(text, limit):
     return last
 
 
+def wordless(text):
+    """Whether a text holds nothing to hear (a mark, an emoji)."""
+    return not any(letter.isalnum() for letter in text)
+
+
 def last_sentence(text):
     """(everything before the last full sentence, that sentence), in any script: a reply's question that comes at its end. The whole text is
-    one sentence when no other ends inside it."""
+    one sentence when no other ends inside it; what follows the last one without a word in it belongs to it."""
     body, cut = text.rstrip(), 0
     for index, mark in enumerate(body):
         if mark in WIDE:
@@ -94,7 +99,7 @@ def last_sentence(text):
             end = _sentence_end(body, index)
         else:
             continue
-        if end and end < len(body):
+        if end and not wordless(body[end:]):
             cut = end
     return text[:cut], text[cut:]
 

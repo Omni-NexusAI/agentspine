@@ -398,21 +398,26 @@
     change in it (Convo adds the user's own words when the model left it out) and to another chat only when those words name it). A reply
     that began while planning is held to the floor to its end, also when planning ends in it (`floor`); it asks one thing at most
     (`may_ask`). A new tool that is not `read` is held by the same rule; the table in `tests/test_planning.py` (`Floor`) must name it.
-  - **A question about a plan** carries its id (`about`): it stands only while that plan can still be what was asked (`voice_tools._moved_on`: handed
-    over or discarded in the panel, ended, opened again), else it is dropped, its card goes and the reply is told. One that the reply puts at
-    its end (`last`) can be answered only from the moment its last sentence PLAYS: that sentence is a speech request of its own
-    (`convo_firstclause.last_sentence`, held back while the reply streams), and the page's playback receipt opens the question
-    (`voice_tools.playing`; a page that sends none: after the time it takes, `_until_played`). Audio is sent well ahead of the loudspeaker, so
-    "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to answer begins with the question.
-    Speech that drops what was still to be played drops an unheard question with it (`unheard`), and the next reply is told once (`missed`).
-  - **What the user agreed to** is carried out to its end (`modes._to_its_end`), also when they speak over the reply, add a word or stop voice;
-    from the panel's Run in a task of its own (`_pressed`). Until its task is made it can be taken back (`Plans.take_back`; the list `Plans.work`
-    belongs to the journal, not to a connection): by voice, whichever conversation is running by then (`cancel_task`: whatever it is called
-    by, unless the words clearly name another task or timer), by `voice_mode` keep, with the stop-reply key while the reply to the yes is under
-    way, by End planning, Discard or Hand over in the panel, by turning Convo off (`Service.deactivate`). `Plans.hand_over(item)` refuses it in
-    the same transaction. What they say should be different meanwhile goes along (`steer_task`, or handing it over once more with a change:
-    `Plans.add_to`); what else was said while it was written up does, too (`unwritten`). A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with
-    before its task has started, the task is taken back with what was added to it (`Plans.begin`), else both versions would run.
+  - **A question about a plan** carries its id and what the plan was when it was asked (`about`, `stands`): it stands only while the plan is
+    still that (`voice_tools._moved_on`), else it is dropped, its card goes and the reply is told. One that the reply puts at its end (`last`)
+    can be answered only from the moment its last sentence PLAYS: that sentence is a speech request of its own
+    (`convo_firstclause.last_sentence`, held back while the reply streams; a mark or an emoji after it belongs to it, `wordless`), and the page's
+    playback receipt opens the question (`voice_tools.playing`; a page that sends none: after the time it takes, `_until_played`). Audio is sent
+    well ahead of the loudspeaker, so "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to
+    answer begins with the question. Its answer's first sound (`first_sound`; the page says how long ago that was, `onset_s`) comes at least
+    `ANSWER_AFTER` later, and it is the very next thing that is answered: whatever else is admitted or answered takes the question away
+    (`unanswered`), and the next reply that says something is told (`missed`), so that it is asked again when it still fits. One that could not
+    be spoken is answered by its card alone (`silent`).
+  - **Handing over has one way**: the final text is written, planning ends (`kept`), the plan is said, the user is asked, and their yes hands
+    over exactly that, at once (`_hand_over`; `_at_once`: a chat may have to be found or made for it, and what they say meanwhile does not lose
+    it; nothing happens once Convo is off). Handing over a plan that is being worked on finishes it first (`_leave`; the chat and the change
+    they named stay with the question). Speaking while the final text is written simply goes on planning. The model's call is not enough,
+    nor that some request was heard (`decide`): a yes, or their own words asking for it (ASKED `voice_mode:hand_over`). There used to be a
+    hand-over that was agreed to first and written up after the yes; everything said or pressed in that window needed a rule of its own, and
+    one review after another found one that was missing. Do not bring it back.
+    A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with before its task has
+    started, the task is taken back with what was added to it (`Plans.begin`, `with_decisions`), else both versions would run; that takes the
+    user's word, too (`puts_away`).
   - **The other ways in**, all closed: a search that got nothing is asked about, not handed over (`search_ask_first`); a question open from
     before is dropped (`begin` resolves it; `voice_tools.pending` drops one that planning overtook when it was switched on in the panel or
     on another page, by plan and start, never by a clock); tasks queued before, and any queued meanwhile without a yes (a change that came too
@@ -424,11 +429,12 @@
     follow-up): it only makes Convo more careful. In one pass it is carried out first, and it does not end the reply's look-ups.
     **Off**: only on the user's word: their own utterance, read alone, says so (ASKED `voice_mode`), else they are asked; or the panel. The same
     holds for putting a plan with something in it away for another one (`modes.puts_away`, ASKED `voice_mode:plan`); one with nothing
-    written is simply replaced (unless it is just being written up). Earlier plans, handed-over ones too, are found by exactly what they are
+    written is simply replaced. Earlier plans, handed-over ones too, are found by exactly what they are
     called (`Plans.match`, `same`: the same words in the same order; a similar name is another plan's name; the model, which understands what is
     meant, is told the names when a new one was begun) and listed in the panel (`earlier`: what was kept comes first). The panel's Plan button begins a new plan (`fresh`), unless one is being worked on.
   - **Finishing** (`voice_mode` conversation, `plan` finish, the default): the final plan is written by one request (bounded,
-    `FINAL_SECONDS`; the kept one when that fails, with what was said since it was written when it is handed over, `Plans.unwritten`),
+    `FINAL_SECONDS`; told what the user has just said; when it fails the kept one, with what was said since it was written added as it was said,
+    `SINCE`, `Plans.unwritten`),
     planning ends (`kept`), the model says the plan and asks whether to hand it over: that
     question is an ordinary pending one (`voice_mode` hand_over); yes = one task with the whole plan (`handed`), no = it stays `kept` and can be
     gone on with, handed over later or copied. `keep` ends without all that. Handing over is `work` (`modes.kind`) and happens once
@@ -442,8 +448,8 @@
     ends that mean that; no `answer.done` is none of them; a server that names no reason is believed when nothing got shorter). One that
     lost most of the plan is taken only when the next writing of the same text still says so an exchange later (`plan_shrank`), and a final one
     when it says so twice (`insist`); its room grows with the plan (`MOST_TOKENS`). The lines the user wrote themselves are known (`own`): every
-    writing is told them, and one that leaves one out or changes it (`planning.missing`: word for word) counts only when the model, asked once
-    about exactly those lines, still says so. Nothing is put back by force: whether the user has said otherwise since is for the model to
+    writing is told them, and one that leaves one out or changes it (`planning.missing`: word for word, a line of its own under its heading; what
+    was set aside is none) counts only when the model, asked once about exactly those lines, still says so and has touched no other one. Nothing is put back by force: whether the user has said otherwise since is for the model to
     understand. Every text that was replaced stays findable (`plan_versions`: the newest `VERSIONS`, and the user's own last words however
     old; discarding a plan removes them), and the panel puts one back. Revision check: an edit made meanwhile in the panel stands (`was`: a plan that was only ended or
     named is no conflict). Developer view: memory events `plan`.
@@ -452,8 +458,8 @@
     (`modes.ROUNDS`, `modes.BUDGET`). Voice starting in a conversation that is planning says so once (`_still_planning`), or the first
     reply does when the user speaks first.
   - Journal: `plan.started {how}`, `plan.ended {how}`, `plan.edited`, `plan.resumed`. Panel actions (`api/conversation.py` `plan_start`, `plan_save`
-    with a revision, `plan_end`, `plan_hand_over`, `plan_drop`, `plan_version` to read a replaced text): each is the user's own press. Tests:
-    `test_planning.py`, `plan-panel.test.mjs`.
+    with a revision, `plan_end`, `plan_hand_over`, `plan_drop` with the status the page showed (one handed over meanwhile is not discarded),
+    `plan_version` to read a replaced text): each is the user's own press. Tests: `test_planning.py`, `plan-panel.test.mjs`.
 - `project_files` (`helpers/convo_files.py`, read-only): list, read and search the folder the chat's agent works in (its project, else the work
   folder; `Host.work_folder`). Paths are resolved with their links and must stay inside; hidden names, what usually holds keys (by name) and
   binaries are left out, and a line that looks like a key is replaced, in what is read and what is found. A folder that holds Agent Zero's

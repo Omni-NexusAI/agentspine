@@ -10,11 +10,11 @@ says which revision it read: what changed meanwhile wins and Convo writes again 
 wrote themselves are known (`own`): a rewriting that leaves one out, or changes it, is asked about exactly those lines before it counts
 (convo_modes.write). Whether the user has said otherwise since is for the model to understand; nothing is put back by force.
 
-A plan is handed over once: `hand_over` makes the task and ends the plan in one step, only from an open or a kept plan. Until that step it can be
-taken back, from anywhere (`work`, `take_back`): the list belongs to the journal, not to a connection. When the task is cancelled or fails the
-plan was not carried out: it is a kept one again (`settle`); gone on with before its task has started, the task is taken back (`begin`). Earlier
-plans stay findable: by exactly what they are called (`match`; the model, which understands what is meant, is told the names), and in the
-panel's list (`earlier`).
+A plan is handed over once, as it is written: `hand_over` makes the task and ends the plan in one step, only from an open or a kept plan. (By
+voice the final text is written and read out before anyone is asked, so a yes is for exactly that: convo_modes.) When the task is cancelled
+or fails the plan was not carried out: it is a kept one again (`settle`); gone on with before its task has started, the task is taken back
+(`begin`). Earlier plans stay findable: by exactly what they are called (`match`; the model, which understands what is meant, is told the
+names), and in the panel's list (`earlier`).
 
 While a plan is open, tasks of that conversation that have not started yet wait (`held`); only those the user agreed to meanwhile
 (`allow`) start. Text is the user's own plan: data to the model, never instructions."""
@@ -35,14 +35,13 @@ AGAIN_SECONDS = 30 * 86400  # a kept plan older than this is not opened again by
 SHOWN_SECONDS = 7 * 86400   # an ended plan stays in the panel for this long
 EARLIER = 6                 # earlier plans the panel and the model are told about
 VERSIONS, VERSIONS_SHOWN = 20, 8   # replaced texts of one plan that are kept, and that the panel lists
-SINCE_LIMIT = 2400          # characters of what was said that go along when a final text could not be written
+SINCE_LIMIT = 2400          # characters of what was said that are written down as it was when a final text could not be written
 OWN_TOLD, GONE_TOLD = 3000, 2000   # characters of the user's own lines a writing is told about, and of those it had left out
 
 CHANGED = 'The plan was changed meanwhile'
 GONE = 'That plan is no longer there'
 HANDED = 'That plan was already handed over'
 EMPTY = 'Nothing is written down in this plan yet'
-TAKEN_BACK = 'It was taken back'
 
 # The record's headings. Convo asks for them in English whatever language the plan is in: they are its own control words.
 SECTIONS = ('Goal', 'Decisions', 'Open questions', 'Steps', 'Set aside')
@@ -106,19 +105,22 @@ FINAL = (UPKEEP + '\nDo not reply to the user and do not call any tool. You and 
          'edited the current plan and do not bring back what they removed. Never invent anything. Return only the plan.')
 
 
-def instruction(plan, final=False, attempt='', gone=()):
+def instruction(plan, final=False, attempt='', gone=(), said=''):
     """The latest message of the keeper's request, with the current plan as data, and the lines of it the user wrote themselves. `attempt`,
-    `gone`: what the model has just written, and which of those lines it left out or changed in it: it is asked about exactly those, once."""
+    `gone`: what the model has just written, and which of those lines it left out or changed in it: it is asked about exactly those, once.
+    `said`: what the user has just said and the conversation above does not hold yet (the words that finish a plan may decide something)."""
     text = ((FINAL if final else KEEP) + ('\nTopic so far (data): ' + json.dumps(plan['topic'], ensure_ascii=False) if plan['topic'] else '')
             + '\nCurrent plan (data' + (', last edited by the user' if plan['by'] == 'user' else '') + '): '
             + (json.dumps(plan['text'], ensure_ascii=False) if plan['text'] else 'nothing is written down yet.'))
     if plan.get('own'):
-        text += ('\nLines of it the user wrote themselves (data; keep each one word for word, unless the user has said otherwise since): '
-                 + json.dumps(_some(plan['own'], OWN_TOLD), ensure_ascii=False))
+        text += ('\nLines of it the user wrote themselves (data; keep each one word for word under its heading, unless the user has said otherwise '
+                 'since): ' + json.dumps(_some(plan['own'], OWN_TOLD), ensure_ascii=False))
+    if said:
+        text += '\nWhat the user has just said, after all of the conversation above (data; it counts): ' + json.dumps(words(said, 1200), ensure_ascii=False)
     if gone:
         text += ('\nWhat you have just written (data): ' + json.dumps(attempt, ensure_ascii=False) + '\nThese lines, which the user wrote themselves, '
                  'are missing or changed in it (data): ' + json.dumps(_some(gone, GONE_TOLD), ensure_ascii=False) + '\nFor each of them: when the user '
-                 'has said otherwise since, leave it out; else put it back word for word where it belongs. Change nothing else and return only '
+                 'has said otherwise since, leave it out; else put it back word for word under its heading. Change nothing else and return only '
                  'the plan.')
     return text
 
@@ -126,11 +128,13 @@ def instruction(plan, final=False, attempt='', gone=()):
 def _some(lines, limit):
     """As many of these lines as fit into `limit` characters."""
     chosen = []
-    for line in lines:
+    for entry in lines:
+        section, _, line = entry.rpartition('\t')
+        line = (section.capitalize() + ': ' if section else '') + line[:600]
         limit -= len(line)
         if limit < 0 and chosen:
             break
-        chosen.append(line[:600])
+        chosen.append(line)
     return chosen
 
 
@@ -141,12 +145,12 @@ HAND_OVER = ('Carry out the plan below. The user worked it out in conversation w
 CHANGE = '\n\nChanged by the user when they handed it over (this wins over what is above):\n- '
 
 
-SINCE = '\n\nSaid after the plan above was written down, and not taken into it (where it differs, this wins):\n'
+SINCE = '\n\nSaid after this was written down, and not worked in yet (where it differs, this wins):\n'
 
 
-def task(plan, since=''):
-    """The task a plan is handed over as. `since`: what was said and is not in it yet (`Plans.unwritten`)."""
-    return HAND_OVER + (('What is planned: ' + plan['topic'] + '\n\n') if plan['topic'] else '') + plan['text'].strip() + (SINCE + since if since else '')
+def task(plan):
+    """The task a plan is handed over as."""
+    return HAND_OVER + (('What is planned: ' + plan['topic'] + '\n\n') if plan['topic'] else '') + plan['text'].strip()
 
 
 # Scripts written without a space between two words: Thai and Lao, Burmese, Khmer, Japanese, Chinese.
@@ -189,30 +193,59 @@ def _line(text):
 
 
 def _lines(text):
-    """The lines of a plan: {as compared: as written}. What stands beside a heading is a line, too; a heading is none."""
-    found = {}
+    """The lines of a plan: {(its heading, as compared): as written}. What stands beside a heading is a line, too; a heading is none."""
+    found, section = {}, ''
     for raw in str(text or '').split('\n'):
         heading = _HEADING.match(raw)
+        if heading:
+            section = heading.group(1).lower()
         line = (heading.group(2) if heading else raw).strip().lstrip('-*•· ').strip()
-        if _line(line) and not (heading and heading.group(1).lower() == 'topic'):
-            found.setdefault(_line(line), line)
+        if _line(line) and section != 'topic':
+            found.setdefault((section, _line(line)), line)
     return found
 
 
 def own_lines(before, after, own=()):
-    """The lines of `after` that are the user's own: what they added or changed, and what was theirs already and still stands."""
-    was, now, mine = _lines(before), _lines(after), {_line(line) for line in own}
-    return [now[key] for key in now if key not in was or key in mine]
+    """The lines of `after` that are the user's own ("heading<tab>line"): what they added or changed, and what was theirs already and still stands."""
+    was, now = _lines(before), _lines(after)
+    mine = {(section, _line(line)) for section, _, line in (entry.rpartition('\t') for entry in own)}
+    return [section + '\t' + line for (section, key), line in now.items() if (section, key) not in was or (section, key) in mine]
 
 
 def missing(own, text):
-    """Those of the user's own lines that do not stand in a text word for word: as a line, or as a whole clause of one ("use metal" does not stand
-    in "do not use metal")."""
-    stands = set()
-    for line in _lines(text):
-        stands.add(line)
-        stands.update(_line(piece) for piece in re.split(r'[.;:()。；：（）]\s*', line))
-    return [line for line in own if _line(line) and _line(line) not in stands]
+    """Those of the user's own lines that do not stand in a text word for word, as a line of their own under the same heading: "do not use metal" is
+    not "use metal", and a decision that was set aside is none. (One they wrote under no heading may stand under any but Set aside.)"""
+    stands = _lines(text)
+    anywhere = {key for section, key in stands if section != 'set aside'}
+    gone = []
+    for entry in own:
+        section, _, line = entry.rpartition('\t')
+        if _line(line) and not ((section, _line(line)) in stands if section else _line(line) in anywhere):
+            gone.append(entry)
+    return gone
+
+
+def with_decisions(text, lines):
+    """A plan's text with more of what the user decided: under its own heading, or after what was said or changed last (that wins over what is above)."""
+    if SINCE.strip() in text or CHANGE.strip() in text:
+        return text.rstrip() + ''.join('\n- ' + line for line in lines)
+    rows, inside, at = text.rstrip().split('\n') if text.strip() else [], False, None
+    for index, row in enumerate(rows):
+        heading = _HEADING.match(row)
+        if heading and inside:
+            at = index
+            break
+        inside = inside or bool(heading and heading.group(1).lower() == 'decisions')
+    if inside:
+        at = len(rows) if at is None else at
+        while at and not rows[at - 1].strip():
+            at -= 1
+        return '\n'.join(rows[:at] + ['- ' + line for line in lines] + rows[at:])
+    aside = next((index for index, row in enumerate(rows) if (_HEADING.match(row) or [''])[0] and _HEADING.match(row).group(1).lower() == 'set aside'), None)
+    block = ['Decisions:'] + ['- ' + line for line in lines]
+    if aside is None:
+        return '\n'.join(rows + ([''] if rows else []) + block)
+    return '\n'.join(rows[:aside] + block + [''] + rows[aside:])
 
 
 def _plan(row):
@@ -228,11 +261,10 @@ def _plan(row):
 
 
 class Plans:
-    CHANGED, GONE = CHANGED, GONE
+    CHANGED, GONE, HANDED = CHANGED, GONE, HANDED
 
     def __init__(self, store, clock=time.time):
         self.store, self.clock = store, clock
-        self.work = []              # hand-overs the user agreed to that are being written up (convo_modes._to_its_end)
 
     # ── reading ──
     def _row(self, query, *values):
@@ -322,61 +354,31 @@ class Plans:
                                          (plan['target'], plan['upto'])).fetchall()
         return sum(1 for row in rows if not hidden(json.loads(row['content'])))
 
-    def unwritten(self, plan, limit=SINCE_LIMIT):
-        """What was said since the plan was last brought up to date, oldest first (the newest that fits), or ''."""
-        from .convo_history import hidden, words as said
+    def unwritten(self, plan, said='', limit=SINCE_LIMIT):
+        """What was said since the plan was last brought up to date, oldest first (the newest that fits), or ''. `said`: what the user has just
+        said, which the journal does not hold as a finished exchange yet."""
+        from .convo_history import hidden, words as their_words
         with self.store.lock:
             rows = self.store.db.execute('SELECT content FROM turns WHERE target=? AND settled=1 AND rowid>? ORDER BY rowid DESC LIMIT 24',
                                          (plan['target'], plan['upto'])).fetchall()
-        lines = []
+        spoken = [('User', said)]
         for row in rows:
             turn = json.loads(row['content'])
-            for who, text in (('Assistant', turn.get('assistant')), ('User', said(turn))) if not hidden(turn) else ():
-                line = '- %s: %s' % (who, words(text, 600))
-                if words(text) and limit >= len(line):
-                    lines.insert(0, line)
-                    limit -= len(line)
+            spoken += [('Assistant', turn.get('assistant')), ('User', their_words(turn))] if not hidden(turn) else []
+        lines = []
+        for who, text in spoken:
+            line = '- %s: %s' % (who, words(text, 600))
+            if words(text) and limit >= len(line):
+                lines.insert(0, line)
+                limit -= len(line)
         return '\n'.join(lines)
 
-    # ── hand-overs being written up ──
-    def prepare(self, plan, label):
-        """A hand-over the user agreed to begins to be written up. `made`: its task exists; `back`: who took it back ('' nobody); `changes`: what
-        they said should be different, meanwhile."""
-        item = {'plan': plan['id'], 'target': plan['target'], 'label': label, 'made': False, 'back': '', 'changes': [], 'task': None, 'loop': None}
-        with self.store.lock:
-            self.work.append(item)
-        return item
-
-    def prepared(self, item):
-        with self.store.lock:
-            self.work[:] = [other for other in self.work if other is not item]
-
-    def preparing(self, target=None):
-        """The hand-overs that can still be taken back, newest last."""
-        with self.store.lock:
-            return [item for item in self.work if not item['made'] and not item['back'] and (target is None or item['target'] == str(target))]
-
-    def add_to(self, item, change):
-        """What is being written up should be different: it goes along. False when it is too late for that (its task is made, or it was taken back)."""
-        with self.store.lock:
-            if item['made'] or item['back']:
-                return False
-            item['changes'].append(words(change, 500))
-            return True
-
-    def take_back(self, by, *, plan_id=None, target=None):
-        """The user does not want these hand-overs after all (from any thread): nothing is handed over, the plans stay as they are. Returns what
-        they were called."""
-        with self.store.lock:
-            items = [item for item in self.preparing(target) if plan_id is None or item['plan'] == plan_id]
-            for item in items:
-                item['back'] = by
-        for item in items:
-            try:
-                item['loop'].call_soon_threadsafe(item['task'].cancel)
-            except Exception:
-                pass                        # its loop is gone, and the writing with it; `hand_over` refuses it in any case
-        return [item['label'] for item in items]
+    def queued(self, plan):
+        """Whether the task a plan was handed over as has not started yet (going on with the plan takes it back)."""
+        try:
+            return plan['status'] == 'handed' and bool(plan['job']) and self.store.job(plan['job'])['status'] == 'queued'
+        except ValueError:
+            return False
 
     # ── tasks that wait while planning ──
     def held(self, job):
@@ -410,8 +412,8 @@ class Plans:
     def begin(self, target, topic='', *, new=False, plan_id='', session=None, turn=''):
         """Planning is on from here. Returns (plan, how): 'on' (it was already), 'again' (a kept plan is open again: the one that is named, the
         one chosen by its id, or the last one when nothing is named) or 'new'. `new` starts a separate plan. A plan that was open is kept
-        (one with nothing in it is dropped, unless it is just being written up). One that was handed over and whose task has not started is taken
-        back with it (`taken`: that task), with what was added to the task."""
+        (one with nothing in it is dropped). One that was handed over and whose task has not started is taken back with it (`taken`: that task),
+        with what was added to the task."""
         topic, target = words(topic), str(target)
         with self.store.transaction():
             now, was = self.clock(), self.open(target)
@@ -421,16 +423,15 @@ class Plans:
                     self.store.db.execute('UPDATE plans SET topic=?,revision=revision+1,updated=? WHERE id=?', (topic, now, plan['id']))
                 return self.get(plan['id']), how
             if was is not None:
-                kept = was['text'].strip() or any(item['plan'] == was['id'] for item in self.preparing(target))
-                self._end(was, 'kept' if kept else 'dropped', session, turn)
+                self._end(was, 'kept' if was['text'].strip() else 'dropped', session, turn)
             taken = ''
             if how == 'again':
                 if plan['status'] == 'handed' and self.store.db.execute("UPDATE jobs SET status='cancelled',result='' WHERE id=? AND status='queued'", (plan['job'],)).rowcount:
-                    taken, added = plan['job'], '\n- '.join(part.strip() for part in self.store.job(plan['job'])['prompt'].split(ADDED)[1:])
+                    taken, added = plan['job'], [part.strip() for part in self.store.job(plan['job'])['prompt'].split(ADDED)[1:] if part.strip()]
                     self._note(plan, 'job.cancelled', session, turn, job_id=taken, result='')
                     if added:
                         self._remember(plan)
-                        self.store.db.execute('UPDATE plans SET text=? WHERE id=?', ((plan['text'].rstrip() + '\n- ' + added)[:TEXT_LIMIT], plan['id']))
+                        self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (with_decisions(plan['text'], added)[:TEXT_LIMIT], plan['id']))
                 self.store.db.execute("UPDATE plans SET status='open',allowed='[]',started=?,updated=?,revision=revision+1,session=? WHERE id=?",
                                       (now, now, (session or {}).get('id') or plan['session'], plan['id']))
                 plan = {**self.get(plan['id']), 'taken': taken}
@@ -534,26 +535,21 @@ class Plans:
         if not plan['text'].strip():
             raise ValueError(EMPTY)
 
-    def hand_over(self, plan_id, chat, *, session=None, turn='', change='', since='', item=None):
+    def hand_over(self, plan_id, chat, *, session=None, turn='', change=''):
         """The plan becomes one task for a chat's agent and is over: one step, so it happens once. `change`: what the user changed about it
-        with their yes; `since`: what was said and is not in the plan yet. `item`: the hand-over that was written up (`prepare`): refused when it was taken back meanwhile, and it cannot be from here
-        on. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
+        with their yes. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
+        change = words(change, 500)
         self.settle()
         with self.store.transaction():
-            if item is not None and item['back']:
-                raise ValueError(TAKEN_BACK)
             plan = self.get(plan_id)
             self.check(plan)
-            changes = [words(change, 500)] if words(change) else []
-            if item is not None:
-                item['made'], changes = True, changes + item['changes']
-            if changes:
-                self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + '\n- '.join(changes), plan['id']))
+            if change:
+                self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + change, plan['id']))
                 plan = self.get(plan['id'])
             owner = (session or {}).get('id') or self._session(plan)
             job = uuid.uuid4().hex
             self.store.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,'queued','')",
-                                  (job, owner + ':plan:' + job, owner, str(chat), turn, task(plan, since)[:16000]))
+                                  (job, owner + ':plan:' + job, owner, str(chat), turn, task(plan)[:16000]))
             if str(chat) != plan['target']:
                 self.store.db.execute('INSERT OR REPLACE INTO job_scope VALUES(?,?)', (job, plan['target']))
             row = self.store.db.execute('SELECT content FROM turns WHERE id=? AND session=?', (str(turn), owner)).fetchone()

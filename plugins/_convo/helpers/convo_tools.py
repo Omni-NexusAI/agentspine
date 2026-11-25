@@ -189,7 +189,8 @@ CATALOG = {
                                      'a kept plan by its name, when it is not the one in hand.', required=False, limit=200),
                       'plan': _choice('new (with planning): a separate new plan. finish (with conversation, the default): write the final '
                                       'plan and ask whether to hand it over. keep: leave it as it is. hand_over: pass it to the main '
-                                      'chat as a task, when the user asks.', ('new', 'finish', 'keep', 'hand_over'), required=False),
+                                      'chat as a task, when the user asks (a plan still being worked on is finished and read out first).',
+                                      ('new', 'finish', 'keep', 'hand_over'), required=False),
                       'chat': _text('For hand_over: a chat the user names by its title.', required=False, limit=200),
                       'change': _text('For hand_over, when they agree but with a change: the change.', required=False, limit=500)}},
     'listen_back': {

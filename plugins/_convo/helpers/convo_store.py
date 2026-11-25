@@ -170,6 +170,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS memory_chapters(target TEXT NOT NULL, seq INTEGER NOT NULL, summary TEXT NOT NULL, covered TEXT NOT NULL, last_rowid INTEGER NOT NULL, revision INTEGER NOT NULL, stale INTEGER NOT NULL DEFAULT 0, time REAL NOT NULL, PRIMARY KEY(target, seq));
         CREATE TABLE IF NOT EXISTS memory_standing(target TEXT PRIMARY KEY, text TEXT NOT NULL, time REAL NOT NULL);
         """)
+        if 'own' not in {row[1] for row in self.db.execute('PRAGMA table_info(plans)')}:      # a journal of an earlier build of planning mode
+            self.db.execute("ALTER TABLE plans ADD COLUMN own TEXT NOT NULL DEFAULT '[]'")
         with self.transaction():
             # A process restart cannot determine whether an external side effect happened.
             self.db.execute("UPDATE jobs SET status='uncertain' WHERE status IN ('dispatching','running','cancel_requested')")
