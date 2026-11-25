@@ -1,0 +1,5 @@
+# What a message sent while the agent works does:
+#   automatic  it goes in at the next step; the working agent decides by what it says (now, after the work in progress, or stop)
+#   steer      it goes in at the next step and is worked in
+#   queue      Agent Zero's own queue: after the run
+mode: automatic

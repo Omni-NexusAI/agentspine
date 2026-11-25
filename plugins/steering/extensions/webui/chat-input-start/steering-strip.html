@@ -1,0 +1,46 @@
+<html>
+<head>
+  <script type="module">
+    import { store } from "/plugins/steering/webui/steering-store.js";
+  </script>
+</head>
+<body>
+  <div x-data>
+    <template x-if="$store.steering?.items.length">
+      <div class="steering-strip" role="region" aria-label="Messages waiting for the agent">
+        <div class="steering-title" aria-live="polite">
+          <x-icon name="alt_route" aria-hidden="true"></x-icon><span x-text="$store.steering.title"></span>
+        </div>
+        <div class="steering-items no-scrollbar">
+          <template x-for="item in $store.steering.items" :key="item.id">
+            <div class="steering-item" :data-status="item.status">
+              <span class="steering-text" x-text="$store.steering.itemText(item)"></span>
+              <span class="steering-state" x-text="$store.steering.itemState(item)"></span>
+              <span class="steering-actions" x-show="item.status !== 'sending'">
+                <button type="button" x-show="item.status === 'held'" @click="$store.steering.sendNow(item)" title="Send" aria-label="Send this message"><x-icon name="send" aria-hidden="true"></x-icon></button>
+                <button type="button" x-show="item.status === 'waiting'" @click="$store.steering.interruptNow(item)" title="Interrupt now: drops the step in progress" aria-label="Interrupt now with this message"><x-icon name="bolt" aria-hidden="true"></x-icon></button>
+                <button type="button" x-show="item.status === 'waiting'" @click="$store.steering.afterTheTask(item)" title="After the task" aria-label="Queue this message until the run is done"><x-icon name="schedule_send" aria-hidden="true"></x-icon></button>
+                <button type="button" @click="$store.steering.backToComposer(item)" title="Back to the composer" aria-label="Put this message back into the composer"><x-icon name="edit" aria-hidden="true"></x-icon></button>
+                <button type="button" @click="$store.steering.remove(item)" title="Remove" aria-label="Remove this message"><x-icon name="close" aria-hidden="true"></x-icon></button>
+              </span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </div>
+  <style>
+    .steering-strip { box-sizing: border-box; width: 100%; border: 1px solid var(--color-border); border-radius: 8px; padding: var(--spacing-sm); margin-bottom: var(--spacing-xs); }
+    .steering-title { display: flex; align-items: center; gap: var(--spacing-xs); font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+    .steering-items { display: flex; flex-direction: column; gap: 2px; max-height: 120px; overflow-y: auto; }
+    .steering-item { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; padding: 4px 6px; border-radius: 4px; }
+    .steering-item:hover { background-color: var(--color-background-hover); }
+    .steering-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .steering-state { flex: 0 0 auto; font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+    .steering-actions { flex: 0 0 auto; display: flex; gap: 2px; }
+    .steering-actions button { display: flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 2px; border: none; border-radius: 4px; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+    .steering-actions button:hover, .steering-actions button:focus-visible { color: var(--color-text); background-color: var(--color-background-hover); }
+    @media (max-width: 640px) { .steering-state { display: none; } .steering-actions button { min-width: 36px; min-height: 36px; } }
+  </style>
+</body>
+</html>

@@ -1,0 +1,5 @@
+name: steer
+description: Send a message into the run at work, at its next step.
+argument_hint: "<message>"
+type: script
+script_path: steering_command.py

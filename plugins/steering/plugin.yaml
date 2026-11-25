@@ -1,0 +1,9 @@
+name: steering
+title: Steering
+description: A message sent while the agent works goes into the same run at its next step, instead of stopping what it is doing. Automatic, steer or queue, with /steer, /later and /interrupt.
+version: 0.1.0
+settings_sections:
+  - agent
+per_project_config: false
+per_agent_config: false
+always_enabled: false

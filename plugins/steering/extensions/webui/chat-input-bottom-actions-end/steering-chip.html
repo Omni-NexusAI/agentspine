@@ -1,0 +1,30 @@
+<html>
+<head>
+  <script type="module">
+    import { store } from "/plugins/steering/webui/steering-store.js";
+  </script>
+</head>
+<body>
+  <div x-data>
+    <template x-if="$store.steering?.showChip">
+      <label class="text-button steering-chip" :title="$store.steering.modeHint">
+        <x-icon name="alt_route" aria-hidden="true"></x-icon>
+        <span class="steering-chip-label">New messages</span>
+        <select aria-label="What a message sent while the agent works does" :value="$store.steering.mode" @change="$store.steering.setMode($event.target.value)">
+          <option value="automatic">Automatic</option>
+          <option value="steer">Steer</option>
+          <option value="queue">Queue</option>
+        </select>
+      </label>
+    </template>
+  </div>
+  <style>
+    .steering-chip { cursor: default; white-space: nowrap; }
+    .steering-chip x-icon { font-size: 14px; }
+    .steering-chip select { width: auto; min-width: 0; height: auto; min-height: 0; margin: 0; background-color: transparent; color: var(--color-text); border: 1px solid transparent; border-radius: 4px; font: inherit; padding: 1px 1.4em 1px 2px; cursor: pointer; }
+    .steering-chip select:hover, .steering-chip select:focus-visible { border-color: var(--color-border); }
+    .steering-chip option { background: var(--color-panel); color: var(--color-text); }
+    @media (max-width: 640px) { .steering-chip .steering-chip-label { display: none; } }
+  </style>
+</body>
+</html>
