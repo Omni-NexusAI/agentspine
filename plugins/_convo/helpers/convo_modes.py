@@ -108,9 +108,9 @@ def agreed(question, name, args, said=''):
         return False
     if change(args) != 'hand_over':
         return True
-    words = lambda text: set(''.join(letter if letter.isalnum() else ' ' for letter in str(text or '').casefold()).split())
-    chat = words(args.get('chat'))
-    return bool(str(args.get('change') or '').strip()) and (chat == words(asked.get('chat')) or (bool(chat) and chat <= words(said)))
+    from . import convo_planning as planning
+    chat = str(args.get('chat') or '')
+    return bool(str(args.get('change') or '').strip()) and (planning.Plans.same(chat, asked.get('chat')) or planning.named(chat, said))
 
 
 def puts_away(rt, state, session, args):

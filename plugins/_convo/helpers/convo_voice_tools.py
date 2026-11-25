@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import time
+import unicodedata
 import uuid
 import wave
 
@@ -629,8 +630,9 @@ async def _steer(rt, sid, state, session, turn, args):
 
 
 def _words(text):
-    """The words of a label or of the model's pointer at one, lower-cased, without punctuation (any script)."""
-    return ''.join(letter if letter.isalnum() else ' ' for letter in str(text or '').casefold()).split()
+    """The words of a label or of the model's pointer at one, lower-cased, without punctuation (any script: a sign that belongs to a letter
+    stays with it)."""
+    return ''.join(letter if unicodedata.category(letter)[0] in 'LMN' else ' ' for letter in str(text or '').casefold()).split()
 
 
 async def _open(rt, sid, state, session, turn, args):

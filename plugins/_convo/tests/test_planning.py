@@ -149,6 +149,13 @@ class Kept(unittest.TestCase):
             self.assertIsNone(self.plans.match('a', asked), asked)
             self.assertEqual(self.plans.about('a', asked)[:2], ('new', None), asked)
             self.assertEqual(self.plans.match('a', kept)['id'], plan)
+        for kept, asked in (('from Rome to Paris', 'from Paris to Rome'), ('learn C', 'learn C++'), ('learn C++', 'learn C#'), ('release 1.4', 'release 14'),
+                            ('काली दीवार', 'काला दीवार'), ('ไปเชียงใหม่', 'ไปเชียงราย')):
+            self.kept(kept)
+            self.assertIsNone(self.plans.match('a', asked), asked)
+        for kept, asked in (('learn C++', 'Learn  C++!'), ('京都旅行', '「京都旅行」'), ('Ｐｌａｎ Ａ', 'plan a'), ('die Hochzeit', '„Die Hochzeit“'), ('ΣΧΕΔΙΟ', 'σχεδιο')):
+            plan = self.kept(kept)
+            self.assertEqual((self.plans.match('a', asked) or {}).get('id'), plan, asked)
         twice = self.kept('a garden shed')                                             # two of the same name: the newer one
         self.assertEqual(self.plans.match('a', 'a garden shed')['id'], twice)
 
@@ -224,6 +231,16 @@ class Kept(unittest.TestCase):
         self.assertIn('Own words:\n- never on a Sunday\n\nSet aside:\n- metal', kept)
         self.assertEqual(planning.tidy(kept)[0], kept)                                 # the next writing may take them in, or leave them
         self.assertEqual(planning.with_own_words(text, text), text)
+        # In any script: a line that is gone is seen, one that is there in other words is not called lost.
+        for kept, gone, text in (('自転車を二台置く場所', '日曜日には絶対に作業しない', 'Goal:\n- 乾いた場所に自転車を二台置く'), ('两辆自行车要放在干燥的地方', '星期天绝对不干活', 'Goal:\n- 放两辆自行车的干燥的地方'),
+                                 ('ที่แห้งสำหรับจักรยานสองคัน', 'ห้ามทำงานวันอาทิตย์', 'Goal:\n- ที่แห้ง สำหรับจักรยาน สองคัน'), ('दो साइकिलों के लिए सूखी जगह', 'रविवार को कभी नहीं', 'Goal:\n- दो साइकिलों के लिए एक सूखी जगह'),
+                                 ('сухое место для двух велосипедов', 'никогда по воскресеньям', 'Goal:\n- место для двух велосипедов, сухое'), ('مكان جاف لدراجتين', 'لا عمل يوم الأحد أبدا', 'Goal:\n- مكان جاف لدراجتين اثنتين')):
+            self.assertEqual(planning.lost_lines('Goal:\n- ' + kept + '\n\nDecisions:\n- ' + gone, text), [gone])
+
+    def test_a_chat_counts_as_named_when_its_words_were_said(self):
+        for name, said, expected in (('Garden planning', 'yes, but put it into the garden planning one', True), ('Garden planning', 'yes, but in euros', False), ('', 'yes', False),
+                                     ('周报', '好的，不过放到周报那个聊天里', True), ('周报', '好的，用欧元', False), ('काली', 'हाँ, पर कला वाली में', False), ('काली', 'हाँ, पर काली में', True), ('C', 'yes, use the cloud', False)):
+            self.assertEqual(planning.named(name, said), expected, (name, said))
 
     def test_an_old_kept_plan_a_handed_one_and_a_discarded_one_are_not_opened_again(self):
         for status, age in (('kept', planning.AGAIN_SECONDS + 1), ('handed', 0), ('dropped', 0)):

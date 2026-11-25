@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 import uuid
 
 from .convo_store import encoded
@@ -118,9 +119,35 @@ def task(plan):
     return HAND_OVER + (('What is planned: ' + plan['topic'] + '\n\n') if plan['topic'] else '') + plan['text'].strip()
 
 
+# Scripts written without a space between two words: Thai and Lao, Burmese, Khmer, Japanese, Chinese.
+_UNSPACED = re.compile(r'[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+_AROUND = ' .,;:!?…·"\'“”‘’„«»‹›()[]{}¿¡。！？、，；：「」『』（）।؟،'      # marks around a name that are no part of it
+
+
+def _name(text):
+    """A name as it is compared: without its case, its spacing and the marks around it."""
+    return ' '.join(unicodedata.normalize('NFKC', str(text or '')).casefold().split()).strip(_AROUND)
+
+
 def _words(text):
-    """The words of a name, lower-cased, without punctuation (any script)."""
-    return set(''.join(letter if letter.isalnum() else ' ' for letter in str(text or '').casefold()).split())
+    """The words of a text, lower-cased, without punctuation, in any script (a sign that belongs to a letter stays with it)."""
+    text = unicodedata.normalize('NFKC', str(text or '')).casefold()
+    return ''.join(letter if unicodedata.category(letter)[0] in 'LMN' else ' ' for letter in text).split()
+
+
+def _pieces(text):
+    """What two texts are compared by: their words; in a script without spaces every two neighbouring characters."""
+    pieces = set()
+    for word in _words(text):
+        pieces.update((word[at:at + 2] for at in range(len(word) - 1)) if len(word) > 2 and _UNSPACED.search(word) else (word,))
+    return pieces
+
+
+def named(name, said):
+    """Whether every word of a name was said (in a script without spaces: whether it stands in what was said)."""
+    heard, wanted = _words(said), _words(name)
+    flat = ' '.join(heard)
+    return bool(wanted) and all(word in heard or (_UNSPACED.search(word) is not None and word in flat) for word in wanted)
 
 
 def _first(text):
@@ -136,10 +163,10 @@ def shrank(before, after):
 
 def lost_lines(mine, text):
     """The lines of `mine` that are gone from a rewritten text: neither there word for word nor, mostly, in other words."""
-    have, flat = _words(text), ' '.join(text.casefold().split())
+    have, flat = _pieces(text), ' '.join(text.casefold().split())
     lines = [line.strip().lstrip('-*• ').strip() for line in mine.split('\n') if line.strip() and not _HEADING.match(line)]
-    return [line for line in lines if len(_words(line)) > 1 and ' '.join(line.casefold().split()) not in flat
-            and len(_words(line) & have) < .6 * len(_words(line))][:12]
+    return [line for line in lines if len(_pieces(line)) > 1 and ' '.join(line.casefold().split()) not in flat
+            and len(_pieces(line) & have) < .6 * len(_pieces(line))][:12]
 
 
 def with_own_words(text, mine):
@@ -181,7 +208,7 @@ class Plans:
 
     def settle(self):
         """A plan whose task was cancelled, failed or ended without an answer was not carried out (as far as is known): it is kept again."""
-        back = "status='handed' AND job IN (SELECT id FROM jobs WHERE status IN ('cancelled','failed','uncertain'))"
+        back = "status='handed' AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id=plans.job AND jobs.status IN ('cancelled','failed','uncertain'))"
         with self.store.lock:
             if self.store.db.execute('SELECT 1 FROM plans WHERE ' + back + ' LIMIT 1').fetchone():
                 with self.store.transaction():
@@ -226,8 +253,9 @@ class Plans:
 
     @staticmethod
     def same(one, other):
-        """Whether two names are the same plan's (the words count, not their order or an accent of writing)."""
-        return _words(one) == _words(other)
+        """Whether two names are the same plan's: the very same words in the same order ("from Rome to Paris" is not "from Paris to Rome", nor
+        "learn C" "learn C++"); case, spacing and the marks around a name do not count."""
+        return _name(one) == _name(other)
 
     def shown(self, target):
         """What the panel shows: the open plan, else the last one while it is recent. When that one was discarded: the last one that is still
