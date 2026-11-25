@@ -84,6 +84,8 @@ def plan_action(m, s, target, action, data):
         if action == 'plan_version':
             version = data.get('version')
             return {'ok': True, 'text': kept.version(plan['id'], version if type(version) is int else 0), 'plan': kept.view(target)}
+        if action in ('plan_end', 'plan_drop', 'plan_hand_over'):
+            kept.take_back('panel', plan_id=plan['id'])        # one that is being written up after a yes by voice: this press decides instead
         if action == 'plan_save':
             kept.write(plan['id'], data.get('text'), revision=data.get('revision'), by='user', topic=data.get('topic') or '',
                        was=data.get('was') if isinstance(data.get('was'), str) else None)

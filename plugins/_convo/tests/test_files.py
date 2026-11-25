@@ -7,6 +7,7 @@ import random
 import string
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -199,6 +200,9 @@ class Look(unittest.TestCase):
                 'A private key begins with `-----BEGIN PRIVATE KEY-----`.', 'the password is asked for later', 'the password is required', 'git log --oneline --all', 'pip install --upgrade pip',
                 'ENV PATH /usr/bin', 'setTitle("Garden shed")', 'define("DB_HOST", "localhost");', 'self.assertEqual("a", "b")', 'curl -u me https://example.com', 'grep -p pattern file', 'python -u main.py',
                 'self.session = aiohttp.ClientSession()', 'token = getToken()', 'auth = HTTPBasicAuth(user)', 'app key: Escape', 'The session key: F5', 'Authorized: yes',
+                'docker run -u 1000:1000 image', 'docker run --user 1000:1000 -it image', 'rsync -u server:/data/ .', 'usage: tool --password PASSWORD', '  --token <token>', 'password: ${DB_PASSWORD}', 'PASSWORD=%PASSWORD%',
+                'reset_password("user@example.com")', "ask_password('Please type it in')", '("password", "Passwort"),', 'su -u www:data', 'mysqldump mysql db -P 3306', 'secret_santa_gift_list_2026', 'SESSION 20261125T1200', 'TOKEN identifier_1',
+                'password: ********', 'hf_transformers_version', 'npm_lifecycle_event_name', 'the MIIT is a ministry',
                 'pass: 12 tests', 'getUserById2023Version3HandlerFactory()', 'pin: 12', 'README hunter', 'TOKEN COUNT', 'passwords are kept elsewhere')
 
     def test_made_up_keys_are_seen_beside_a_name_and_mostly_alone(self):
@@ -231,6 +235,15 @@ class Look(unittest.TestCase):
         doc = ['# Keys', 'A private key begins with `-----BEGIN PRIVATE KEY-----`.'] + ['Ordinary sentence %d.' % n for n in range(20)]
         self.assertEqual(files._in_blocks(doc), set())
         self.assertEqual(files._in_blocks(['"k": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBg\\n-----END PRIVATE KEY-----"', 'ordinaryword', 'anotherword']), set())
+        for mention in ('A key begins with -----BEGIN PRIVATE KEY-----', 'It starts with `-----BEGIN PRIVATE KEY-----`.', '-----BEGIN PRIVATE KEY----- is how one begins'):
+            self.assertEqual(files._in_blocks([mention, '', 'Installation', '============', 'Run it.']), set(), mention)
+        for start in ('-----BEGIN PRIVATE KEY-----', 'KEY="-----BEGIN RSA PRIVATE KEY-----\\n" \\', 'static const char *key = "-----BEGIN EC PRIVATE KEY-----\\n"', '  private_key: |-  -----BEGIN PRIVATE KEY-----',
+                      '# -----BEGIN OPENSSH PRIVATE KEY-----', '-----BEGIN PGP PRIVATE KEY BLOCK-----'):
+            self.assertEqual(files._in_blocks([start, 'MIIEvQIBADANBgkqhkiG', 'x y z']), {0, 1}, start)
+        # A long file of key text is read through once (2026-11-25: the time grew with the square of its length).
+        began = time.perf_counter()
+        self.assertEqual(len(files._in_blocks(['-----BEGIN PRIVATE KEY-----'] + ['MIIEvQIBADANBgkqhkiG'] * 40000)), 40001)
+        self.assertLess(time.perf_counter() - began, 3)
         (self.root / 'doc.md').write_text('\n'.join(doc), encoding='utf-8')
         self.assertNotIn(files.LEFT_OUT, files.look(str(self.root), path='doc.md'))
         one = ['{', '  "private_key": "-----BEGIN PRIVATE KEY-----\\n' + 'MIIEvQIBADANBg' * 200 + '\\n-----END PRIVATE KEY-----\\n",'] + ['  "setting_%d": "value %d",' % (n, n) for n in range(20)]

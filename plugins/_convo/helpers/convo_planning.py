@@ -6,11 +6,15 @@ opened again), `handed` (it became a task) or `dropped` (the user discarded it).
 
 Two writers: Convo itself, in quiet moments (convo_modes.keep), and the user in the panel. Every change moves `revision` on, and a writer
 says which revision it read: what changed meanwhile wins and Convo writes again later. Every text that was replaced stays findable (table
-`plan_versions`: the newest VERSIONS, and the user's own last words however old), so no rewriting loses anything for good.
+`plan_versions`: the newest VERSIONS, and the user's own last words however old), so no rewriting loses anything for good. The lines the user
+wrote themselves are known (`own`): a rewriting that leaves one out, or changes it, is asked about exactly those lines before it counts
+(convo_modes.write). Whether the user has said otherwise since is for the model to understand; nothing is put back by force.
 
-A plan is handed over once: `hand_over` makes the task and ends the plan in one step, only from an open or a kept plan. When that task is
-cancelled or fails the plan was not carried out: it is a kept one again (`settle`). Earlier plans stay findable: by exactly what they are
-called (`match`; the model, which understands what is meant, is told the names), and in the panel's list (`earlier`).
+A plan is handed over once: `hand_over` makes the task and ends the plan in one step, only from an open or a kept plan. Until that step it can be
+taken back, from anywhere (`work`, `take_back`): the list belongs to the journal, not to a connection. When the task is cancelled or fails the
+plan was not carried out: it is a kept one again (`settle`); gone on with before its task has started, the task is taken back (`begin`). Earlier
+plans stay findable: by exactly what they are called (`match`; the model, which understands what is meant, is told the names), and in the
+panel's list (`earlier`).
 
 While a plan is open, tasks of that conversation that have not started yet wait (`held`); only those the user agreed to meanwhile
 (`allow`) start. Text is the user's own plan: data to the model, never instructions."""
@@ -22,7 +26,7 @@ import time
 import unicodedata
 import uuid
 
-from .convo_store import encoded
+from .convo_store import ADDED, encoded
 
 TOPIC_LIMIT = 200
 TEXT_LIMIT = 12000          # characters of a plan (a final plan is handed over as one task, at most 16000)
@@ -31,16 +35,18 @@ AGAIN_SECONDS = 30 * 86400  # a kept plan older than this is not opened again by
 SHOWN_SECONDS = 7 * 86400   # an ended plan stays in the panel for this long
 EARLIER = 6                 # earlier plans the panel and the model are told about
 VERSIONS, VERSIONS_SHOWN = 20, 8   # replaced texts of one plan that are kept, and that the panel lists
+SINCE_LIMIT = 2400          # characters of what was said that go along when a final text could not be written
+OWN_TOLD, GONE_TOLD = 3000, 2000   # characters of the user's own lines a writing is told about, and of those it had left out
 
 CHANGED = 'The plan was changed meanwhile'
 GONE = 'That plan is no longer there'
 HANDED = 'That plan was already handed over'
 EMPTY = 'Nothing is written down in this plan yet'
+TAKEN_BACK = 'It was taken back'
 
 # The record's headings. Convo asks for them in English whatever language the plan is in: they are its own control words.
-OWN = 'Own words'            # lines the user wrote themselves that a final text had lost: handed over word for word
-SECTIONS = ('Goal', 'Decisions', 'Open questions', 'Steps', OWN, 'Set aside')
-_HEADING = re.compile(r'^[\s#*_>]*(topic|goal|decisions|open questions|steps|own words|set aside)\s*[*_]*\s*:\s*[*_]*\s*(.*)$', re.I)
+SECTIONS = ('Goal', 'Decisions', 'Open questions', 'Steps', 'Set aside')
+_HEADING = re.compile(r'^[\s#*_>]*(topic|goal|decisions|open questions|steps|set aside)\s*[*_]*\s*:\s*[*_]*\s*(.*)$', re.I)
 _FENCE = re.compile(r'^\s*```[a-z]*\s*$', re.I)
 
 
@@ -100,11 +106,32 @@ FINAL = (UPKEEP + '\nDo not reply to the user and do not call any tool. You and 
          'edited the current plan and do not bring back what they removed. Never invent anything. Return only the plan.')
 
 
-def instruction(plan, final=False):
-    """The latest message of the keeper's request, with the current plan as data."""
-    return ((FINAL if final else KEEP) + ('\nTopic so far (data): ' + json.dumps(plan['topic'], ensure_ascii=False) if plan['topic'] else '')
+def instruction(plan, final=False, attempt='', gone=()):
+    """The latest message of the keeper's request, with the current plan as data, and the lines of it the user wrote themselves. `attempt`,
+    `gone`: what the model has just written, and which of those lines it left out or changed in it: it is asked about exactly those, once."""
+    text = ((FINAL if final else KEEP) + ('\nTopic so far (data): ' + json.dumps(plan['topic'], ensure_ascii=False) if plan['topic'] else '')
             + '\nCurrent plan (data' + (', last edited by the user' if plan['by'] == 'user' else '') + '): '
             + (json.dumps(plan['text'], ensure_ascii=False) if plan['text'] else 'nothing is written down yet.'))
+    if plan.get('own'):
+        text += ('\nLines of it the user wrote themselves (data; keep each one word for word, unless the user has said otherwise since): '
+                 + json.dumps(_some(plan['own'], OWN_TOLD), ensure_ascii=False))
+    if gone:
+        text += ('\nWhat you have just written (data): ' + json.dumps(attempt, ensure_ascii=False) + '\nThese lines, which the user wrote themselves, '
+                 'are missing or changed in it (data): ' + json.dumps(_some(gone, GONE_TOLD), ensure_ascii=False) + '\nFor each of them: when the user '
+                 'has said otherwise since, leave it out; else put it back word for word where it belongs. Change nothing else and return only '
+                 'the plan.')
+    return text
+
+
+def _some(lines, limit):
+    """As many of these lines as fit into `limit` characters."""
+    chosen = []
+    for line in lines:
+        limit -= len(line)
+        if limit < 0 and chosen:
+            break
+        chosen.append(line[:600])
+    return chosen
 
 
 HAND_OVER = ('Carry out the plan below. The user worked it out in conversation with the voice assistant and has agreed to hand it over to '
@@ -114,9 +141,12 @@ HAND_OVER = ('Carry out the plan below. The user worked it out in conversation w
 CHANGE = '\n\nChanged by the user when they handed it over (this wins over what is above):\n- '
 
 
-def task(plan):
-    """The task a plan is handed over as."""
-    return HAND_OVER + (('What is planned: ' + plan['topic'] + '\n\n') if plan['topic'] else '') + plan['text'].strip()
+SINCE = '\n\nSaid after the plan above was written down, and not taken into it (where it differs, this wins):\n'
+
+
+def task(plan, since=''):
+    """The task a plan is handed over as. `since`: what was said and is not in it yet (`Plans.unwritten`)."""
+    return HAND_OVER + (('What is planned: ' + plan['topic'] + '\n\n') if plan['topic'] else '') + plan['text'].strip() + (SINCE + since if since else '')
 
 
 # Scripts written without a space between two words: Thai and Lao, Burmese, Khmer, Japanese, Chinese.
@@ -133,14 +163,6 @@ def _words(text):
     """The words of a text, lower-cased, without punctuation, in any script (a sign that belongs to a letter stays with it)."""
     text = unicodedata.normalize('NFKC', str(text or '')).casefold()
     return ''.join(letter if unicodedata.category(letter)[0] in 'LMN' else ' ' for letter in text).split()
-
-
-def _pieces(text):
-    """What two texts are compared by: their words; in a script without spaces every two neighbouring characters."""
-    pieces = set()
-    for word in _words(text):
-        pieces.update((word[at:at + 2] for at in range(len(word) - 1)) if len(word) > 2 and _UNSPACED.search(word) else (word,))
-    return pieces
 
 
 def named(name, said):
@@ -161,30 +183,48 @@ def shrank(before, after):
     return len(before) > 400 and len(after) < len(before) * .4
 
 
-def lost_lines(mine, text):
-    """The lines of `mine` that are gone from a rewritten text: neither there word for word nor, mostly, in other words."""
-    have, flat = _pieces(text), ' '.join(text.casefold().split())
-    lines = [line.strip().lstrip('-*• ').strip() for line in mine.split('\n') if line.strip() and not _HEADING.match(line)]
-    return [line for line in lines if len(_pieces(line)) > 1 and ' '.join(line.casefold().split()) not in flat
-            and len(_pieces(line) & have) < .6 * len(_pieces(line))][:12]
+def _line(text):
+    """A line as it is compared: without its bullet, its case, its spacing and the mark at its end."""
+    return ' '.join(unicodedata.normalize('NFKC', str(text or '')).casefold().split()).lstrip('-*•·–— ').rstrip(' .;,。；，、')
 
 
-def with_own_words(text, mine):
-    """A rewritten plan with the lines it lost of what the user had just written themselves, word for word under a heading of their own (the
-    next writing, or the user, may take them in or out)."""
-    lost = lost_lines(mine, text)
-    return tidy(text + '\n\n' + OWN + ':\n' + '\n'.join('- ' + line for line in lost))[0] if lost else text
+def _lines(text):
+    """The lines of a plan: {as compared: as written}. What stands beside a heading is a line, too; a heading is none."""
+    found = {}
+    for raw in str(text or '').split('\n'):
+        heading = _HEADING.match(raw)
+        line = (heading.group(2) if heading else raw).strip().lstrip('-*•· ').strip()
+        if _line(line) and not (heading and heading.group(1).lower() == 'topic'):
+            found.setdefault(_line(line), line)
+    return found
+
+
+def own_lines(before, after, own=()):
+    """The lines of `after` that are the user's own: what they added or changed, and what was theirs already and still stands."""
+    was, now, mine = _lines(before), _lines(after), {_line(line) for line in own}
+    return [now[key] for key in now if key not in was or key in mine]
+
+
+def missing(own, text):
+    """Those of the user's own lines that do not stand in a text word for word: as a line, or as a whole clause of one ("use metal" does not stand
+    in "do not use metal")."""
+    stands = set()
+    for line in _lines(text):
+        stands.add(line)
+        stands.update(_line(piece) for piece in re.split(r'[.;:()。；：（）]\s*', line))
+    return [line for line in own if _line(line) and _line(line) not in stands]
 
 
 def _plan(row):
-    try:
-        allowed = json.loads(row['allowed'])
-    except ValueError:
-        allowed = []
+    def listed(name):
+        try:
+            value = json.loads(row[name])
+        except ValueError:
+            value = []
+        return [str(item) for item in value] if isinstance(value, list) else []
     return {'id': row['id'], 'target': row['target'], 'session': row['session'], 'topic': row['topic'], 'text': row['text'],
             'status': row['status'], 'revision': row['revision'], 'by': row['written_by'], 'upto': row['upto'],
-            'allowed': [str(item) for item in allowed] if isinstance(allowed, list) else [], 'job': row['job'],
-            'started': row['started'], 'updated': row['updated']}
+            'allowed': listed('allowed'), 'own': listed('own'), 'job': row['job'], 'started': row['started'], 'updated': row['updated']}
 
 
 class Plans:
@@ -192,6 +232,7 @@ class Plans:
 
     def __init__(self, store, clock=time.time):
         self.store, self.clock = store, clock
+        self.work = []              # hand-overs the user agreed to that are being written up (convo_modes._to_its_end)
 
     # ── reading ──
     def _row(self, query, *values):
@@ -220,19 +261,22 @@ class Plans:
         return self._row("target=? AND status='kept' AND updated>? ORDER BY updated DESC,rowid DESC LIMIT 1", str(target), self.clock() - within)
 
     def earlier(self, target, besides=''):
-        """The earlier plans of this conversation with something in them, newest first (not `besides`): what can be gone on with. Those that
-        were handed over are among them (status)."""
+        """The earlier plans of this conversation with something in them (not `besides`): what can be gone on with. Those that were kept, newest
+        first, then those that were handed over (status)."""
+        return self._earlier(target, besides)[:EARLIER]
+
+    def _earlier(self, target, besides=''):
         self.settle()
         with self.store.lock:
             rows = self.store.db.execute("SELECT * FROM plans WHERE target=? AND status IN ('kept','handed') AND text<>'' AND updated>? AND id<>? "
-                                         'ORDER BY updated DESC,rowid DESC LIMIT ?',
-                                         (str(target), self.clock() - AGAIN_SECONDS, str(besides), EARLIER)).fetchall()
+                                         "ORDER BY status='handed',updated DESC,rowid DESC LIMIT 400",
+                                         (str(target), self.clock() - AGAIN_SECONDS, str(besides))).fetchall()
         return [_plan(row) for row in rows]
 
     def match(self, target, topic, besides=''):
         """The earlier plan that is called exactly `topic` (the newest of several), or None. Never one whose name is only similar: "a trip to
         Madrid" is not "a trip to Lisbon", and which of them is meant is for the model to understand."""
-        return next((plan for plan in self.earlier(target, besides) if words(topic) and self.same(topic, plan['topic'])), None)
+        return next((plan for plan in (self._earlier(target, besides) if _name(topic) else ()) if self.same(topic, plan['topic'])), None)
 
     def about(self, target, topic='', new=False, plan_id=''):
         """What `begin` would do: (how, the plan or None, the open plan it would put away or None). An open plan with nothing written in it
@@ -278,6 +322,53 @@ class Plans:
                                          (plan['target'], plan['upto'])).fetchall()
         return sum(1 for row in rows if not hidden(json.loads(row['content'])))
 
+    def unwritten(self, plan, limit=SINCE_LIMIT):
+        """What was said since the plan was last brought up to date, oldest first (the newest that fits), or ''."""
+        from .convo_history import hidden, words as said
+        with self.store.lock:
+            rows = self.store.db.execute('SELECT content FROM turns WHERE target=? AND settled=1 AND rowid>? ORDER BY rowid DESC LIMIT 24',
+                                         (plan['target'], plan['upto'])).fetchall()
+        lines = []
+        for row in rows:
+            turn = json.loads(row['content'])
+            for who, text in (('Assistant', turn.get('assistant')), ('User', said(turn))) if not hidden(turn) else ():
+                line = '- %s: %s' % (who, words(text, 600))
+                if words(text) and limit >= len(line):
+                    lines.insert(0, line)
+                    limit -= len(line)
+        return '\n'.join(lines)
+
+    # ── hand-overs being written up ──
+    def prepare(self, plan, label):
+        """A hand-over the user agreed to begins to be written up. `made`: its task exists; `back`: who took it back ('' nobody)."""
+        item = {'plan': plan['id'], 'target': plan['target'], 'label': label, 'made': False, 'back': '', 'task': None, 'loop': None}
+        with self.store.lock:
+            self.work.append(item)
+        return item
+
+    def prepared(self, item):
+        with self.store.lock:
+            self.work[:] = [other for other in self.work if other is not item]
+
+    def preparing(self, target=None):
+        """The hand-overs that can still be taken back, newest last."""
+        with self.store.lock:
+            return [item for item in self.work if not item['made'] and not item['back'] and (target is None or item['target'] == str(target))]
+
+    def take_back(self, by, *, plan_id=None, target=None):
+        """The user does not want these hand-overs after all (from any thread): nothing is handed over, the plans stay as they are. Returns what
+        they were called."""
+        with self.store.lock:
+            items = [item for item in self.preparing(target) if plan_id is None or item['plan'] == plan_id]
+            for item in items:
+                item['back'] = by
+        for item in items:
+            try:
+                item['loop'].call_soon_threadsafe(item['task'].cancel)
+            except Exception:
+                pass                        # its loop is gone, and the writing with it; `hand_over` refuses it in any case
+        return [item['label'] for item in items]
+
     # ── tasks that wait while planning ──
     def held(self, job):
         """Whether this queued task waits: its conversation is planning and the user has not agreed to it meanwhile."""
@@ -310,7 +401,8 @@ class Plans:
     def begin(self, target, topic='', *, new=False, plan_id='', session=None, turn=''):
         """Planning is on from here. Returns (plan, how): 'on' (it was already), 'again' (a kept plan is open again: the one that is named, the
         one chosen by its id, or the last one when nothing is named) or 'new'. `new` starts a separate plan. A plan that was open is kept
-        (one with nothing in it is dropped)."""
+        (one with nothing in it is dropped, unless it is just being written up). One that was handed over and whose task has not started is taken
+        back with it (`taken`: that task), with what was added to the task."""
         topic, target = words(topic), str(target)
         with self.store.transaction():
             now, was = self.clock(), self.open(target)
@@ -320,11 +412,19 @@ class Plans:
                     self.store.db.execute('UPDATE plans SET topic=?,revision=revision+1,updated=? WHERE id=?', (topic, now, plan['id']))
                 return self.get(plan['id']), how
             if was is not None:
-                self._end(was, 'kept' if was['text'].strip() else 'dropped', session, turn)
+                kept = was['text'].strip() or any(item['plan'] == was['id'] for item in self.preparing(target))
+                self._end(was, 'kept' if kept else 'dropped', session, turn)
+            taken = ''
             if how == 'again':
+                if plan['status'] == 'handed' and self.store.db.execute("UPDATE jobs SET status='cancelled',result='' WHERE id=? AND status='queued'", (plan['job'],)).rowcount:
+                    taken, added = plan['job'], '\n- '.join(part.strip() for part in self.store.job(plan['job'])['prompt'].split(ADDED)[1:])
+                    self._note(plan, 'job.cancelled', session, turn, job_id=taken, result='')
+                    if added:
+                        self._remember(plan)
+                        self.store.db.execute('UPDATE plans SET text=? WHERE id=?', ((plan['text'].rstrip() + '\n- ' + added)[:TEXT_LIMIT], plan['id']))
                 self.store.db.execute("UPDATE plans SET status='open',allowed='[]',started=?,updated=?,revision=revision+1,session=? WHERE id=?",
                                       (now, now, (session or {}).get('id') or plan['session'], plan['id']))
-                plan = self.get(plan['id'])
+                plan = {**self.get(plan['id']), 'taken': taken}
             else:
                 made = uuid.uuid4().hex
                 self.store.db.execute('INSERT INTO plans(id,target,session,topic,text,status,revision,written_by,upto,allowed,job,started,updated) '
@@ -336,12 +436,15 @@ class Plans:
 
     def write(self, plan_id, text, *, revision, by, topic='', upto=None, was=None):
         """Replace the plan's text, if it is still at `revision`, or still says what the writer had read (`was`: ending it or naming it
-        changes no text). What stood there is kept as a version. Returns the plan. Raises ValueError (CHANGED, GONE)."""
+        changes no text). What stood there is kept as a version, and which lines are the user's own. Returns the plan. Raises ValueError
+        (CHANGED, GONE, HANDED)."""
         text = str(text or '').replace('\r', '').strip()[:TEXT_LIMIT]
         with self.store.transaction():
             plan = self.get(plan_id)
             if plan is None or plan['status'] == 'dropped':
                 raise ValueError(GONE)
+            if by != 'user' and plan['status'] == 'handed':
+                raise ValueError(HANDED)
             if plan['revision'] != revision and (was is None or str(was).replace('\r', '').strip() != plan['text']):
                 raise ValueError(CHANGED)
             topic = words(topic)
@@ -350,10 +453,12 @@ class Plans:
             elif not topic:
                 topic = plan['topic']
             if text != plan['text'] or topic != plan['topic']:
+                own = plan['own']
                 if text != plan['text']:
                     self._remember(plan)
-                self.store.db.execute('UPDATE plans SET text=?,topic=?,written_by=?,revision=revision+1,updated=? WHERE id=?',
-                                      (text, topic, by, self.clock(), plan_id))
+                    own = own_lines(plan['text'], text, own) if by == 'user' else [line for line in own if line not in missing(own, text)]
+                self.store.db.execute('UPDATE plans SET text=?,topic=?,written_by=?,own=?,revision=revision+1,updated=? WHERE id=?',
+                                      (text, topic, by, json.dumps(own, ensure_ascii=False), self.clock(), plan_id))
                 if by == 'user':
                     self._note(self.get(plan_id), 'plan.edited')
             if upto is not None and upto > plan['upto']:
@@ -371,11 +476,15 @@ class Plans:
                    "AND id<>COALESCE((SELECT max(id) FROM plan_versions WHERE plan=? AND written_by='user'),0)", (plan['id'], plan['id'], VERSIONS, plan['id']))
 
     def versions(self, plan):
-        """What stood in this plan before, newest first: [{id, by, time}] (without a text equal to what stands there now)."""
+        """What stood in this plan before, newest first: [{id, by, time}] (without a text equal to what stands there now): the newest ones, and the
+        user's own last one however old."""
         with self.store.lock:
-            rows = self.store.db.execute('SELECT id,written_by,time FROM plan_versions WHERE plan=? AND text<>? ORDER BY id DESC LIMIT ?',
-                                         (plan['id'], plan['text'], VERSIONS_SHOWN)).fetchall()
-        return [{'id': row['id'], 'by': row['written_by'], 'time': row['time']} for row in rows]
+            rows = self.store.db.execute('SELECT id,written_by,time FROM plan_versions WHERE plan=? AND text<>? ORDER BY id DESC',
+                                         (plan['id'], plan['text'])).fetchall()
+        shown = rows[:VERSIONS_SHOWN]
+        if not any(row['written_by'] == 'user' for row in shown):
+            shown += [row for row in rows if row['written_by'] == 'user'][:1]
+        return [{'id': row['id'], 'by': row['written_by'], 'time': row['time']} for row in shown]
 
     def version(self, plan_id, version):
         """The text of one of them. Raises ValueError (GONE)."""
@@ -402,7 +511,7 @@ class Plans:
             if plan is None or plan['status'] == 'dropped':
                 raise ValueError(GONE)
             if status == 'dropped':
-                self.store.db.execute("UPDATE plans SET text='' WHERE id=?", (plan['id'],))
+                self.store.db.execute("UPDATE plans SET text='',own='[]' WHERE id=?", (plan['id'],))
                 self.store.db.execute('DELETE FROM plan_versions WHERE plan=?', (plan['id'],))
             return self._end(plan, status, session, turn) if status == 'dropped' or plan['status'] == 'open' else plan
 
@@ -416,21 +525,26 @@ class Plans:
         if not plan['text'].strip():
             raise ValueError(EMPTY)
 
-    def hand_over(self, plan_id, chat, *, session=None, turn='', change=''):
+    def hand_over(self, plan_id, chat, *, session=None, turn='', change='', since='', item=None):
         """The plan becomes one task for a chat's agent and is over: one step, so it happens once. `change`: what the user changed about it
-        with their yes. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
+        with their yes; `since`: what was said and is not in the plan yet. `item`: the hand-over that was written up (`prepare`): refused when it was taken back meanwhile, and it cannot be from here
+        on. Returns the job. Raises ValueError when it cannot be handed over (any more)."""
         change = words(change, 500)
         self.settle()
         with self.store.transaction():
+            if item is not None and item['back']:
+                raise ValueError(TAKEN_BACK)
             plan = self.get(plan_id)
             self.check(plan)
+            if item is not None:
+                item['made'] = True
             if change:
                 self.store.db.execute('UPDATE plans SET text=? WHERE id=?', (plan['text'].strip() + CHANGE + change, plan['id']))
                 plan = self.get(plan['id'])
             owner = (session or {}).get('id') or self._session(plan)
             job = uuid.uuid4().hex
             self.store.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,'queued','')",
-                                  (job, owner + ':plan:' + job, owner, str(chat), turn, task(plan)[:16000]))
+                                  (job, owner + ':plan:' + job, owner, str(chat), turn, task(plan, since)[:16000]))
             if str(chat) != plan['target']:
                 self.store.db.execute('INSERT OR REPLACE INTO job_scope VALUES(?,?)', (job, plan['target']))
             row = self.store.db.execute('SELECT content FROM turns WHERE id=? AND session=?', (str(turn), owner)).fetchone()

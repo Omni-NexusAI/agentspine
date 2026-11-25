@@ -351,12 +351,12 @@ class Realtime(WsHandler):
                     pass
 
     async def disable(self, sid):
-        # What the user agreed to is carried out to its end (convo_modes), but nothing goes on once Convo is off.
-        states = [self.connections.get(sid) or {}] + [entry['state'] for entry in self.detached.values()]
-        for state in states:
-            for task in [item['task'] for item in state.get('plan_work') or ()] + [state.get('action_task')]:
-                if task is not None and not task.done():
-                    task.cancel()
+        # What the user agreed to is carried out to its end (convo_modes), but nothing goes on once Convo is off. (Hand-overs being written up are
+        # taken back by the service itself, whether or not a page is connected: Service.deactivate.)
+        for state in [self.connections.get(sid) or {}] + [entry['state'] for entry in self.detached.values()]:
+            task = state.get('action_task')
+            if task is not None and not task.done():
+                task.cancel()
         await self._end(sid)
         await self.emit_to(sid, 'convo.disabled', {'reason': 'Plugin disabled; native speech remains available.'})
 
@@ -589,7 +589,8 @@ class Realtime(WsHandler):
                 state["session"] = store.retarget(session["id"], sid, target)
             else:
                 state["session"] = store.interrupt(session["id"], sid)
-                for label in self._helper('convo_modes').stop(state):        # Stop also takes back a hand-over that is still being written up
+                # Stop also takes back a hand-over that is still being written up.
+                for label in self._helper('convo_planning').of(store).take_back('stop', target=session['target']):
                     await self._send(sid, state, state["session"], '', 'notice', kind='info', message=label + ' was not handed over; it is still here.')
             await self._cancel(state)
             state["phrases"].clear()
@@ -722,8 +723,9 @@ class Realtime(WsHandler):
             if data.get("status") == "started":
                 if not phrase.get("started"):
                     store.playback_started(session["id"], sid, session["epoch"], turn, phrase_id)
-                    phrase["started"] = True
+                    phrase["started"] = asyncio.get_running_loop().time()
                     self._mark_once(state, turn, 'playback.started')
+                    await self._helper('convo_voice_tools').playing(self, sid, state, session, phrase_id)
                 return {"ok": True}
             if data.get("status", "completed") != "completed":
                 raise ValueError("Unknown playback acknowledgement")
@@ -734,6 +736,7 @@ class Realtime(WsHandler):
             # misrepresented as a complete quotation in subsequent model context.
             store.delivered(session["id"], sid, session["epoch"], turn, str(data.get("phrase_id")), phrase["text"])
             self._mark(turn, 'playback.completed')
+            await self._helper('convo_voice_tools').playing(self, sid, state, session, phrase_id)      # (a page that says nothing at its start)
             return {"ok": True}
         if event != "convo.turn":
             raise ValueError("Unsupported voice event")
@@ -1040,6 +1043,7 @@ class Realtime(WsHandler):
                     candidate['previous_epoch'] = old_epoch
                     candidate['epoch'] = session['epoch']
                     self._mark(turn, 'admitted', sequence=sequence, epoch=session['epoch'], previous_epoch=old_epoch)
+                    await self._helper('convo_voice_tools').unheard(self, sid, state, session)
                     state['phrases'].clear()
                     # Notify immediately: server epoch is already revoked before bounded join.
                     await self._send(sid, state, session, turn, 'candidate.admitted',
@@ -2048,7 +2052,7 @@ class Realtime(WsHandler):
                         began['audio'] = True
                         self._mark_once(state, turn, 'audio.first')
                         state['cont'].committed(turn)       # heard from here on: normal barge-in rules, no joining
-                        await self._helper('convo_voice_tools').heard(self, sid, state, session, turn)
+                        await self._helper('convo_voice_tools').heard(self, sid, state, session, turn, phrase_id)
                         # prime_ms: the start-up buffer the browser fills before this phrase plays when nothing else is playing.
                         await self._send(sid, state, session, turn, 'audio.begin', phrase_id=phrase_id,
                                          sample_rate=chunk['sample_rate'], format=chunk['format'], channels=chunk['channels'],
@@ -2086,8 +2090,18 @@ class Realtime(WsHandler):
         began['audio'] = True
         self._mark_once(state, turn, 'audio.first')
         state['cont'].committed(turn)
-        await self._helper('convo_voice_tools').heard(self, sid, state, session, turn)
+        await self._helper('convo_voice_tools').heard(self, sid, state, session, turn, phrase_id)
         await self._send(sid, state, session, turn, "audio.phrase", audio=base64.b64encode(audio).decode(), phrase_id=phrase_id)
+
+    @staticmethod
+    def _until_played(state, phrase_id):
+        """Seconds until a phrase that was sent should begin to play: what was sent before it and was not heard to its end plays first."""
+        now, clock = asyncio.get_running_loop().time(), 0.0
+        for other, phrase in state['phrases'].items():
+            if other == phrase_id:
+                break
+            clock = (phrase.get('started') or max(clock, phrase.get('sent') or now)) + float(phrase.get('seconds') or 0)
+        return max(0.0, clock - now)
 
     @staticmethod
     def _chat_idle(service, target):
@@ -3056,7 +3070,7 @@ class Realtime(WsHandler):
         try:
             jobs = [job for job in state['service'].store.jobs(session['target']) if job['session'] == session['id']][-4:]
             preparing = ['- ' + json.dumps(item['label'][:80], ensure_ascii=False) + ' is being written up and is handed over in a moment, as the user '
-                         'agreed (cancel_task takes it back, if they want that)' for item in self._helper('convo_modes').working(state)]
+                         'agreed (cancel_task takes it back, if they want that)' for item in self._helper('convo_modes').working(self, state, session)]
             if not jobs and not preparing:
                 return ''
             updates, label = self._helper('convo_task_updates'), self._helper('convo_voice_tools')._job_label
@@ -3684,6 +3698,13 @@ class Realtime(WsHandler):
                                 taken = clause.take(phrase)
                                 while taken:
                                     spoken, phrase = taken
+                                    if asking is not None and asking.get('last') and not phrase.strip():
+                                        # What may be the reply's last sentence waits for its end: the question is a request of its own.
+                                        spoken, kept_back = firstclause.last_sentence(spoken)
+                                        phrase = kept_back + phrase
+                                        if not spoken.strip():
+                                            phrase = spoken + phrase
+                                            break
                                     await say(spoken)
                                     taken = clause.take(phrase)
                 return None

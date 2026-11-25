@@ -22,6 +22,7 @@ import wave
 
 logger = logging.getLogger(__name__)
 
+PLAYED_MARGIN = 2.5        # seconds after a question should have begun to play, when the page does not say that it did (a start-up buffer included)
 PENDING_SECONDS = 40.0     # an unanswered "shall I go ahead?" is dropped after this long (the question itself takes a few seconds)
 READ_SECONDS = 6.0         # the isolated yes / no reading of an answer may take this long before the question simply stays open
 # The whole instruction of the isolated reading (`reading`): one recording or its recognized text, one word back. No history, no
@@ -221,7 +222,7 @@ async def ask(rt, sid, state, session, turn, name, args, prepared=None, *, label
     await resolve(rt, sid, state, session, 'replaced')
     record = {'id': uuid.uuid4().hex, 'name': name, 'arguments': dict(args), 'summary': tools.summary(name, args) if summary is None else summary,
               'turn': turn, 'label': label or tools.CATALOG[name].get('ask') or tools.LABEL[name], 'prepared': prepared, 'heard': None,
-              'voiced': False, 'planning': _planning_since(state), 'about': about, 'last': last}
+              'voiced': False, 'planning': _planning_since(state), 'about': about, 'last': last, 'phrase': ''}
     state['pending'] = record
     state['service'].store.append(session["id"], sid, session["epoch"], turn, "action.asked",
                                   {"id": record['id'], "name": name, "summary": record['summary']})
@@ -233,6 +234,9 @@ async def show(rt, sid, state, session, record):
     """The question can now be answered: its card is shown and its time starts."""
     if record.get('heard') is not None or pending(state) is not record:
         return
+    waited = record.get('timer')
+    if waited is not None and waited is not asyncio.current_task():
+        waited.cancel()
     record['heard'] = asyncio.get_running_loop().time()
     rt._mark(record['turn'], 'action.shown', tool=record['name'])
 
@@ -245,11 +249,31 @@ async def show(rt, sid, state, session, record):
                    summary=record['summary'], seconds=int(PENDING_SECONDS), **({'plan_id': record['about']} if record.get('about') else {}))
 
 
-async def heard(rt, sid, state, session, turn):
-    """The first audio of a phrase of `turn` was sent: when it holds that turn's question, the question can be answered from here on."""
+async def heard(rt, sid, state, session, turn, phrase=''):
+    """The first audio of a phrase of `turn` was sent: when it holds that turn's question, the question can be answered from here on. One at the
+    end of a longer reply (`last`) only once that phrase plays (`playing`): audio is sent well ahead of the loudspeaker, and until then the
+    user hears something else."""
     record = pending(state)
-    if record is not None and record['turn'] == turn and record.get('voiced'):
+    if record is None or record['turn'] != turn or not record.get('voiced'):
+        return
+    if not record.get('last'):
         await show(rt, sid, state, session, record)
+    elif not record['phrase']:
+        record['phrase'] = phrase
+
+
+async def playing(rt, sid, state, session, phrase):
+    """The page says that a phrase begins to play (or was heard to its end)."""
+    record = pending(state)
+    if record is not None and phrase and record.get('phrase') == phrase:
+        await show(rt, sid, state, session, record)
+
+
+async def unheard(rt, sid, state, session):
+    """The user spoke and what was still to be played is dropped: a question at its end that nobody heard goes with it."""
+    record = pending(state)
+    if record is not None and record.get('phrase') and record.get('heard') is None:
+        await resolve(rt, sid, state, session, 'replaced', by='unheard')
 
 
 async def asked_aloud(rt, sid, state, session, turn, over):
@@ -261,6 +285,13 @@ async def asked_aloud(rt, sid, state, session, turn, over):
         return
     if over:
         await resolve(rt, sid, state, state.get('session') or session, 'replaced', by='unheard')
+    elif record.get('phrase') in state['phrases']:
+        # It was sent and is still to be played: the page says when (`playing`). Without a word from it, after the time that takes.
+        async def in_time(seconds):
+            await asyncio.sleep(seconds)
+            if state.get('pending') is record:
+                await show(rt, sid, state, state.get('session') or session, record)
+        record['timer'] = asyncio.ensure_future(in_time(rt._until_played(state, record['phrase']) + PLAYED_MARGIN))
     else:
         await show(rt, sid, state, session, record)
 
@@ -543,12 +574,13 @@ async def _cancel(rt, state, session, what, kind=''):
     This is a lookup of an identifier among the user's own tasks and timers, not a reading of intent: each candidate is scored
     by how many of the words occur in its text as whole words, then by how much of its text those words cover (so a small word
     shared with a long task never beats the timer the words name), then by recency. Nothing in common with any candidate
-    cancels nothing."""
+    cancels nothing. A plan that is being written up to be handed over is taken back unless the words clearly name a task or a timer: that is the
+    newest thing there is, "no, do not hand it over" names it in many ways, and taking it back loses nothing (the plan is still here)."""
     s, modes = state["service"], rt._helper('convo_modes')
     jobs = [] if kind == 'timer' else [job for job in reversed(s.store.jobs(session["target"])) if job['status'] in ('queued', 'running')]
     pending_timers = [] if kind == 'task' else list(reversed(timers(s).pending(TIMER_SCOPE)))
-    # A plan the user agreed to hand over that is still being written up: the newest thing there is to take back.
-    preparing = [] if kind == 'timer' else modes.working(state)
+    preparing = [] if kind == 'timer' else list(reversed(modes.working(rt, state, session)))
+    plan_name = lambda label: label.partition(': ')[2] if label.startswith('The plan: ') else '' if label == 'The plan' else label
     candidates = ([('plan', item, item['label']) for item in preparing] + [('task', job, _job_label(state, job)) for job in jobs]
                   + [('timer', timer, str(timer.get('label') or '')) for timer in pending_timers])
     if not candidates:
@@ -558,19 +590,22 @@ async def _cancel(rt, state, session, what, kind=''):
     chosen = candidates[0]
     if wanted:
         def fit(candidate):
-            text = set(_words(candidate[2]))
+            text = set(_words(plan_name(candidate[2]) if preparing else candidate[2]))
             shared = len(wanted & text)
             return shared, (shared / len(text) if text else 0.0)
         best = max(candidates, key=fit)            # max keeps the first of equals: the most recent
+        if preparing and best[0] != 'plan' and fit(best)[0] < 2 and fit(best)[1] < .5:
+            best = max(candidates[:len(preparing)], key=fit)
         if fit(best)[0]:
             chosen = best
-        elif not kind:
+        elif not kind and not preparing:
             return False, 'nothing that is running or set matches that'
         # The kind was named and no label matches the words (an unlabelled timer, "the timer"): the most recent of that kind.
     which, item, label = chosen
     if which == 'plan':
-        modes.stop(state)
-        return True, 'The plan is not handed over after all; it is still here.'
+        if not modes.plans(rt, state).take_back('voice', plan_id=item['plan'], target=session['target']):
+            return False, 'it has just been handed over; its task can be cancelled instead'
+        return True, 'The plan%s is not handed over after all; it is still here.' % (' "%s"' % plan_name(label)[:80] if plan_name(label) else '')
     if which == 'task':
         try:
             s.dispatcher.cancel(item['id'])

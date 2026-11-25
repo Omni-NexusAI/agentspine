@@ -292,6 +292,19 @@ test('Discarding takes what was typed with it, and leaves it when it did not wor
     failed.store.editPlan('mine');
     assert.equal(await failed.store.discardPlan(), false);
     assert.deepEqual([failed.store.planText, failed.store.planDirty], ['mine', true]);
+    // Convo wrote meanwhile: the edit that came back is an edit of what stood there before, so saving it asks first.
+    const wrote = { ...kept, text: 'Goal:\n- dry\n\nDecisions:\n- what Convo wrote', revision: 4 };
+    let drop;
+    const late = await panel({ plan: kept, globals, server: { plan_drop: () => new Promise((_, reject) => { drop = () => reject(new Error('no answer')); }),
+        plan_save: payload => (payload.revision === 4 ? { ok: true, plan: { ...wrote, text: payload.text, revision: 5 } } : { ok: false, code: 'conflict', error: 'The plan was changed meanwhile', plan: wrote }) } });
+    late.store.editPlan('mine');
+    const dropping = late.store.discardPlan();
+    late.held.plan = wrote;
+    late.store.takePlan(wrote);
+    drop();
+    assert.equal(await dropping, false);
+    assert.equal(await late.store.savePlan(), false);
+    assert.deepEqual([late.store.planText, late.store.planClash], ['mine', true]);
 });
 
 test('A question about a plan goes with the plan', async () => {

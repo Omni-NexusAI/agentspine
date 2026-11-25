@@ -16,7 +16,8 @@ call is not enough: their own utterance, read alone, has to say so (convo_voice_
 planning is held to the floor to its end, also when planning is over in the middle of it.
 
 A question about a plan is about that very plan: a yes does nothing once it was handed over, discarded or opened again meanwhile. What the
-user agreed to is carried out to its end, also when they speak meanwhile, unless they take it back (`stop`).
+user agreed to is carried out to its end, also when they speak meanwhile or leave, unless they take it back (Plans.take_back): by voice, with
+the stop-reply key while the reply to their yes is under way, in the panel, or by turning Convo off.
 
 Every function takes the realtime handler (`rt`) first and uses only its small surface: `_send`, `_mark`, `_helper`, `_pinned`, `_server`,
 `_upkeep_request`, `_check_capacity`, `_ratio`, `_window`, `_memory_note`, `_chat_idle`."""
@@ -221,17 +222,10 @@ def told(rt, state, session, offered=()):
     return text
 
 
-def working(state):
-    """The hand-overs the user agreed to that are being carried out right now (their final text is being written)."""
-    return [item for item in state.get('plan_work', ()) if not item['task'].done() and not item['made']]
-
-
-def stop(state):
-    """The user takes it back while the final text is still being written: nothing is handed over, the plan is still here. Returns what it was."""
-    stopped = working(state)
-    for item in stopped:
-        item['task'].cancel()
-    return [item['label'] for item in stopped]
+def working(rt, state, session):
+    """The hand-overs of this conversation the user agreed to whose task is not made yet (the final text is being written), whichever
+    connection they agreed on."""
+    return plans(rt, state).preparing(session['target'])
 
 
 # ── Switching ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -254,6 +248,8 @@ async def begin(rt, sid, state, session, turn, topic='', new=False):
     _, before, away = kept.about(session['target'], topic, new)
     plan, how = kept.begin(session['target'], topic, new=new, session=session, turn=turn)
     plan['handed'] = how == 'again' and before is not None and before['status'] == 'handed'
+    if plan.get('taken'):
+        rt._mark(turn, 'mode.plan_taken_back')
     if how != 'on':
         await rt._helper('convo_voice_tools').resolve(rt, sid, state, session, 'replaced', by='planning')
         rt._mark(turn, 'mode.planning', disposition=how)
@@ -288,7 +284,9 @@ async def _start(rt, sid, state, session, turn, args):
     topic = ' '.join(str(args.get('topic') or '').split())
     plan, how, waiting, away = await begin(rt, sid, state, session, turn, topic, new=args.get('plan') == 'new')
     named = ' ' + json.dumps(plan['topic'], ensure_ascii=False) if plan['topic'] else ''
-    result = {'on': 'Planning mode was already on%s.', 'again': 'Planning mode is on again and goes on with the plan%s ' + ('that was handed over earlier (its task is not touched).' if plan['handed'] else 'kept earlier.'),
+    result = {'on': 'Planning mode was already on%s.', 'again': 'Planning mode is on again and goes on with the plan%s ' + (
+                  'that was handed over earlier (its task had not started and is taken back).' if plan.get('taken')
+                  else 'that was handed over earlier (its task is not touched).' if plan['handed'] else 'kept earlier.'),
               'new': 'Planning mode is on%s.'}[how] % ((' for' + named) if named and how != 'again' else named)
     if away is not None:
         result += ' The plan%s is kept.' % (' ' + json.dumps(away['topic'], ensure_ascii=False) if away['topic'] else ' in hand until now')
@@ -322,15 +320,17 @@ def _released(rt, state, waiting):
 async def _to_its_end(rt, sid, state, turn, plan, work):
     """Carry out what the user agreed to, whatever becomes of the reply: speaking over it, or leaving the page, does not lose it. Its task then
     shows in the panel and the next reply is told (the tasks of this conversation); when it fails, the panel says so. Until its task is made
-    the user can take it back (`stop`)."""
-    item = {'plan': plan['id'], 'label': 'The plan' + (': ' + plan['topic'] if plan['topic'] else ''), 'made': False}
+    the user can take it back (Plans.take_back). The list of what is being written up belongs to the conversation, not to this connection."""
+    kept = plans(rt, state)
+    item = kept.prepare(plan, 'The plan' + (': ' + plan['topic'] if plan['topic'] else ''))
+    item['loop'] = asyncio.get_running_loop()
     item['task'] = task = asyncio.ensure_future(work(item))
-    running = state.setdefault('plan_work', [])
-    running.append(item)
-    task.add_done_callback(lambda _: running.remove(item) if item in running else None)
+    task.add_done_callback(lambda _: kept.prepared(item))
 
     def report(done):
         if done.cancelled():
+            if item['back'] == 'panel' and (kept.get(plan['id']) or {}).get('status') in ('open', 'kept'):
+                asyncio.ensure_future(_tell(rt, sid, state, turn, item['label'] + ' was not handed over; it is still here.'))
             return
         error = done.exception()
         if error is not None:
@@ -340,7 +340,9 @@ async def _to_its_end(rt, sid, state, turn, plan, work):
         return await asyncio.shield(task)
     except asyncio.CancelledError:
         if task.cancelled() and not asyncio.current_task().cancelling():
-            return Outcome(False, 'it was stopped, so nothing was handed over; the plan is still here')
+            if (kept.get(plan['id']) or {}).get('status') == 'handed':
+                return Outcome(True, 'The plan was handed over in the panel meanwhile.')
+            return Outcome(False, 'it was taken back, so nothing was handed over; the plan is still here')
         if not task.done():
             task.add_done_callback(report)
         raise
@@ -359,18 +361,17 @@ async def _hand_over(rt, sid, state, session, turn, plan, chat, change, item):
     was_open = plan['status'] == 'open'
     if was_open:
         plan = await final(rt, sid, state, session, turn, plan)
-        # They ended planning in the panel meanwhile: taken back. (Going on to another plan is not: this one was agreed to.)
-        if (kept.get(plan['id']) or {}).get('status') == 'kept' and kept.open(target) is None:
-            raise ValueError('Planning was ended in the panel meanwhile, so it was not handed over')
     kept.check(kept.get(plan['id']))                                           # before a chat is made for it
     waiting = kept.waiting(target) if was_open else []
     where = await voice_tools.place(rt, state, session, chat)
     idle = rt._chat_idle(service, where['id'])                                 # before the task itself makes its chat busy
-    item['made'] = True
-    job = kept.hand_over(plan['id'], where['id'], session=session, turn=turn, change=change)
+    # (A final text that did not come: what was said since the plan was last written goes along, so nothing of it is lost.)
+    since = kept.unwritten(kept.get(plan['id'])) if was_open else ''
+    job = kept.hand_over(plan['id'], where['id'], session=session, turn=turn, change=change, since=since, item=item)
     kept.allow(target, job['id'])                                              # planning of something else may go on (or have begun): this was agreed to
     state.setdefault('job_labels', {})[job['id']] = item['label']
-    service.dispatcher.start()
+    if not getattr(service, 'disabled', False):                                # (starting it would also end a pause: never once Convo is off)
+        service.dispatcher.start()
     rt._mark(turn, 'mode.plan_handed')
     now = state.get('session') or session                                      # the user may have spoken since: this is still told
     await rt._send(sid, state, now, turn, 'job.queued', job_id=job['id'], target=job['target'], chat=where['name'][:80])
@@ -389,11 +390,16 @@ async def _leave(rt, sid, state, session, turn, keep, voice, about='', may_ask=T
     if about and plan['id'] != about:
         return Outcome(False, 'another plan is being worked on now')
     waiting = kept.waiting(target)
-    if not keep:
-        plan = await final(rt, sid, state, session, turn, plan, insist=True)
+    if keep:
+        kept.take_back('voice', plan_id=plan['id'])                            # kept means kept: a hand-over being written up is not made after all
+    agreed_to = any(item['plan'] == plan['id'] for item in kept.preparing(target))
+    if not keep and not agreed_to:
+        plan = await final(rt, sid, state, session, turn, plan)
     plan = kept.end(plan['id'], 'kept', session=session, turn=turn)
     rt._mark(turn, 'mode.conversation', disposition='keep' if keep else 'finish')
     await _changed(rt, sid, state, state.get('session') or session, turn, plan)
+    if agreed_to:
+        return Outcome(True, 'Planning is over. The plan is just being written up and is handed over in a moment, as the user agreed.' + _released(rt, state, waiting))
     result = 'Planning is over. ' + ('The plan is kept (in the panel); nothing was handed over.' if plan['text'].strip()
                                      else 'Nothing was written down, so there is no plan to hand over.') + _released(rt, state, waiting)
     if keep or not may_ask or plan['status'] != 'kept' or not plan['text'].strip():
@@ -410,14 +416,11 @@ async def _leave(rt, sid, state, session, turn, keep, voice, about='', may_ask=T
 
 
 # ── Keeping the plan in writing ────────────────────────────────────────────────────────────────────────────────────────
-async def write(rt, state, session, plan, final=False, insist=False):
-    """Bring the plan up to date with one request that begins exactly as the conversation's requests do (so the model server reuses its
-    cached start and reads only the instruction), on the conversation's slot. Returns the plan as it is now, or None when nothing usable
-    came. What the user changed meanwhile wins: their edit stands and Convo writes again later."""
-    planning, store = rt._helper('convo_planning'), state['service'].store
-    kept, config = plans(rt, state), state['config']
-    upto = kept.newest(plan['target'])
-    request = rt._upkeep_request(state, store.context(plan['target']), planning.instruction(plan, final))
+async def _written(rt, state, plan, instruction, final):
+    """One request for the plan: (text, topic), or None when nothing usable came. It begins exactly as the conversation's requests do (so the model
+    server reuses its cached start and reads only the instruction), on the conversation's slot."""
+    planning, store, config = rt._helper('convo_planning'), state['service'].store, state['config']
+    request = rt._upkeep_request(state, store.context(plan['target']), instruction)
     ratio, window = rt._ratio(state, request['history']), rt._window(state)
     # Room for the plan that is there already, and more: a plan the user wrote out at length is not cut short.
     request['max_tokens'] = min(MOST_TOKENS, max(FINAL_TOKENS if final else KEEP_TOKENS,
@@ -440,35 +443,59 @@ async def write(rt, state, session, plan, final=False, insist=False):
         if close is not None:
             await close()
     body, topic = planning.tidy(text)
-    # Only a whole answer replaces what is written (from a server that does not say how it ended: only one that is not shorter), and one that
-    # lost most of the plan only when it still says so an exchange later (the user threw it over, then), or when `insist`ed on.
+    # Only a whole answer counts (from a server that does not say how it ended: only one that is not shorter).
     if not body or ended is None or not (ended in WHOLE or (ended in ('', 'none') and len(body) >= len(plan['text']))):
         return None
-    if planning.shrank(plan['text'], body):
-        noted = state.get('plan_shrank') or ('', 0)
-        if not insist and not (noted[0] == plan['id'] and noted[1] < upto):
-            if noted[0] != plan['id']:
-                state['plan_shrank'] = (plan['id'], upto)
+    return body, topic
+
+
+async def write(rt, state, session, plan, final=False, insist=False):
+    """Bring the plan up to date. Returns the plan as it is now, or None when nothing was written. What the user changed meanwhile wins: their
+    edit stands and Convo writes again later. A text that lost most of the plan is taken only when the next writing, of the same text, an
+    exchange later says the same (the user threw it over, then), or when `insist`ed on; `state['plan_refused']` says that this is why
+    nothing was written. A text that leaves out or changes a line the user wrote themselves counts only when the model, asked about exactly
+    those lines, still says so."""
+    planning, kept = rt._helper('convo_planning'), plans(rt, state)
+    upto = kept.newest(plan['target'])
+    state.pop('plan_refused', None)
+    written = await _written(rt, state, plan, planning.instruction(plan, final), final)
+    if written is None:
+        return None
+
+    def refused(text):
+        if insist or not planning.shrank(plan['text'], text):
+            return False
+        noted = state.get('plan_shrank') or ('', '', 0)
+        if noted[:2] == (plan['id'], plan['text']) and noted[2] < upto:
+            return False
+        if noted[:2] != (plan['id'], plan['text']):
+            state['plan_shrank'] = (plan['id'], plan['text'], upto)
+        state['plan_refused'] = plan['id']
+        return True
+    if refused(written[0]):
+        return None
+    gone = planning.missing(plan['own'], written[0])
+    if gone:
+        again = await _written(rt, state, plan, planning.instruction(plan, final, written[0], gone), final)
+        if again is None or refused(again[0]):
             return None
-    elif plan['by'] == 'user':
-        body = planning.with_own_words(body, plan['text'])
+        written = (again[0], again[1] or written[1])
     state.pop('plan_shrank', None)
     try:
-        return kept.write(plan['id'], body, revision=plan['revision'], by='convo', topic=topic, upto=upto)
+        return kept.write(plan['id'], written[0], revision=plan['revision'], by='convo', topic=written[1], upto=upto, was=plan['text'])
     except ValueError:
         return None
 
 
-async def final(rt, sid, state, session, turn, plan, insist=False):
-    """The final plan, written now (bounded); the plan as it was kept when that does not work. `insist`: one that lost most of the plan is asked
-    for once more and then taken (the user hears it before anything is done with it)."""
+async def final(rt, sid, state, session, turn, plan):
+    """The final plan, written now (bounded); the plan as it was kept when that does not work. One that lost most of the plan is asked for once
+    more and then taken: two writings that say the same are what the user wants, not a slip, and what stood there can be found again."""
     await rt._send(sid, state, session, turn, 'notice', kind='activity', message='Writing the final plan…')
 
     async def whole():
-        noted = state.get('plan_shrank')
         written = await write(rt, state, session, plan, final=True)
-        if written is None and insist and noted != state.get('plan_shrank'):
-            written = await write(rt, state, session, plans(rt, state).get(plan['id']) or plan, final=True, insist=True)
+        if written is None and state.pop('plan_refused', None) == plan['id']:
+            written = await write(rt, state, session, plan, final=True, insist=True)
         return written
     try:
         written = await asyncio.wait_for(whole(), FINAL_SECONDS)

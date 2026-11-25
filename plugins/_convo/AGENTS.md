@@ -400,11 +400,18 @@
     (`may_ask`). A new tool that is not `read` is held by the same rule; the table in `tests/test_planning.py` (`Floor`) must name it.
   - **A question about a plan** carries its id (`about`): it stands only while that plan can still be what was asked (`voice_tools._moved_on`: handed
     over or discarded in the panel, ended, opened again), else it is dropped, its card goes and the reply is told. One that the reply puts at
-    its end (`last`) can be answered only once that reply's last sentence was heard: agreeing while the plan is read out is no answer. What
-    the user agreed to is carried out to its end (`modes._to_its_end`), also when they speak over the reply or add a word; from the panel's
-    Run in a task of its own (`_pressed`). Until its task is made they can take it back (`modes.stop`): by voice (`cancel_task`), Stop, ending
-    planning in the panel; turning Convo off does, too, also for a page that is away. A plan whose task is cancelled or fails was not carried
-    out: it is a kept one again (`Plans.settle`).
+    its end (`last`) can be answered only from the moment its last sentence PLAYS: that sentence is a speech request of its own
+    (`convo_firstclause.last_sentence`, held back while the reply streams), and the page's playback receipt opens the question
+    (`voice_tools.playing`; a page that sends none: after the time it takes, `_until_played`). Audio is sent well ahead of the loudspeaker, so
+    "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to answer begins with the question.
+    Speech or Stop that drops what was still to be played drops an unheard question with it (`unheard`).
+  - **What the user agreed to** is carried out to its end (`modes._to_its_end`), also when they speak over the reply, add a word or stop voice;
+    from the panel's Run in a task of its own (`_pressed`). Until its task is made it can be taken back (`Plans.take_back`; the list `Plans.work`
+    belongs to the journal, not to a connection): by voice, whichever conversation is running by then (`cancel_task`: whatever it is called
+    by, unless the words clearly name another task or timer), by `voice_mode` keep, with the stop-reply key while the reply to the yes is under
+    way, by End planning, Discard or Hand over in the panel, by turning Convo off (`Service.deactivate`). `Plans.hand_over(item)` refuses it in
+    the same transaction. A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with
+    before its task has started, the task is taken back with what was added to it (`Plans.begin`), else both versions would run.
   - **The other ways in**, all closed: a search that got nothing is asked about, not handed over (`search_ask_first`); a question open from
     before is dropped (`begin` resolves it; `voice_tools.pending` drops one that planning overtook when it was switched on in the panel or
     on another page, by plan and start, never by a clock); tasks queued before, and any queued meanwhile without a yes (a change that came too
@@ -416,11 +423,12 @@
     follow-up): it only makes Convo more careful. In one pass it is carried out first, and it does not end the reply's look-ups.
     **Off**: only on the user's word: their own utterance, read alone, says so (ASKED `voice_mode`), else they are asked; or the panel. The same
     holds for putting a plan with something in it away for another one (`modes.puts_away`, ASKED `voice_mode:plan`); one with nothing
-    written is simply replaced. Earlier plans, handed-over ones too, are found by exactly what they are called (`Plans.match`: a similar name is
-    another plan's name; the model, which understands what is meant, is told the names when a new one was begun) and listed in the panel
-    (`earlier`). The panel's Plan button begins a new plan (`fresh`), unless one is being worked on.
+    written is simply replaced (unless it is just being written up). Earlier plans, handed-over ones too, are found by exactly what they are
+    called (`Plans.match`, `same`: the same words in the same order; a similar name is another plan's name; the model, which understands what is
+    meant, is told the names when a new one was begun) and listed in the panel (`earlier`: what was kept comes first). The panel's Plan button begins a new plan (`fresh`), unless one is being worked on.
   - **Finishing** (`voice_mode` conversation, `plan` finish, the default): the final plan is written by one request (bounded,
-    `FINAL_SECONDS`; the kept one when that fails), planning ends (`kept`), the model says the plan and asks whether to hand it over: that
+    `FINAL_SECONDS`; the kept one when that fails, with what was said since it was written when it is handed over, `Plans.unwritten`),
+    planning ends (`kept`), the model says the plan and asks whether to hand it over: that
     question is an ordinary pending one (`voice_mode` hand_over); yes = one task with the whole plan (`handed`), no = it stays `kept` and can be
     gone on with, handed over later or copied. `keep` ends without all that. Handing over is `work` (`modes.kind`) and happens once
     (`Plans.hand_over`: one transaction, only from open or kept); the model may name another kept plan (`topic`), a chat (checked before anyone
@@ -431,10 +439,12 @@
     user's own server, every `KEEP_EVERY`-th on someone else's; what is not a plan (`planning.tidy`) is not kept and not asked for again
     before the next exchange (`KEEP_TRIES`). Only a whole answer replaces what is written: never one that does not say it is whole (`WHOLE`: the
     ends that mean that; no `answer.done` is none of them; a server that names no reason is believed when nothing got shorter). One that
-    lost most of the plan is taken only when it still says so an exchange later, or when the user finishes (`plan_shrank`, `insist`); its room
-    grows with the plan (`MOST_TOKENS`). Lines the user had just written that a rewriting lost are kept word for word under `Own words`
-    (`with_own_words`). Every text that was replaced stays findable (`plan_versions`: the newest `VERSIONS`, and the user's own last words
-    however old), and the panel puts one back. Revision check: an edit made meanwhile in the panel stands (`was`: a plan that was only ended or
+    lost most of the plan is taken only when the next writing of the same text still says so an exchange later (`plan_shrank`), and a final one
+    when it says so twice (`insist`); its room grows with the plan (`MOST_TOKENS`). The lines the user wrote themselves are known (`own`): every
+    writing is told them, and one that leaves one out or changes it (`planning.missing`: word for word) counts only when the model, asked once
+    about exactly those lines, still says so. Nothing is put back by force: whether the user has said otherwise since is for the model to
+    understand. Every text that was replaced stays findable (`plan_versions`: the newest `VERSIONS`, and the user's own last words however
+    old; discarding a plan removes them), and the panel puts one back. Revision check: an edit made meanwhile in the panel stands (`was`: a plan that was only ended or
     named is no conflict). Developer view: memory events `plan`.
   - **What a reply is told** (`_planning_text`): the partner's rules and the plan (bounded, `TOLD_LIMIT`) in the late part, frozen per turn like
     the clock, so the held parallel reply is still promoted; the stable start and the tool list never change. More look-ups per reply
@@ -449,8 +459,8 @@
   own `usr` is refused. Also what a link or junction inside the folder leads to decides. A private key written out over several lines is left
   out whole, for as long as the lines are key text (a sentence that only mentions how one begins hides nothing). That is a help, not a
   guarantee: a secret that looks like ordinary text cannot be told from it, so never call it one. Measured when the shapes were last
-  changed: 0.3 % of 116 000 lines of source and docs taken for one, random keys of 24 characters and more seen in 95 % when they stand alone,
-  always beside a name that says so. No line
+  changed: 0.3 % of 117 000 lines of source and docs taken for one; made-up keys beside a name that says so always seen; standing alone 95 % of
+  those of letters and digits (24 characters and more), fewer with slashes in them, none of lower-case letters and digits only. No line
   longer than `CHECK_LIMIT` reaches a pattern (a crafted file must not hold up the process). Bounded in size, files, depth and time; in a
   thread. Offered as `project_files` (setting) says: `local` (default) only when everything the text goes through runs on the user's own
   machines (the conversation model, the gateway, whoever writes the summaries), `on`, `off`; read once per voice session. What was looked up

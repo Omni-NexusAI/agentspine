@@ -46,9 +46,9 @@ _HEADER = re.compile(r'\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}', re.I)
 _IN_ADDRESS = re.compile(r'://[^/\s:@]{1,100}:[^/\s@]{1,200}@')
 _ADDRESS = re.compile(r'hooks\.slack\.com/services/|discord(?:app)?\.com/api/webhooks/|[?&](?:sig|token|key|signature|access_token|api_?key)=[^&\s]{8,}', re.I)
 _TAG = re.compile(r'<\s{0,4}([A-Za-z][A-Za-z0-9_.-]{0,60})[^<>]{0,200}>\s{0,8}([^<\s][^<]{2,200})')
-_PREFIXES = ('sk-', 'sk_live_', 'sk_test_', 'rk_live_', 'rk_test_', 'whsec_', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'hf_', 'xoxa-', 'xoxb-', 'xoxp-', 'xoxr-',
-             'xoxs-', 'xapp-', 'AKIA', 'ASIA', 'AIza', 'ya29.', 'SG.', 'npm_', 'pypi-', 'shpat_', 'dop_v1_', 'eyJ', 'AGE-SECRET-KEY-', 'gsk_', 'nvapi-', 'r8_', 'tvly-', 'lin_api_', 'ntn_', 'secret_',
-             'MII', 'MIGH', 'MHcC', 'MC4C', 'b3BlbnNzaC1rZXk')          # (how the text of a private key begins)
+_PREFIXES = ('sk_live_', 'sk_test_', 'rk_live_', 'rk_test_', 'whsec_', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'glpat-', 'xoxa-', 'xoxb-', 'xoxp-', 'xoxr-', 'xoxs-', 'xapp-',
+             'AKIA', 'ASIA', 'AIza', 'ya29.', 'shpat_', 'dop_v1_', 'AGE-SECRET-KEY-', 'nvapi-', 'tvly-', 'lin_api_')
+_WORDLIKE = ('sk-', 'hf_', 'npm_', 'pypi-', 'r8_', 'ntn_', 'gsk_', 'secret_', 'SG.', 'eyJ', 'MII', 'MIGH', 'MHcC', 'MC4C', 'b3BlbnNzaC1rZXk')      # (the last ones: how the text of a private key begins)
 _BEGIN = re.compile(r'-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY|^PuTTY-User-Key-File|^Private-Lines:', re.I)
 _BODY, _BODY_HEAD = re.compile(r'[A-Za-z0-9+/=]{8,}'), re.compile(r'(?:Proc-Type|DEK-Info|Comment|Version|Encryption|Public-Lines|Private-Lines|Private-MAC|PuTTY-User-Key-File)[-0-9A-Za-z]{0,20}:', re.I)
 # A name and its value without a ':' or '=' between them.
@@ -56,7 +56,8 @@ _OPTION = re.compile(r'(?:^|[\s"\'`])--?([A-Za-z][A-Za-z-]{1,40})[ =]{1,4}(\S{1,
 _ENV = re.compile(r'^\s{0,20}(?:ENV|ARG|SET|SETX|SETENV|EXPORT)\s{1,8}([A-Za-z_][A-Za-z0-9_]{0,60})\s{1,8}(\S.{0,200})$', re.I)
 _PAIR = re.compile(r'["\']([A-Za-z][A-Za-z0-9_. -]{1,60})["\']\s{0,8}(?:,|=>|\]\s{0,4}=)\s{0,8}["\']([^"\']{1,200})["\']')
 _CALL = re.compile(r'([A-Za-z][A-Za-z0-9_]{2,60})\(\s{0,8}["\']([^"\']{3,200})["\']\s{0,4}\)')
-_USER = re.compile(r'(?:^|\s)(?:-u|--user)[ =]{1,4}["\']?[^\s:"\']{1,80}:[^\s"\']{3,}|(?:^|\s)(?:sshpass\s+-p|mysql\b.{0,80}\s-p|docker login\b.{0,80}\s-p)\s{0,2}[^\s-]\S{3,}', re.I)
+_USER = re.compile(r'\b(?:curl|wget|https?|xh|ab)\b.{0,200}\s(?:-u|--user)[ =]{1,4}["\']?[^\s:"\']{1,80}:[^\s"\']{3,}|(?:^|\s)(?:sshpass\s+-p|mysql\w{0,8}\b.{0,80}\s-p(?=\S)|docker login\b.{0,80}\s-p)\s{0,2}[^\s-]\S{3,}')
+_PLACEHOLDER = re.compile(r'<[^<>]{0,60}>|\[[^\[\]]{0,60}\]|\$\{?[A-Za-z_][A-Za-z0-9_]{0,60}\}?|%[A-Za-z_]{1,60}%|\{\{?[^{}]{0,60}\}?\}|[*x.•]{3,}')
 _SQL = re.compile(r'\b(?:identified\s{1,4}(?:with\s{1,4}\S{1,60}\s{1,4})?by|password)\s{1,4}["\'][^"\']{3,}["\']', re.I)
 _LOGIN = re.compile(r'\blogin\s{1,4}\S{1,80}\s{1,4}password\s{1,4}\S{3,}|:\$(?:apr1|2[aby]|5|6|argon2\w{0,3})\$', re.I)
 _PIN = re.compile(r'\bpin(?:\s{1,4}code)?\s{0,4}(?:is|ist|:|=)\s{0,4}\d{4,8}\b', re.I)
@@ -80,25 +81,35 @@ def _looks_made(value):
 
 def _names_a_secret(name, value):
     """Whether `name` (what stands before a ':' or '=') says that `value` is a key or password."""
-    name, value = name.rstrip(' \t"\'])'), value.strip(' \t"\',;')
-    words = [word.lower() for word in _SPLIT.findall(name[-60:])][-4:]
-    plain = value.lower().rstrip('.')
-    first = value.split()[0].strip('"\',;') if value.split() else ''
-    if not words or plain in _NOTHING or not any(c.isalnum() for c in value):
+    words = [word.lower() for word in _SPLIT.findall(name.rstrip(' \t"\'])')[-60:])][-4:]
+    if not words:
         return False
+    strong = any(word in _STRONG for word in words[-3:]) or (words[-1] in ('key', 'keys') and len(words) > 1 and words[-2] in _KEYED)
+    if not strong and words[-1] not in _WEAK:
+        return False
+    value = value.strip(' \t"\',;')
+    first = value.split()[0].strip('"\',;') if value.split() else ''
+    if value.lower().rstrip('.') in _NOTHING or not any(c.isalnum() for c in value) or _PLACEHOLDER.fullmatch(first) or first.lower().strip('<>[]') in words:
+        return False                                    # (nothing, a placeholder, or the name once more)
+    if value.isalpha() and all(word.lower() in _STRONG or word.lower() in _WEAK for word in _SPLIT.findall(value)):
+        return False                                    # (what such a thing is called, in a table or a translation)
     if first.isdigit() and len(first) < (6 if words[-1] in ('pass', 'pw') or not any(word in _STRONG for word in words[-3:]) else 4):
         return False                                    # (a count; a short number is a password only where it says so)
-    if any(word in _STRONG for word in words[-3:]) or (words[-1] in ('key', 'keys') and len(words) > 1 and words[-2] in _KEYED):
-        return len(value) >= 4
-    return words[-1] in _WEAK and _looks_made(first)
+    return len(value) >= 4 if strong else _looks_made(first)
 
 
 def _is_key(run):
     """Whether one unbroken run of characters has the shape of a key, whatever stands beside it."""
     run = run.strip('.~-')
     upper, lower, digits = _kinds(run)
-    if run.startswith(_PREFIXES) and len(run) >= 16 and (digits or (upper and lower) or any(len(part) >= 16 for part in re.split(r'[_.-]', run))):
+    if len(run) >= 16 and run.startswith(_PREFIXES) and (digits or (upper and lower) or any(len(part) >= 16 for part in re.split(r'[_.-]', run))):
         return True
+    prefix = next((prefix for prefix in _WORDLIKE if run.startswith(prefix)), None)
+    if prefix is not None and len(run) >= 16:
+        for part in re.split(r'[_.~-]', run[len(prefix):]):     # what begins like a word or a name: only with an unbroken piece that is none
+            upper, lower, digits = _kinds(part)
+            if len(part) >= 16 or (len(part) >= 8 and (digits >= 2 or (upper >= 2 and lower >= 2)) and not part.isdigit()):
+                return True
     for part in re.split(r'[./:~]', run):
         upper, lower, digits = _kinds(part)
         if len(part) >= 24 and upper >= 2 and lower >= 2 and digits:
@@ -119,13 +130,15 @@ def looks_like_a_key(line):
     begins = _BEGIN.search(line)
     if begins and _BODY.search(line[begins.end():].replace('PRIVATE KEY', '').replace('-', '').replace('\\n', ' ').lstrip()):
         return True                     # the whole key on one line; only to mention how one begins is no key
-    for pattern in (_OPTION, _ENV, _PAIR, _CALL):
+    for pattern in (_OPTION, _ENV, _PAIR):
         if any(_names_a_secret(name, value) for name, value in pattern.findall(line)):
             return True
+    if any(_names_a_secret(name, value) and _looks_made(value) for name, value in _CALL.findall(line)):
+        return True
     if any(_looks_made(value.strip('"\'.,;')) for value in _IS.findall(line)) or _PIN.search(line):
         return True
     alone = _ALONE.match(line)
-    if alone and _names_a_secret(alone.group(1), alone.group(2)) and _looks_made(alone.group(2)):
+    if alone and any(word.lower() in _STRONG for word in _SPLIT.findall(alone.group(1))) and _names_a_secret(alone.group(1), alone.group(2)) and _looks_made(alone.group(2)):
         return True
     for at, sign in enumerate(line):
         # (not '::', '==', '=>', '!=', ':=' twice, '://')
@@ -140,26 +153,33 @@ def looks_like_a_key(line):
 def _in_blocks(lines):
     """The numbers (from 0) of the lines that belong to a private key written out over several lines, its two ends included: from where it
     begins for as long as the lines are key text. A sentence that only mentions how a key begins starts nothing."""
-    found, begun = set(), None
+    found, begun, upto = set(), None, 0             # (`upto`: the lines of this block that are in `found` already)
     for number, line in enumerate(lines):
-        if begun is None:
-            if 'PRIVATE KEY' in line.upper()[:CHECK_LIMIT] or line.startswith(('PuTTY-User-Key-File', 'Private-Lines:')):
-                begins = _BEGIN.search(line[:CHECK_LIMIT])
-                if begins and '-----END' not in line[begins.end():]:
-                    begun = number
-            continue
-        bare = line[:400].replace('\\n', '').replace('\\r', '').strip().strip('"\'`,+;>|#*/ ')
-        end = '-----END' in line
-        if end or not bare or _BODY.fullmatch(bare) or (_BODY_HEAD.match(bare) and number - begun < 12):
-            if bare:
-                found.update(range(begun, number + 1))
-            if end:
-                begun = None
-            continue
-        begun = None
-        if _BEGIN.search(line[:CHECK_LIMIT]) and '-----END' not in line:
-            begun = number
+        if begun is not None:
+            bare = line[:400].replace('\\n', '').replace('\\r', '').strip().strip('"\'`,+;>|#*/ ')
+            end = '-----END' in line
+            if end or not bare or _BODY.fullmatch(bare) or (_BODY_HEAD.match(bare) and number - begun < 12):
+                if bare:
+                    found.update(range(upto, number + 1))
+                    upto = number + 1
+                if end:
+                    begun = None
+                continue
+            begun = None
+        if _starts_a_block(line):
+            begun = upto = number
     return found
+
+
+def _starts_a_block(line):
+    """Whether a private key written out over several lines begins here: the mark stands by itself, or after what it is assigned to. In a
+    sentence about keys it is only mentioned."""
+    line = line[:CHECK_LIMIT]
+    begins = _BEGIN.search(line) if 'PRIVATE KEY' in line.upper() or line.startswith(('PuTTY-User-Key-File', 'Private-Lines:')) else None
+    if begins is None or '-----END' in line[begins.end():]:
+        return False
+    before, after = line[:begins.start()].rstrip('`"\' \t'), line[begins.end():].lstrip('- \tBLOCKblock').strip('`"\'\\nr,+;.)] \t')
+    return not after[:1].isalpha() and (before.endswith((':', '=', '(', '[', '+', ',', '|', '>')) or len(before.split()) <= 2)
 
 OUTSIDE = 'that is outside the folder that can be looked at'
 NOT_THERE = 'there is no such file or folder'

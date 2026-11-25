@@ -163,7 +163,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS notices(job TEXT PRIMARY KEY, session TEXT NOT NULL, turn TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS job_scope(job TEXT PRIMARY KEY, scope TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS job_steers(id TEXT PRIMARY KEY, job TEXT NOT NULL, target TEXT NOT NULL, session TEXT NOT NULL, turn TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, time REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, target TEXT NOT NULL, session TEXT NOT NULL, topic TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, written_by TEXT NOT NULL, upto INTEGER NOT NULL, allowed TEXT NOT NULL, job TEXT NOT NULL, started REAL NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, target TEXT NOT NULL, session TEXT NOT NULL, topic TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, written_by TEXT NOT NULL, upto INTEGER NOT NULL, allowed TEXT NOT NULL, own TEXT NOT NULL DEFAULT '[]', job TEXT NOT NULL, started REAL NOT NULL, updated REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS target_plans ON plans(target,status);
         CREATE TABLE IF NOT EXISTS plan_versions(id INTEGER PRIMARY KEY, plan TEXT NOT NULL, text TEXT NOT NULL, written_by TEXT NOT NULL, time REAL NOT NULL);
         CREATE INDEX IF NOT EXISTS versions_of_plan ON plan_versions(plan);

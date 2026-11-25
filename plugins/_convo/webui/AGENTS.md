@@ -7,7 +7,7 @@
   replaced: a save that Convo wrote under meanwhile asks which one to keep (`planClash`: Save mine / Use the new one); what is typed while one
   is being saved is the next edit; when another plan or chat takes its place it is saved to its own plan (`keepEdit`), or kept to be copied
   (`planLost`: a list, one entry per lost edit); one answer without a plan changes nothing. Ending, going on, opening an earlier plan (`planEarlier`) or handing over saves an
-  edit first and stops when that fails; so does discarding, which keeps what was typed when it fails. `putBack(version)` fetches one of the texts that stood there before (`planVersions`) and shows it as an edit. A question about a plan
+  edit first and stops when that fails; so does discarding: what was typed goes with the plan, and stays, as an edit of what stood there then, when the plan did not go. `putBack(version)` fetches one of the texts that stood there before (`planVersions`) and shows it as an edit. A question about a plan
   that is done with goes (`planId`). The Plan button begins a new plan (`fresh`); "Go on planning" goes on with the one kept last. The hotkey looks first when nobody was looking (`look`), and its failure is announced. The card opens by itself when planning begins and stays as the user leaves it. A textarea, so the transcript
   stays the panel's only scroller; no `x-model`. A task that waits says so (`jobState`). Planning switched on drops the open question's card.
   The hotkey row stores `planning_hotkey`, beside the table. Tests: `plan-panel.test.mjs`.

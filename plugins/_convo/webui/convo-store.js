@@ -1783,11 +1783,11 @@ export const store = createStore('convo', {
     },
     async discardPlan() {
         if (!this.plan || !globalThis.window?.confirm?.('Discard this plan?')) return false;
-        const id = this.plan.id, typed = this.planDirty ? this.planText : null;
+        const id = this.plan.id, typed = this.planDirty ? { planText: this.planText, planBase: this.planBase, planFrom: this.planFrom } : null;
         this.planDirty = false;                                          // it goes with what was typed into it
         const result = await this.planCall('plan_drop', { id });
         if (result?.ok) this.dropPlanQuestion(id);
-        else if (typed !== null && this.plan?.id === id) { this.planText = typed; this.planDirty = true; }      // it did not go, nor did that
+        else if (typed && this.plan?.id === id) Object.assign(this, typed, { planDirty: true });      // it did not go, nor did that: an edit of what stood there then
         return !!result?.ok;
     },
     async copyPlan() {
