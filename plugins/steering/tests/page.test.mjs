@@ -84,21 +84,24 @@ test('only attachments, no words', async () => {
     assert.deepEqual([...p.calls[0].attachments], ['a.png']);
 });
 
-test('a message that could not be sent is back in the composer, with its files', async () => {
+test('a message nobody could say anything about is kept above the composer, with its files', async () => {
     const p = await page({ composer: 'keep me', answer: () => { throw new Error('offline'); } });
     p.files.attachments = [{ name: 'a.png', file: file('a.png') }];
     await p.store.beforeSend(ctx('keep me', { attachments: [{ name: 'a.png', file: file('a.png') }] }));
-    assert.equal(p.input.message, 'keep me');
-    assert.equal(p.files.attachments.length, 1);
-    assert.equal(p.toasts[0][0], 'error');
-    assert.equal(p.store.sending.length, 0);
+    assert.deepEqual([p.input.message, p.store.sending.length, p.store.heldCount], ['', 0, 1]);
+    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.attachments, item.status, item.local])), [['keep me', ['a.png'], 'held', true]]);
+    assert.match(p.toasts[0][1], /may not have been sent.*never sent twice/);
+    await p.store.backToComposer(p.store.items[0]);                 // the server still cannot be reached: from the composer it would be another message
+    assert.deepEqual([p.input.message, p.store.items.length], ['', 1]);
+    assert.match(p.toasts.at(-1)[1], /cannot be reached.*stays here/);
 });
 
-test('an upload that fails sends nothing', async () => {
+test('an upload that fails sends nothing, and the message is back in the composer with its files', async () => {
     const p = await page({ composer: 'look', uploadOk: false });
+    p.files.attachments = [{ name: 'a.png', file: file('a.png') }];
     await p.store.beforeSend(ctx('look', { attachments: [{ name: 'a.png', file: file('a.png') }] }));
-    assert.equal(p.calls.length, 0);
-    assert.equal(p.input.message, 'look');
+    assert.deepEqual([p.calls.length, p.input.message, p.files.attachments.length, p.store.items.length], [0, 'look', 1, 0]);
+    assert.match(p.toasts[0][1], /back in the composer/);
 });
 
 test('a failed message never overwrites what was typed meanwhile, and is not lost either', async () => {
@@ -138,7 +141,7 @@ test('when only the answer was lost nothing is put back, and nothing is sent twi
     assert.deepEqual(s.taken.map(m => m.text), ['book the hotel']);
 });
 
-test('a message that went back into the composer is the same message when it is sent again', async () => {
+test('sent again from above the composer it is the same message', async () => {
     const s = server();
     let offline = true;
     const p = await page({ composer: 'book the hotel', answer: data => {
@@ -147,45 +150,66 @@ test('a message that went back into the composer is the same message when it is 
         return s.answer(data);
     } });
     await p.store.beforeSend(ctx('book the hotel'));
-    assert.equal(p.input.message, 'book the hotel');                                       // kept for the user: nobody could say that it had arrived
+    assert.deepEqual([p.input.message, p.store.heldCount, s.taken.length], ['', 1, 1]);    // kept for the user: nobody could say that it had arrived
     offline = false;
-    const again = ctx('book the hotel');
-    await p.store.beforeSend(again);
-    assert.deepEqual([again.cancel, p.input.message, s.taken.length], [true, '', 1]);
+    const kept = p.store.items[0];
+    p.input.message = 'book the hotel';                                                    // typed again meanwhile: that is the user's
+    await p.store.sendNow(kept);
+    assert.deepEqual([p.store.items.length, s.taken.length, p.input.message], [0, 1, 'book the hotel']);
     assert.match(p.toasts.at(-1)[1], /had arrived/);
-    const idle = await page({ composer: 'book the hotel', answer: data => (offline ? (() => { throw new Error('offline'); })() : s.answer(data)) });
-    offline = true;
-    await idle.store.beforeSend(ctx('book the hotel'));
-    const id = idle.calls.find(call => call.action === 'send').id;
-    s.taken.push({ id, text: 'book the hotel' });
-    idle.chat.running = false; offline = false;                                            // the run is over: Agent Zero would send it as a new message
-    const later = ctx('book the hotel');
-    await idle.store.beforeSend(later);
-    assert.deepEqual([later.cancel, s.taken.length], [true, 2]);
-    idle.input.message = 'book another hotel';                                             // other words are another message
-    const other = ctx('book another hotel');
-    await idle.store.beforeSend(other);
-    assert.equal(other.cancel, false);
 });
 
-test('it is the same message also when nobody could ask whether it had arrived', async () => {
-    const s = server(), p = await page({ composer: 'book the hotel', answer: data => { if (data.action === 'known') throw new Error('offline'); return s.answer(data); } });
-    await p.store.beforeSend(ctx('book the hotel'));
-    assert.equal(p.input.message, 'book the hotel');
-    await p.store.beforeSend(ctx('book the hotel'));
-    assert.deepEqual([p.input.message, s.taken.length], ['', 1]);
-    assert.equal(Object.keys(p.store.returned).length, 0);
-    assert.match(p.toasts.at(-1)[1], /had arrived/);
+test('the same words another time are another message', async () => {
+    // "yes" was sent and its answer was lost; later the user answers another question with "yes".
+    const s = server({ lose: 99 });
+    let offline = true;
+    const p = await page({ composer: 'yes', answer: data => { if (offline && data.action === 'known') throw new Error('offline'); return s.answer(data); } });
+    await p.store.beforeSend(ctx('yes'));
+    offline = false;
+    for (const [running, files] of [[true, []], [false, []], [true, [{ name: 'a.png', file: file('a.png') }]]]) {
+        p.chat.running = running; p.input.message = 'yes'; p.files.attachments = [...files];
+        const sendCtx = ctx('yes', { attachments: files });
+        await p.store.beforeSend(sendCtx);
+        assert.equal(sendCtx.cancel, running);                                             // an idle chat: Agent Zero sends it
+        if (!running) assert.equal(p.input.message, 'yes');
+    }
+    const ids = p.calls.filter(call => call.action === 'send').map(call => call.id);
+    assert.deepEqual([new Set(ids).size, s.taken.length], [3, 3]);
+    assert.deepEqual([...p.calls.filter(call => call.action === 'send').at(-1).attachments], ['a.png']);
+});
+
+test('nothing is asked before a message is sent, so what is typed meanwhile stays', async () => {
+    const p = await page({ composer: 'first', answer: data => { if (data.action === 'send') throw new Error('offline'); return { ok: true, known: false }; } });
+    await p.store.beforeSend(ctx('first'));
+    const sendCtx = ctx('first'), idle = p.chat.running = false;
+    p.input.message = 'first, and more';
+    await p.store.beforeSend(sendCtx);
+    assert.deepEqual([sendCtx.cancel, p.input.message, idle], [false, 'first, and more', false]);
 });
 
 test('what could not be sent really is sent when it is sent again', async () => {
     let offline = true;
     const s = server({ lose: 0 }), p = await page({ composer: 'book the hotel', answer: data => { if (offline) throw new Error('offline'); return s.answer(data); } });
     await p.store.beforeSend(ctx('book the hotel'));
-    assert.equal(p.input.message, 'book the hotel');
     offline = false;
+    await p.store.sendNow(p.store.items[0]);
+    assert.deepEqual([p.store.items.length, s.taken.map(m => m.text)], [0, ['book the hotel']]);
+    p.input.message = 'and the flight'; offline = true;
+    await p.store.beforeSend(ctx('and the flight'));
+    offline = false;
+    await p.store.backToComposer(p.store.items[0]);                                        // it surely is not there: it is the user's text again
+    assert.deepEqual([p.input.message, p.store.items.length, s.taken.length], ['and the flight', 0, 1]);
+});
+
+test('one that had arrived after all is not put back into the composer', async () => {
+    const s = server();
+    let offline = true;
+    const p = await page({ composer: 'book the hotel', answer: data => { if (offline && data.action === 'known') throw new Error('offline'); return s.answer(data); } });
     await p.store.beforeSend(ctx('book the hotel'));
-    assert.deepEqual([p.input.message, s.taken.map(m => m.text)], ['', ['book the hotel']]);
+    offline = false;
+    await p.store.backToComposer(p.store.items[0]);
+    assert.deepEqual([p.input.message, p.store.items.length, s.taken.length], ['', 0, 1]);
+    assert.match(p.toasts.at(-1)[1], /had arrived/);
 });
 
 test('once the server has shown a message it is never offered again as not sent', async () => {
@@ -220,21 +244,48 @@ test('a message that had arrived though its answer was lost shows once, and send
 });
 
 test('a message that failed after the chat was changed waits in its own chat', async () => {
-    let p;
+    let p, offline = true;
     const other = { id: 'd', running: true, _steering: { mode: 'automatic', own_mode: '', revision: 1, items: [] } };
-    p = await page({ composer: 'for c', answer: () => { p.chats.selected = 'd'; p.chats.selectedContext = other; throw new Error('offline'); } });
+    p = await page({ composer: 'for c', answer: data => {
+        if (!offline) return { ok: true, known: false };
+        p.chats.selected = 'd'; p.chats.selectedContext = other; throw new Error('offline');
+    } });
     await p.store.beforeSend(ctx('for c'));
     assert.deepEqual([p.store.items.length, p.input.message], [0, '']);           // not shown, nor put into the composer, where it does not belong
-    p.chats.selected = 'c'; p.chats.selectedContext = p.chat;
+    p.chats.selected = 'c'; p.chats.selectedContext = p.chat; offline = false;
     assert.deepEqual(plain(p.store.items.map(item => item.text)), ['for c']);
     p.input.message = 'typed on';
     await p.store.backToComposer(p.store.items[0]);
     assert.deepEqual([p.input.message, p.store.items.length, p.calls.filter(call => call.action === 'send').length], ['typed on\nfor c', 0, 1]);
-    p.chats.selected = 'd'; p.chats.selectedContext = other;
+    p.chats.selected = 'd'; p.chats.selectedContext = other; offline = true;
     await p.store.deliver({ context: 'c', message: 'from a button' });             // one that never was in the composer
     p.chats.selected = 'c'; p.chats.selectedContext = p.chat;
     await p.store.remove(p.store.items[0]);
     assert.deepEqual([p.store.items.length, p.calls.filter(call => call.action === 'remove').length], [0, 0]);
+});
+
+test('one that never left the page goes back without asking anybody', async () => {
+    let p;
+    p = await page({ composer: 'look', uploadOk: false, answer: () => { throw new Error('offline'); } });
+    const fetched = p.store.upload;
+    p.store.upload = async files => { p.input.message = 'typed on'; return fetched.call(p.store, files); };
+    await p.store.beforeSend(ctx('look', { attachments: [{ name: 'a.png', file: file('a.png') }] }));
+    assert.equal(p.store.heldCount, 1);
+    await p.store.backToComposer(p.store.items[0]);
+    assert.deepEqual([p.input.message, p.store.items.length, p.calls.length], ['typed on\nlook', 0, 0]);
+});
+
+test('a message kept for another chat never lands in this one', async () => {
+    let p;
+    const other = { id: 'd', running: true, _steering: { mode: 'automatic', own_mode: '', revision: 1, items: [] } };
+    let offline = true;
+    p = await page({ composer: 'for c', answer: data => { if (offline) throw new Error('offline'); p.chats.selected = 'd'; p.chats.selectedContext = other; return { ok: true, known: false }; } });
+    await p.store.beforeSend(ctx('for c'));
+    offline = false;
+    await p.store.backToComposer(p.store.items[0]);                                // the chat is changed while the server is asked
+    assert.deepEqual([p.input.message, p.store.items.length], ['', 0]);
+    p.chats.selected = 'c'; p.chats.selectedContext = p.chat;
+    assert.deepEqual(plain(p.store.items.map(item => item.text)), ['for c']);
 });
 
 test('it shows as sending until the server has it, and never twice', async () => {

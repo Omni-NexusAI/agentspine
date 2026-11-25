@@ -23,8 +23,9 @@ const newId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.r
 const model = {
   fetched: {}, // the last view read for a chat, until its snapshot brings a newer one
   sending: [], // messages on their way to the server: {id, context, text}
-  failed: [], // messages that did not get there and could not go back into the composer: {id, context, message, files, how}
-  returned: {}, // per chat, the message that went back into the composer: {id, text}. Sent again as it is, it is the same message
+  // Messages that were not sent, or may not have been, above the composer of their chat: {id, context, message, files, how, asked}. `asked`: the
+  // server was asked to take it, so it may have it although no answer came. It keeps its id: sent again from there it is the same message.
+  failed: [],
   nextHow: "", // one message's own way (a key), used once
 
   get chatId() { return String(chatsStore.selected || ""); },
@@ -88,16 +89,6 @@ const model = {
     const message = String(sendCtx.message || "").trim();
     const attachments = Array.isArray(sendCtx.attachments) ? sendCtx.attachments : [];
     if (!context || (!message && !attachments.length)) return;
-    const back = this.returned[context];
-    if (back && back.text === message && await this.arrived(context, back.id)) {
-      // It had gone through after all (only its answer was lost): it is not sent a second time, working agent or not.
-      sendCtx.cancel = true;
-      this.forgetReturned(context);
-      chatInputStore.reset();
-      chatInputStore.adjustTextareaHeight?.();
-      toastFrontendInfo("That message had arrived: only the answer was lost.", "Steering");
-      return;
-    }
     const chat = (chatsStore.contexts || []).find((item) => item?.id === context) || (context === this.chatId ? this.chat : null);
     if (!this.atWork(chat)) return;
     const wanted = how || this.viewOf(chat).mode || "automatic";
@@ -107,9 +98,8 @@ const model = {
   },
 
   async deliver({ context, message, attachments = [], how = "", id = "" }) {
-    const back = this.returned[context];
-    id = id || (back?.text === message ? back.id : newId());
-    const fromComposer = context === this.chatId && String(chatInputStore.message || "").trim() === message;
+    const fromComposer = !id && context === this.chatId && String(chatInputStore.message || "").trim() === message;
+    id = id || newId();
     const kept = fromComposer ? { text: chatInputStore.message, files: [...(attachmentsStore.attachments || [])] } : null;
     this.sending = [...this.sending, { id, context, text: message.slice(0, 200) }];
     if (fromComposer) {
@@ -122,37 +112,32 @@ const model = {
       asked = true;
       const answer = await callJsonApi(API, { action: "send", context, text: message, attachments: filenames, how, id });
       this.keepFor(context, answer?.steering);
-      if (this.returned[context]?.id === id) this.forgetReturned(context);
       if (answer?.outcome === "known") toastFrontendInfo("That message had arrived: only the answer was lost.", "Steering");
     } catch (error) {
       console.error("Steering could not send the message:", error);
       if (asked && await this.arrived(context, id)) return; // only the answer was lost: it is there
-      if (kept && context === this.chatId && !String(chatInputStore.message || "").trim()) {
-        this.intoComposer(kept.text, kept.files);
-        this.returned = { ...this.returned, [context]: { id, text: message } };
+      if (!asked && kept && context === this.chatId && !String(chatInputStore.message || "").trim()) {
+        this.intoComposer(kept.text, kept.files); // it never left the page
         toastFrontendError("The message was not sent. It is back in the composer.", "Steering");
       } else {
-        // The user is in another chat, or has typed on: it waits above the composer of its chat.
-        this.failed = [...this.failed, { id, context, message, files: kept ? kept.files : attachments, how }];
-        toastFrontendError("The message was not sent. It is kept above the composer of its chat.", "Steering");
+        // Nobody can say whether it arrived, or the user is in another chat or has typed on: it waits above the composer of its chat.
+        this.failed = [...this.failed, { id, context, message, files: kept ? kept.files : attachments, how, asked }];
+        toastFrontendError(asked ? "No answer came for that message, so it may not have been sent. It is kept above the composer of its chat: sent again from there it is never sent twice."
+          : "The message was not sent. It is kept above the composer of its chat.", "Steering");
       }
     } finally {
       this.sending = this.sending.filter((item) => item.id !== id);
     }
   },
 
-  // Whether the server has a message (it waits, is in the run, or stands in the chat). No answer counts as no.
+  // Whether the server has a message (it waits, is in the run, or stands in the chat); null when nobody could say.
   async arrived(context, id) {
     try {
       const answer = await callJsonApi(API, { action: "known", context, id });
       this.keepFor(context, answer?.steering);
       if (answer?.known) SEEN.add(id);
       return answer?.known === true;
-    } catch { return false; }
-  },
-  forgetReturned(context) {
-    const { [context]: gone, ...rest } = this.returned;
-    this.returned = rest;
+    } catch { return null; }
   },
 
   // Put words (and files) into the composer, after what stands there already.
@@ -201,17 +186,28 @@ const model = {
   },
   async remove(item) { return item.local ? this.takeFailed(item) : this.act("remove", item); },
   async backToComposer(item) {
-    const found = item.local ? this.takeFailed(item) : null;
-    const taken = item.local ? found && { text: found.message } : (await this.act("take", item))?.item;
+    if (item.local) return this.failedToComposer(item);
+    const taken = (await this.act("take", item))?.item;
     if (!taken) return;
-    if (found && await this.arrived(found.context, found.id)) {
-      toastFrontendInfo("That message had arrived: only the answer was lost.", "Steering");
-      return;
-    }
-    this.intoComposer(taken.text, found ? found.files : []);
-    if (found) this.returned = { ...this.returned, [found.context]: { id: found.id, text: found.message } };
+    this.intoComposer(taken.text);
     if (taken.attachments?.length) toastFrontendInfo("Please add the attachments again: " + taken.attachments.join(", "), "Steering");
     chatInputStore.focus?.();
+  },
+
+  // From there it would be another message: only one that surely did not arrive goes back.
+  async failedToComposer(item) {
+    const found = this.failed.find((entry) => entry.id === item.id);
+    const there = found?.asked ? await this.arrived(found.context, found.id) : false;
+    if (there === null) {
+      toastFrontendError("The server cannot be reached, so nobody can say whether that message was sent. It stays here.", "Steering");
+      return;
+    }
+    if (!found || !this.takeFailed(item)) return;
+    if (there) toastFrontendInfo("That message had arrived: only the answer was lost.", "Steering");
+    else if (found.context === this.chatId) {
+      this.intoComposer(found.message, found.files);
+      chatInputStore.focus?.();
+    } else this.failed = [...this.failed, found]; // the chat was changed meanwhile
   },
 
   async setMode(mode) {

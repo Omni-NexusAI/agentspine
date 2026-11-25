@@ -45,9 +45,11 @@ A message sent to a working agent joins the same run at its next step. A standal
 - A sender that asked to handle the end itself (`caller`) reads the status: `undelivered` when the run ended by itself (the message can be a
   new task), `stopped` when it was stopped or failed: nothing of it should begin again by itself. Both wait for `forget`.
 - A message has one id from the page's first try on: the same id sent again is never a second message (`known`: it waits, is held, queued or in
-  a run, stands in the chat, or is on its way through `send` right now). When sending fails the page asks whether it had arrived (`known`) before
-  it keeps anything; text that went back into the composer keeps its id (`returned`) for as long as it is sent as it was, also when the run is
-  over by then; what the server has once shown (`SEEN`) is never offered again as not sent.
+  a run, stands in the chat, or is on its way through `send` right now). When sending fails the page asks whether it had arrived (`known`). Unless
+  it surely never left the page (an upload that failed) it is then kept above the composer of its chat with its id (`failed`, `asked`): sent again
+  from there it is the same message, and it goes back into the composer, where it would be another one, only when the server says that it has not
+  got it. Nothing is ever matched by its words: the same words later are another message. What the server has once shown (`SEEN`) is never offered
+  again as not sent.
 - Sub-agents: each one at work is told once about messages its superiors got after it began (`_copies`), for information only.
 - State is a plain dict under `context.data['_steering']` (a lock and the runs, not saved with the chat); what must survive a restart is
   written to `data/<chat id>.json` at once (`_save`), because a message waits while a step is in progress. It comes back as held.
@@ -55,7 +57,7 @@ A message sent to a working agent joins the same run at its next step. A standal
   used for the history, since Agent Zero's branching cuts by it. Otherwise the line is written when the message goes in.
 - The page (`webui/steering-store.js`): `send_message_before` sends to `POST /plugins/steering/steering` instead of the queue, unless another
   hook has cancelled the send, the chat is idle or the chip says queue. The composer is emptied only when it holds that message, and gets it
-  back when sending fails; when the user has typed on or is in another chat it stays above the composer of its own chat (`failed`, this page
+  back when an upload fails; when the user has typed on or is in another chat it stays above the composer of its own chat (`failed`, this page
   only). Snapshots carry `_steering` (`output_data`, not saved).
 
 ## Verification

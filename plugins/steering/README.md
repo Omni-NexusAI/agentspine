@@ -20,7 +20,8 @@ Sub-agents hear it at their own next step, as information for their part; new wo
 sub-agent's own chat steers that sub-agent; one it could not take up any more goes to the agent that waits for it (or stays above the
 composer when that one has ended or was stopped, too). The message stays in view for the rest of the run.
 
-A message that could not be sent at all (the page lost its connection) goes back into the composer, or stays above the composer of its chat.
+A message nobody could confirm (the page lost its connection) is kept above the composer of its chat: sent again from there it is never sent
+twice, and it goes back into the composer only when it surely did not arrive.
 
 A tool that takes long is not cut, up to its own limit. "Interrupt now" beside the waiting message does that on purpose.
 
