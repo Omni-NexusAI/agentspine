@@ -266,10 +266,45 @@ def run_began(agent, task):
         return
     entry = {"agent": agent, "task": task, "own": _own_alive(context), "began": time.time()}
     with st["lock"]:
-        st["runs"] = [run for run in st["runs"] if not _finished(run["task"])] + [entry]
+        over = [run for run in st["runs"] if _finished(run["task"])]
+        if any(not run["own"] for run in over):
+            _hold(st)                  # that loop was stopped and nothing said so: what waited for it is not this run's
+        st["runs"] = [run for run in st["runs"] if not any(run is gone for gone in over)] + [entry]
         waiting = any(item["status"] == WAITING for item in st["items"])
+    if not entry["own"]:
+        # Agent Zero's hooks do not see a loop that is cancelled (Stop on the chat it works for), so its task is watched as well.
+        try:
+            task.add_done_callback(lambda _: _guarded(_inner_over, context.id, entry))
+        except Exception:
+            logger.debug("Steering could not watch an inner run", exc_info=True)
     if waiting:
         _watch(context, st)
+
+
+def _hold(st):
+    """What waits is kept by the composer until the user decides (its sender, when it asked to handle that itself). Under the lock."""
+    for item in st["items"]:
+        if item["status"] == WAITING:
+            item["status"] = UNDELIVERED if item["caller"] else HELD
+
+
+def _inner_over(context_id, entry):
+    """The task an inner loop ran in is done. Its own end was seen (`run_over`) unless it was stopped; called in Agent Zero's own loop, so
+    nothing of Agent Zero is called here."""
+    from agent import AgentContext
+    context = AgentContext.get(context_id)
+    st = state(context, create=False) if context is not None else None
+    if st is None:
+        return
+    with st["lock"]:
+        if not any(run is entry for run in st["runs"]):
+            return
+        st["runs"] = [run for run in st["runs"] if run is not entry]
+    if live(context):
+        return                         # another loop of this chat goes on and takes it up
+    with st["lock"]:
+        _hold(st)
+    _later(_settle, context_id, "stopped")
 
 
 def _finished(task):
@@ -298,17 +333,26 @@ def run_over(agent, failed=False):
         return
     parent = next(iter(_ancestors(context)), None)
     if parent is not None and live(parent):
-        name = str(getattr(context, "name", "") or "").strip()
-        with st["lock"]:
-            for item in waiting:
-                st["items"].remove(item)
-        for item in waiting:
-            item["system"] = [CHILD_NOTE % ((' "%s"' % name) if name else "")] + item["system"]
-            item["logged"] = True            # it has its bubble in the sub-agent's chat
-            _store(parent, item)
-        publish(context, st)
+        _pass_up(context, st, parent)
         return
     _later(_settle, context.id, "failed" if failed else "finished")
+
+
+def _pass_up(context, st, parent):
+    """What a sub-agent could not take up any more goes to the agent that waits for it."""
+    name = str(getattr(context, "name", "") or "").strip()
+    with st["lock"]:
+        waiting = [item for item in st["items"] if item["status"] == WAITING and not item["caller"]]
+        for item in st["items"]:
+            if item["status"] == WAITING and item["caller"]:
+                item["status"] = UNDELIVERED
+        for item in waiting:
+            st["items"].remove(item)
+    for item in waiting:
+        item["system"] = [CHILD_NOTE % ((' "%s"' % name) if name else "")] + item["system"]
+        item["logged"] = True            # it has its bubble in the sub-agent's chat
+        _store(parent, item)
+    publish(context, st)
 
 
 def _ancestors(context):
@@ -585,9 +629,7 @@ def _run_done(context_id, future):
             if st is not None:
                 with st["lock"]:
                     if not st["keep"]:
-                        for item in st["items"]:
-                            if item["status"] == WAITING:
-                                item["status"] = UNDELIVERED if item["caller"] else HELD
+                        _hold(st)
         except Exception:
             logger.exception("Steering could not hold the waiting messages of a stopped run")
     _later(_settle, context_id, outcome)
@@ -622,6 +664,13 @@ def _settle(context_id, outcome):
             _watch(context, st)
         publish(context, st)
         return
+    parent = next(iter(_ancestors(context)), None)
+    if parent is not None and outcome == "finished":
+        # A sub-agent's chat never starts a run by itself: Agent Zero would run its superior along with it, beside the superior's own run.
+        if live(parent):
+            _pass_up(context, st, parent)
+            return
+        outcome = "failed"
     first = None
     with st["lock"]:
         for item in st["items"]:

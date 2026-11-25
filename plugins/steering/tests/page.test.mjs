@@ -101,12 +101,37 @@ test('an upload that fails sends nothing', async () => {
     assert.equal(p.input.message, 'look');
 });
 
-test('a failed message never overwrites what was typed meanwhile', async () => {
-    let p;
-    p = await page({ composer: 'first', answer: () => { p.input.message = 'second'; throw new Error('offline'); } });
-    await p.store.beforeSend(ctx('first'));
+test('a failed message never overwrites what was typed meanwhile, and is not lost either', async () => {
+    let p, offline = true;
+    p = await page({ composer: 'first', answer: data => { if (!offline) return { ok: true, outcome: 'steering', steering: { mode: 'automatic', revision: 5, items: [] } }; p.input.message = 'second'; throw new Error('offline'); } });
+    p.files.attachments = [{ name: 'a.png', file: file('a.png') }];
+    await p.store.beforeSend(ctx('first', { attachments: [{ name: 'a.png', file: file('a.png') }] }));
     assert.equal(p.input.message, 'second');
-    assert.match(p.toasts[0][1], /not sent/);
+    assert.match(p.toasts[0][1], /kept above the composer/);
+    assert.deepEqual(plain(p.store.items.map(item => [item.text, item.attachments, item.status, item.local])), [['first', ['a.png'], 'held', true]]);
+    assert.deepEqual([p.store.heldCount, p.store.title, p.store.showChip], [1, 'Not sent', true]);
+    offline = false;
+    await p.store.sendNow(p.store.items[0]);                        // tried again, with its file
+    assert.deepEqual([p.calls.at(-1).action, p.calls.at(-1).text, [...p.calls.at(-1).attachments], p.store.items.length], ['send', 'first', ['a.png'], 0]);
+    assert.equal(p.input.message, 'second');
+});
+
+test('a message that failed after the chat was changed waits in its own chat', async () => {
+    let p;
+    const other = { id: 'd', running: true, _steering: { mode: 'automatic', own_mode: '', revision: 1, items: [] } };
+    p = await page({ composer: 'for c', answer: () => { p.chats.selected = 'd'; p.chats.selectedContext = other; throw new Error('offline'); } });
+    await p.store.beforeSend(ctx('for c'));
+    assert.deepEqual([p.store.items.length, p.input.message], [0, '']);           // not shown, nor put into the composer, where it does not belong
+    p.chats.selected = 'c'; p.chats.selectedContext = p.chat;
+    assert.deepEqual(plain(p.store.items.map(item => item.text)), ['for c']);
+    p.input.message = 'typed on';
+    await p.store.backToComposer(p.store.items[0]);
+    assert.deepEqual([p.input.message, p.store.items.length, p.calls.length], ['typed on\nfor c', 0, 1]);
+    p.chats.selected = 'd'; p.chats.selectedContext = other;
+    await p.store.deliver({ context: 'c', message: 'from a button' });             // one that never was in the composer
+    p.chats.selected = 'c'; p.chats.selectedContext = p.chat;
+    await p.store.remove(p.store.items[0]);
+    assert.deepEqual([p.store.items.length, p.calls.filter(call => call.action === 'remove').length], [0, 0]);
 });
 
 test('it shows as sending until the server has it, and never twice', async () => {

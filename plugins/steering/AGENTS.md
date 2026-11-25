@@ -36,7 +36,11 @@ A message sent to a working agent joins the same run at its next step. A standal
 - The end of a run: `_watch` adds a callback to the run's future after the message is stored (a run already over calls it at once).
   Stop and errors hold the messages immediately, inside the callback; `nudge` hooks set `keep`, so its new run takes them. The rest is
   settled `SETTLE_SECONDS` later (`_settle`), when the queue or another message may have started a new run whose first step takes them.
-  Loops inside another run are settled by `run_over`: a sub-agent's leftovers go to its superior.
+  Loops inside another run are settled by `run_over`: a sub-agent's leftovers go to its superior (`_pass_up`). Agent Zero's wrapper catches
+  only `Exception`, so its hooks do not see a loop that is cancelled (Stop on the chat it works for): the loop's task is watched as well
+  (`_inner_over`, and `run_began` for one that ended unseen), and what waited is held, never taken into that sub-agent's next run.
+  A sub-agent's chat never starts a run by itself, also when it has a task of its own (parallel sub-agents): Agent Zero would run its
+  superior along with it, beside the superior's own run. Its leftovers go to the superior, or are held when that one has ended.
 - Sub-agents: each one at work is told once about messages its superiors got after it began (`_copies`), for information only.
 - State is a plain dict under `context.data['_steering']` (a lock and the runs, not saved with the chat); what must survive a restart is
   written to `data/<chat id>.json` at once (`_save`), because a message waits while a step is in progress. It comes back as held.
@@ -44,7 +48,8 @@ A message sent to a working agent joins the same run at its next step. A standal
   used for the history, since Agent Zero's branching cuts by it. Otherwise the line is written when the message goes in.
 - The page (`webui/steering-store.js`): `send_message_before` sends to `POST /plugins/steering/steering` instead of the queue, unless another
   hook has cancelled the send, the chat is idle or the chip says queue. The composer is emptied only when it holds that message, and gets it
-  back when sending fails. Snapshots carry `_steering` (`output_data`, not saved).
+  back when sending fails; when the user has typed on or is in another chat it stays above the composer of its own chat (`failed`, this page
+  only). Snapshots carry `_steering` (`output_data`, not saved).
 
 ## Verification
 

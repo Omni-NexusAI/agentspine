@@ -21,6 +21,7 @@ const newId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.r
 const model = {
   fetched: {}, // the last view read for a chat, until its snapshot brings a newer one
   sending: [], // messages on their way to the server: {id, context, text}
+  failed: [], // messages that did not get there and could not go back into the composer: {id, context, message, files, how}
   nextHow: "", // one message's own way (a key), used once
 
   get chatId() { return String(chatsStore.selected || ""); },
@@ -45,7 +46,9 @@ const model = {
     const items = this.viewOf().items || [];
     const known = new Set(items.map((item) => item.id));
     const onTheWay = this.sending.filter((item) => item.context === this.chatId && !known.has(item.id)).map((item) => ({ ...item, status: "sending", attachments: [] }));
-    return [...items, ...onTheWay];
+    const failed = this.failed.filter((item) => item.context === this.chatId).map((item) => (
+      { id: item.id, text: item.message.slice(0, 200), attachments: item.files.map((file) => file?.name || "a file"), status: "held", local: true }));
+    return [...items, ...onTheWay, ...failed];
   },
   get mode() { const mode = this.viewOf().mode; return KNOWN.has(mode) ? mode : "automatic"; },
   get modeHint() { return MODES.find((mode) => mode.id === this.mode)?.hint || ""; },
@@ -53,7 +56,8 @@ const model = {
   get heldCount() { return this.items.filter((item) => item.status === "held").length; },
   get title() {
     const waiting = this.items.length - this.heldCount;
-    if (!waiting) return this.heldCount === 1 ? "Not sent: the run ended first" : `Not sent: the run ended first (${this.heldCount})`;
+    const why = this.items.some((item) => item.local) ? "Not sent" : "Not sent: the run ended first";
+    if (!waiting) return this.heldCount === 1 ? why : `${why} (${this.heldCount})`;
     return waiting === 1 ? "Goes in at the next step" : `Go in at the next step (${waiting})`;
   },
   itemText(item) { return item.text || (item.attachments?.length ? item.attachments.join(", ") : "(attachment only)"); },
@@ -104,14 +108,29 @@ const model = {
     } catch (error) {
       console.error("Steering could not send the message:", error);
       if (kept && context === this.chatId && !String(chatInputStore.message || "").trim()) {
-        chatInputStore.message = kept.text;
-        for (const file of kept.files) attachmentsStore.addAttachment?.(file);
-        chatInputStore.adjustTextareaHeight?.();
+        this.intoComposer(kept.text, kept.files);
+        toastFrontendError("The message was not sent. It is back in the composer.", "Steering");
+      } else {
+        // The user is in another chat, or has typed on: it waits above the composer of its chat.
+        this.failed = [...this.failed, { id, context, message, files: kept ? kept.files : attachments, how }];
+        toastFrontendError("The message was not sent. It is kept above the composer of its chat.", "Steering");
       }
-      toastFrontendError(kept ? "The message was not sent. It is back in the composer." : "The message was not sent.", "Steering");
     } finally {
       this.sending = this.sending.filter((item) => item.id !== id);
     }
+  },
+
+  // Put words (and files) into the composer, after what stands there already.
+  intoComposer(text, files = []) {
+    const now = String(chatInputStore.message || "");
+    chatInputStore.message = now.trim() ? `${now.replace(/\s+$/, "")}\n${text}` : text;
+    for (const file of files) attachmentsStore.addAttachment?.(file);
+    chatInputStore.adjustTextareaHeight?.();
+  },
+  takeFailed(item) {
+    const found = this.failed.find((entry) => entry.id === item.id);
+    this.failed = this.failed.filter((entry) => entry !== found);
+    return found;
   },
 
   async upload(attachments) {
@@ -140,15 +159,18 @@ const model = {
   },
   interruptNow(item) { return this.act("interrupt", item); },
   afterTheTask(item) { return this.act("queue", item); },
-  sendNow(item) { return this.act("release", item); },
-  remove(item) { return this.act("remove", item); },
+  async sendNow(item) {
+    if (!item.local) return this.act("release", item);
+    const found = this.takeFailed(item);
+    return found ? this.deliver({ context: found.context, message: found.message, attachments: found.files, how: found.how }) : null;
+  },
+  async remove(item) { return item.local ? this.takeFailed(item) : this.act("remove", item); },
   async backToComposer(item) {
-    const taken = (await this.act("take", item))?.item;
+    const found = item.local ? this.takeFailed(item) : null;
+    const taken = item.local ? found && { text: found.message } : (await this.act("take", item))?.item;
     if (!taken) return;
-    const now = String(chatInputStore.message || "");
-    chatInputStore.message = now.trim() ? `${now.replace(/\s+$/, "")}\n${taken.text}` : taken.text;
+    this.intoComposer(taken.text, found ? found.files : []);
     if (taken.attachments?.length) toastFrontendInfo("Please add the attachments again: " + taken.attachments.join(", "), "Steering");
-    chatInputStore.adjustTextareaHeight?.();
     chatInputStore.focus?.();
   },
 

@@ -349,6 +349,62 @@ def with_parallel_sub_agents():
     order(parent, "CHILD-RESULT", "Use metric units.")
 
 
+def too_late_for_a_parallel_sub_agent():
+    """A message to a parallel sub-agent that is giving its final answer goes to the agent that waits for it; no run begins in its chat."""
+    def script(n, m):
+        text = joined(m)
+        if "PARENT-TASK" in text:
+            if "CHILD-RESULT" in text:
+                return final("parent done")
+            return tool("parallel", tool_calls=[{"tool_name": "call_subordinate", "tool_args": {"message": "CHILD-TASK %d" % k, "reset": True}} for k in (1, 2)])
+        if "CHILD-TASK 1" in text:
+            return {"text": final("CHILD-RESULT"), "seconds": 6}
+        return final("CHILD-RESULT") if "STEP-9" in text else shell("sleep 14; echo STEP-$((4+5))")
+    context, task = begin("parallel late", script, "PARENT-TASK go")
+    children = until(lambda: [found for found in [[c for c in AgentContext.all() if c.get_output_data("parent_context_id") == context.id]] if len(found) == 2],
+                     what="two sub-agents")[0]
+    until(lambda: any("CHILD-TASK 1" in joined(m) for m in child_calls()), what="the first one's answer")
+    first = next(c for c in children if any("CHILD-TASK 1" in str(getattr(item, "content", "")) for item in c.log.logs))
+    time.sleep(1)
+    assert steering().live(first) == "own", steering().live(first)                  # it has a task of its own
+    first.communicate(UserMessage("and the opening hours", id="late1"))
+    assert task.result_sync(120) == "parent done"
+    time.sleep(2)
+    assert len([m for m in child_calls() if "CHILD-TASK 1" in joined(m)]) == 1, "a run began by itself in the sub-agent's chat"
+    parent = joined([m for m in MODEL.calls if "PARENT-TASK" in joined(m)][-1])
+    order(parent, "CHILD-RESULT", "and the opening hours")
+    assert "finished before the message could be taken up" in parent
+    assert len([m for m in MODEL.calls if "PARENT-TASK" in joined(m)]) == 2, "the main agent ran twice"
+
+
+def stopped_with_a_sub_agent():
+    """Stop while a message waits in the sub-agent's own chat holds it; that sub-agent's next, unrelated run does not take it."""
+    from api.stop import stop_context
+    s = steering()
+
+    def script(n, m):
+        return tool("call_subordinate", profile="", message="CHILD-TASK one", reset="true") if "PARENT-TASK" in joined(m) else shell("sleep 25")
+    context, task = begin("stop sub", script, "PARENT-TASK go")
+    child = until(lambda: next((c for c in AgentContext.all() if c.get_output_data("parent_context_id") == context.id), None), what="the sub-agent")
+    in_tool(child)
+    child.communicate(UserMessage("only peer-reviewed sources", id="held1"))
+    assert [i["status"] for i in s.view(child)["items"]] == ["waiting"]
+    stop_context(context)
+    until(lambda: [i["status"] for i in s.view(child)["items"]] == ["held"], 10, "the message to be held (%s)" % s.view(child)["items"])
+    assert not s.live(child) and child.task is None or not child.task.is_alive()
+
+    def again(n, m):
+        text = joined(m)
+        if "AGAIN-TASK" in text:
+            return final("parent done") if "CHILD-RESULT" in text else tool("call_subordinate", profile="", message="CHILD-TASK two", reset="false")
+        return final("CHILD-RESULT")
+    MODEL.begin(again)
+    assert context.communicate(UserMessage("AGAIN-TASK", id=str(uuid.uuid4()))).result_sync(90) == "parent done"
+    two = [joined(m) for m in MODEL.calls if "CHILD-TASK two" in joined(m) and "AGAIN-TASK" not in joined(m)]
+    assert two and not any("only peer-reviewed sources" in text for text in two), "the held message went into another run"
+    assert [i["status"] for i in s.view(child)["items"]] == ["held"], s.view(child)
+
+
 def stopped():
     """Stop keeps the message by the composer; the next run does not take it by itself."""
     from api.stop import stop_context
@@ -534,7 +590,7 @@ def long_history():
 
 
 SCENARIOS = [during_a_tool, native_during_a_tool, while_writing, several_messages, during_the_final_answer, ends_a_wait, a_wait_without_messages,
-             with_a_sub_agent, to_a_sub_agents_chat, with_parallel_sub_agents, stopped, nudged, failing, reset_and_removed, paused, queue_first,
+             with_a_sub_agent, to_a_sub_agents_chat, with_parallel_sub_agents, too_late_for_a_parallel_sub_agent, stopped_with_a_sub_agent, stopped, nudged, failing, reset_and_removed, paused, queue_first,
              send_now_from_the_queue, commands, a_broken_plugin, scheduled_run, long_history]
 
 

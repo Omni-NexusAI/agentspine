@@ -17,7 +17,10 @@ and a tool that has just finished loses its result.
 | Agent Zero restarts | The same. |
 
 Sub-agents hear it at their own next step, as information for their part; new work stays with the main agent. A message typed into a
-sub-agent's own chat steers that sub-agent. The message stays in view for the rest of the run.
+sub-agent's own chat steers that sub-agent; one it could not take up any more goes to the agent that waits for it (or stays above the
+composer when that one has ended or was stopped, too). The message stays in view for the rest of the run.
+
+A message that could not be sent at all (the page lost its connection) goes back into the composer, or stays above the composer of its chat.
 
 A tool that takes long is not cut, up to its own limit. "Interrupt now" beside the waiting message does that on purpose.
 

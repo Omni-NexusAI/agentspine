@@ -51,10 +51,23 @@ class Task:
 class LoopTask:
     """The asyncio task an agent loop runs in."""
     def __init__(self):
-        self.over = False
+        self.ended, self.callbacks = False, []
+
+    @property
+    def over(self):
+        return self.ended
+
+    @over.setter
+    def over(self, value):
+        self.ended = value
+        for call in self.callbacks if value else ():
+            call(self)
 
     def done(self):
-        return self.over
+        return self.ended
+
+    def add_done_callback(self, call):
+        self.callbacks.append(call)
 
 
 class History:
@@ -472,6 +485,70 @@ class SubAgents(Case):
 
 
 class RunEnds(Case):
+    def states(self, chat):
+        return [status for _, status in self.statuses(chat)]
+
+    def test_stopping_the_main_run_holds_what_waits_in_its_sub_agents_chat(self):
+        # Agent Zero's hooks do not see a cancelled loop (its wrapper catches only `Exception`), so `run_over` is not called for it.
+        for seen in (True, False):                                                     # whether the end of the loop's task is told in time
+            with self.subTest(seen):
+                child = AgentContext("child%d" % seen, parent=self.chat)
+                loop = self.running(self.chat)
+                self.s.run_began(child.agent0, loop)
+                child.streaming_agent = child.agent0
+                child.communicate(UserMessage("only peer-reviewed sources"))
+                self.assertEqual(self.states(child), ["waiting"])
+                self.chat.task.kill()
+                if not seen:
+                    loop.callbacks.clear()
+                loop.over = True
+                self.settle()
+                if not seen:
+                    self.s.run_began(child.agent0, self.running(self.chat))
+                self.assertEqual(self.states(child), ["held"])
+                # The same sub-agent is called again for something else: what was held stays with the user.
+                self.s.run_began(child.agent0, self.running(self.chat))
+                child.streaming_agent = child.agent0
+                self.s.deliver(child.agent0, child.agent0.loop_data)
+                self.assertEqual(self.texts(child), [])
+                self.assertEqual([item["status"] for item in self.s.view(child)["items"]], ["held"])
+
+    def test_an_inner_loop_that_ended_by_itself_is_not_held_when_its_task_ends_later(self):
+        child = AgentContext("b", parent=self.chat)
+        loop = self.running(self.chat)
+        self.s.run_began(child.agent0, loop)
+        self.s.run_over(child.agent0)
+        second = LoopTask()
+        self.s.run_began(child.agent0, second)                                         # at work again, in another task
+        child.streaming_agent = child.agent0
+        child.communicate(UserMessage("and the opening hours"))
+        loop.over = True                                                               # the first task ends only now
+        self.assertEqual(self.states(child), ["waiting"])
+        self.s.deliver(child.agent0, child.agent0.loop_data)
+        self.assertEqual(self.texts(child), ["and the opening hours"])
+
+    def test_a_parallel_sub_agents_chat_never_starts_a_run_by_itself(self):
+        child = AgentContext("b", parent=self.chat)
+        self.running(self.chat)
+        self.running(child)                                                            # a task of its own, as Agent Zero's parallel tool gives it
+        child.communicate(UserMessage("and the opening hours"))
+        self.ends(child)                                                               # too late: it was writing its final answer
+        self.settle()
+        self.assertEqual((child.sent, self.states(child)), ([], []))
+        self.assertEqual(self.states(self.chat), ["waiting"])                          # the agent that waits for it takes it up
+        self.assertIn("finished before the message could be taken up", self.s.state(self.chat)["items"][0]["system"][0])
+
+    def test_one_whose_superior_has_ended_too_is_held(self):
+        child = AgentContext("b", parent=self.chat)
+        self.running(self.chat)
+        self.running(child)
+        child.communicate(UserMessage("and the opening hours"))
+        kept = self.s.steer(child, "asked by another plugin", caller=True)
+        self.ends(child)
+        self.ends(self.chat)
+        self.settle()
+        self.assertEqual((child.sent, self.states(child), self.s.status(child, kept)), ([], ["held", "undelivered"], "undelivered"))
+
     def test_a_message_that_came_too_late_starts_the_next_run(self):
         self.running()
         self.chat.communicate(UserMessage("and one more thing"))
