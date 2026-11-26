@@ -180,7 +180,7 @@ class HeldReply(Scenario):
         async def scenario(h):
             await h.candidate('c', h.audio('unsure'), final=True)
             await h.settle()
-            return {'asks': ['Ask one short in-character question' in a['system'] for a in h.answers], 'heard': h.first_audible('c') is not None, 'marks': marks('c')}
+            return {'asks': ['Ask one short question, in character' in a['system'] for a in h.answers], 'heard': h.first_audible('c') is not None, 'marks': marks('c')}
         facts, _ = self.play(scenario, config=SPEC, classifier={'unsure': script(clarify, .2)})
         self.assertEqual(facts, {'asks': [False, True], 'heard': True, 'marks': ['spec.start', 'spec.discard']})
 

@@ -170,11 +170,18 @@ class PolicyGate:
         # acknowledgements, side remarks and unfinished thoughts). One question per ambiguity episode, then a cooldown.
         if decision.probability("unclear") + EPSILON < self.profile.clarify_min or decision.elsewhere_mass >= self.profile.clarify_elsewhere_max:
             return replace(decision, speech="silent", action="none")
-        if self.clarified_episode == episode or self.clock() - self.last_clarification < self.cooldown:
+        if not self.may_ask(episode):
             return replace(decision, speech="silent", action="none")
+        return replace(decision, speech="clarify", action="none")
+
+    def may_ask(self, episode):
+        """Whether a clarifying question may be asked now; when it may, it counts as asked. Rationed whoever wants to ask (this gate, or
+        the conversation model that could not tell: Realtime `unsure`): one per ambiguity episode, and a cooldown between two."""
+        if self.clarified_episode == episode or self.clock() - self.last_clarification < self.cooldown:
+            return False
         self.last_clarification = self.clock()
         self.clarified_episode = episode
-        return replace(decision, speech="clarify", action="none")
+        return True
 
 
 # A conversation the user started (active listening) presumes that what they say is meant for the assistant. Convo has no turn-taking

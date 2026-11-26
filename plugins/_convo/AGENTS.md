@@ -93,7 +93,15 @@
   runs beside the candidate loop (`weigh_task`), so nothing waits for it; the page is sent a final `listen` (no duck, the utterance
   stays open) and the utterance is then decided again with the same classifier reading. `YES`: answered (`reason` `belongs`),
   taking over an answer nothing was heard of, after one already being heard; when the user has gone on speaking it is held to be
-  joined (`cont.hold`). Anything else: ignored as before. Never for an acknowledgement, outside active listening, before anything was
+  joined (`cont.hold`). `OTHER` (it could be for the assistant and the model cannot tell): Convo ASKS, once in a while, what it understood
+  and whether it was meant for it (`reason` `unsure`, `UNSURE`; the model may still write [SILENT]; no tool can run). Only within
+  `UNSURE_SECONDS` of the utterance, with no answer being prepared or heard and no question open, and rationed by `PolicyGate.may_ask`
+  (one per episode, which ends with a plain request, and the cooldown). What the user says next (`_answers_unsure`: the question was
+  heard, nothing answered since, within `UNSURE_ANSWER_SECONDS`) is its answer: a short "yes" is not an acknowledgement then (`reason`
+  `clarified`), and the ASKED check hears what the question was about together with it, so the work is not asked about twice. The
+  classifier's explicit reading is NOT the trigger: measured 2026-11-25 (`.runtime/convo-live-test/unclear_sweep_20261125.py`, 312 clips
+  in two synthetic voices), of what it took for talk to someone else it read .9 or more on no request to the assistant and on 2 of 23
+  requests to another person. Anything else: ignored as before. Never for an acknowledgement, outside active listening, before anything was
   said, or, for a conversation model on another machine, when `speculative_reply` is off (its audio then would not have gone there).
   Only the newest fragment is compared (joined to the request before it, it would always belong to it).
   It grants no action. The decision model cannot do this: measured 2026-11-24 on 48 labelled remarks in two synthetic voices

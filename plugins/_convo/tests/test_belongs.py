@@ -36,10 +36,10 @@ class Base(unittest.TestCase):
         """The clip the two are joined into (a long pause is kept as 1.5 s), judged like the newest part: talk to someone else."""
         return h.merged('more joined', first, make_wav(0, 1.5), second)
 
-    def play(self, body, **options):
+    def play(self, body, also=None, **options):
         async def run():
             classifier = {'first': script(ASK, .2), 'ask': script(ASK, .2), 'next': script(ASK, .2), 'more': script(SIDE, .2), 'ack': script(ACK, .2),
-                          'more joined': script(SIDE, .2)}
+                          'more joined': script(SIDE, .2), **(also or {})}
             h = await Harness.create(typed=True, classifier=classifier, **options)
             h.handler_marks = []
             original = h.handler._mark

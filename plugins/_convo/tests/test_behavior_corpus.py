@@ -207,7 +207,7 @@ class ConversationContract(Scenario):
             await h.settle()
             self.assertEqual(h.accepted_turns(), ['c1'])
             self.assertFalse(h.answers[0]['allow_tools'])
-            self.assertIn('Ask one short in-character question', h.answers[0]['system'])
+            self.assertIn('Ask one short question, in character', h.answers[0]['system'])
             self.assertIsNotNone(h.first_audible('c1'))
             await h.candidate('c2', h.audio('unsure again'), final=True)
             await h.settle()
@@ -223,7 +223,7 @@ class ConversationContract(Scenario):
             for turn, tag in (('c1', 'unsure'), ('c2', 'unsure again'), ('c3', 'hopeless')):
                 await h.candidate(turn, h.audio(tag), final=True)
                 await h.settle()
-            return h.accepted_turns(), ['Ask one short in-character question' in a['system'] for a in h.answers]
+            return h.accepted_turns(), ['Ask one short question, in character' in a['system'] for a in h.answers]
         (accepted, asks), _ = self.play(scenario, classifier={'unsure': script(clarify, .2), 'unsure again': script(clarify, .2), 'hopeless': script(UNCERTAIN, .2)})
         self.assertEqual(accepted, ['c1', 'c2', 'c3'])                          # never left in silence
         self.assertEqual(asks, [True, False, False])                            # one question per cooldown; the rest are answered

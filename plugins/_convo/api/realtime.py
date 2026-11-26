@@ -93,6 +93,11 @@ AFTER_REPLY_WAIT = 120.0         # a turn answered after an unheard answer waits
 # at most 1.76 s): a page that stopped playing without saying so (an error stops its audio) is not waited for.
 AFTER_REPLY_MARGIN = 2.0
 LEFT_OVER_SECONDS = 60.0         # a remark that was waiting for an answer's end is told to what ended that answer for this long
+UNSURE_SECONDS = 8.0             # Convo asks whether an utterance was meant for it only this soon after it was said
+UNSURE_ANSWER_SECONDS = 45.0     # ...and what is said within this long of asking, with nothing answered in between, is the answer
+UNSURE = ("It is not clear whether this was meant for you. Ask one short question, in character and in the user's language, that says what "
+          "you understood and checks whether they want it from you. If it was plainly said to someone else, write [SILENT] instead. "
+          "Do not use tools and do not answer it yet.")
 WHISPER_TEXT_WAIT = 20.0         # a text-only conversation model's turn waits at most this long for its transcript
 ATTACH_RELEASE_WAIT = 2.0        # a re-attach waits at most this long for its old connection's release (bounded at 1.5 s) to finish
 
@@ -389,6 +394,7 @@ class Realtime(WsHandler):
             state['candidate_pending'] = None
             state.pop('left_over', None)
             state.pop('after_parts', None)
+            state.pop('unsure', None)
         return [task for task in tasks if task and not task.done()]
 
     async def process(self, event, data, sid):
@@ -954,6 +960,13 @@ class Realtime(WsHandler):
                         # It goes on with the conversation (_weigh): answered. It takes over an answer nothing has been heard of, so
                         # both are answered together; one already being heard is finished first.
                         verdict, reason, requested = 'admit', 'belongs', not state['phrases']
+                    if verdict == 'ignore' and reason == 'for_someone_else' and candidate.get('belongs') == 'other' and self._may_ask(state, candidate):
+                        # The model that holds the conversation cannot tell either: it asks, once in a while, what the user meant (or
+                        # stays silent after all). No action can come of this turn; what the user answers is a turn of its own.
+                        verdict, reason = 'admit', 'unsure'
+                        decision = policy.replace(decision, speech='clarify', action='none', explicit_request=False)
+                    if verdict == 'ignore' and reason == 'backchannel' and self._answers_unsure(state, context):
+                        verdict, reason, requested = 'admit', 'clarified', True       # "yes" to that question is its answer
                     if unjudged and not reason:
                         reason = 'unjudged'
                     if verdict == 'admit':
@@ -1042,6 +1055,11 @@ class Realtime(WsHandler):
                             # what they add first joins it and the joined utterance is answered instead (_unfinished_wait).
                             state.setdefault('reply_after', {})[turn] = candidate['arrived'] + policy.UNFINISHED_WAIT + PROBE_INTERVAL
                         parts = await self._join(sid, state, session, turn, audio, merge, candidate)
+                        answering, state['unsure'] = self._answers_unsure(state, context), None
+                        if decision.speech == 'clarify':
+                            state['unsure'] = {'turn': turn, 'audio': audio, 'at': asyncio.get_running_loop().time()}
+                        elif answering is not None and answering['audio'] is not None:
+                            state['unsure_said'] = {turn: answering['audio']}      # what the question was about (memory only)
                         speculation, spec = spec, None
                         if speculation is not None:
                             state['spec'] = None
@@ -1274,6 +1292,24 @@ class Realtime(WsHandler):
         if finish is not None and asyncio.get_running_loop().time() < finish + AFTER_REPLY_MARGIN:
             return next(iter(state['phrases'].values())).get('turn') or 'reply'
         return None
+
+    def _may_ask(self, state, candidate):
+        """Whether Convo may ask now whether an utterance was meant for it: soon after it was said, with nothing being answered, heard
+        or already asked, and only now and then (PolicyGate.may_ask)."""
+        if candidate.get('overlap') or asyncio.get_running_loop().time() - candidate['arrived'] > UNSURE_SECONDS:
+            return False
+        if self._unheard(state) is not None or self._helper('convo_voice_tools').pending(state) is not None:
+            return False
+        return state['gate'].may_ask(state['episode'])
+
+    def _answers_unsure(self, state, context):
+        """The question Convo asked because it could not tell whether it was meant ({turn, audio, at}), while what is said now is its
+        answer: it was heard, nothing was answered since, and not long ago. Else None."""
+        asked = state.get('unsure')
+        if not asked or not context['turns'] or asyncio.get_running_loop().time() - asked['at'] > UNSURE_ANSWER_SECONDS:
+            return None
+        last = context['turns'][-1]
+        return asked if last['id'] == asked['turn'] and last['content'].get('assistant') else None
 
     async def _weigh(self, sid, state, candidate, item, audio):
         """Speech the classifier took for talk to someone else: the conversation model is asked whether it goes on with the
@@ -2226,7 +2262,7 @@ class Realtime(WsHandler):
         if clock:
             late.append(clock)
         if clarify:
-            late.append("Ask one short in-character question checking whether this was addressed to you. Do not use tools.")
+            late.append(UNSURE)
         elif offered and not may_call:
             late.append("No tool will run for this reply: answer without one.")
         if context:
@@ -3754,6 +3790,9 @@ class Realtime(WsHandler):
                 # The calls of this pass, carried out together: look-ups side by side, anything that acts one by one before them (it
                 # was asked for before any of their results was read, so nothing in a result can have asked for it).
                 chosen, others = tools.pick(proposals, permitted)
+                # An answer to "was that meant for me?" is read together with what the question was about: never asked a second time.
+                doubted = state.get('unsure_said', {}).get(turn)
+                meant = self._helper('convo_continuation').whole([doubted], audio) if doubted is not None and audio is not None else audio
                 proposals.clear()
                 if others:
                     names = ", ".join(sorted({tools.canonical(p.get("name"))[:40] for p in others}))
@@ -3816,7 +3855,7 @@ class Realtime(WsHandler):
                                            always_ask=bool(tools.CATALOG[name].get('confirm')), arguments=args)
                     if how == 'confirm' and name in granted_names:
                         how = 'run'             # the user has just agreed to it, with a change the model made (_confirmation)
-                    if how == 'confirm' and await voice_tools.asked(self, state, name, audio, transcript):
+                    if how == 'confirm' and await voice_tools.asked(self, state, name, meant, transcript):
                         # The classifier heard no request, the user's own words, read alone, carry it: never asked about what they asked for.
                         self._mark(turn, 'tool.asked_for', tool=name)
                         how = 'run'
