@@ -96,6 +96,9 @@ CONTEXT_WINDOW = (1024, 1_000_000)
 PROVIDER_ID = re.compile(r"[a-z0-9_]{1,64}")
 
 
+# The journal key of a conversation that spans chats (settings `conversation_scope`): a key that can never be a chat's id.
+GLOBAL_SCOPE = "convo:global"
+
 DEFAULTS = {
     "enabled": False,
     "ambient_enabled": False,
@@ -117,6 +120,9 @@ DEFAULTS = {
     "spoken_updates": "completion",
     "activation_names": [],
     "hotkey": "Ctrl+Shift+Space",
+    # One combination per action, "" = off (HOTKEY_* below). The older single `hotkey` above stays as a second one for starting and stopping.
+    "hotkeys": {"toggle_conversation": "Alt+Shift+C", "mute": "Alt+Shift+M", "push_to_talk": "Alt+Shift+Space", "dictate": "Alt+Shift+D",
+                "stop_reply": "Alt+Shift+S", "open_panel": "", "open_settings": "", "run_action": "", "dismiss_action": ""},
     "sidecar": {"url": "http://convo-runtime:8090", "token_env": "CONVO_SIDECAR_TOKEN", "remote": False, "managed": True},   # Convo runs its own gateway
     # provider: an Agent Zero provider id ('' = the endpoint `url` exactly as entered). key_source "provider" uses Agent Zero's
     # own key for that provider when it holds one (Convo's write-only key otherwise); "convo" always uses Convo's key. api_base
@@ -146,6 +152,16 @@ DEFAULTS = {
     "first_clause_speech": True,      # speak the first full sentence, then the rest as one request (False = the whole reply at once)
     "recent_remarks_seconds": 0,      # keep recently ignored speech in memory as context for a later admitted turn (0 = off, max 60)
     "answer_tokens": 1024,            # the longest spoken answer the conversation model may write (thinking is asked off for voice)
+    # Which conversation voice belongs to: "chat" (the selected chat's own conversation, as before) or "global" (one conversation
+    # across all chats, journalled under GLOBAL_SCOPE; voice started with no chat selected is always that one). In a conversation
+    # across chats, `task_chat` says where a task goes when the user names no chat: "new" (a new chat, reused for the later tasks
+    # of that voice session) or "selected" (the chat selected in the interface; a new one when none is).
+    "conversation_scope": "chat",
+    "task_chat": "new",
+    # What the voice agent may do (convo_tools groups): a group switched off is not offered to the model at all. Permissions, not
+    # behaviour: what it takes to run a tool that is offered is decided by convo_policy.authorize.
+    "voice_tools": {"web": True, "memory": True, "tasks": True, "system": True, "timers": True, "chats": True, "senses": True,
+                    "interface": True},
     # Who writes the summary chapters (convo_summarizer): "conversation" (the conversation model, from its own cached start) or
     # "utility" (Agent Zero's utility model: only when it runs on your own machines, or with utility_summary_consent).
     "summary_writer": "conversation",
@@ -298,6 +314,19 @@ def credentials(value):
     return {"Authorization": "Bearer " + token} if token else {}
 
 
+# Hotkeys: what a combination may be made of (webui/hotkeys.js holds the same tables; tests/fixtures/hotkey_cases.json holds the two
+# together). The key is a KeyboardEvent.code, letters and digits without their prefix. A key that types needs Ctrl, Alt or Meta; the
+# reserved ones belong to the browser or to Agent Zero's page (Meta counts as Ctrl there: a Mac uses Cmd for the same).
+HOTKEY_MODIFIERS = ("Ctrl", "Alt", "Shift", "Meta")
+HOTKEY_QUIET = re.compile(r"F(?:[1-9]|1[0-9]|2[0-4])|MediaPlayPause|MediaStop|MediaTrackNext|MediaTrackPrevious|Pause|ScrollLock")
+HOTKEY_KEY = re.compile(r"[A-Z]|[0-9]|Numpad[0-9]|Space|Arrow(?:Up|Down|Left|Right)|Home|End|PageUp|PageDown|Insert|Minus|Equal|BracketLeft|BracketRight|"
+                        r"Backslash|Semicolon|Quote|Comma|Period|Slash|Backquote|IntlBackslash|IntlRo|IntlYen|"
+                        r"Numpad(?:Add|Subtract|Multiply|Divide|Decimal)|" + HOTKEY_QUIET.pattern)
+HOTKEY_RESERVED = frozenset(("Ctrl+W Ctrl+T Ctrl+N Ctrl+R Ctrl+L Ctrl+F Ctrl+Q Ctrl+Shift+W Ctrl+Shift+T Ctrl+Shift+N Ctrl+Shift+R Ctrl+A Ctrl+C "
+                             "Ctrl+V Ctrl+X Ctrl+Z Ctrl+Y Ctrl+Shift+Z F5 Ctrl+F5 Shift+F5 F11 F12 Alt+F4 Ctrl+F4 Alt+ArrowLeft Alt+ArrowRight "
+                             "Alt+Space").split()) | {"Ctrl+%d" % digit for digit in range(10)}
+
+
 def validate_settings(value):
     if not isinstance(value, dict):
         raise ContractError("Convo settings must be an object")
@@ -353,6 +382,13 @@ def validate_settings(value):
             raise ContractError(key + " must be a number from 0 to " + str(limit))
     if type(result["answer_tokens"]) is not int or not 256 <= result["answer_tokens"] <= 4096:
         raise ContractError("answer_tokens must be a whole number from 256 to 4096")
+    if result["conversation_scope"] not in ("chat", "global"):
+        raise ContractError("conversation_scope must be one of: chat, global")
+    if result["task_chat"] not in ("new", "selected"):
+        raise ContractError("task_chat must be one of: new, selected")
+    switches = result["voice_tools"]
+    if not isinstance(switches, dict) or set(switches) != set(DEFAULTS["voice_tools"]) or any(type(item) is not bool for item in switches.values()):
+        raise ContractError("voice_tools must hold one true/false switch for each of: " + ", ".join(DEFAULTS["voice_tools"]))
     if not isinstance(result["summary_writer"], str) or result["summary_writer"] not in ("conversation", "utility"):
         raise ContractError("summary_writer must be one of: conversation, utility")
     if type(result["utility_summary_consent"]) is not bool:
@@ -403,8 +439,38 @@ def validate_settings(value):
         parts = hotkey.split("+")
         if not parts[-1] or any(p not in {"Ctrl", "Alt", "Shift", "Meta"} for p in parts[:-1]) or len(set(parts)) != len(parts):
             raise ContractError("Shortcut must use Ctrl, Alt, Shift or Meta modifiers and one key")
+    _validate_hotkeys(result["hotkeys"])
     _validate_providers(result)
     return result
+
+
+def _hotkey(value):
+    """(canonical combination, '') for one that may be used, else ('', why not); the words never repeat the value."""
+    parts = value.split("+")
+    key, modifiers = parts.pop(), set(parts)
+    if len(value) > 40 or len(modifiers) != len(parts) or modifiers - set(HOTKEY_MODIFIERS) or not HOTKEY_KEY.fullmatch(key):
+        return "", "must be empty or a combination like Alt+M, Ctrl+Shift+Space or F8"
+    if not HOTKEY_QUIET.fullmatch(key) and not modifiers - {"Shift"}:
+        return "", "needs Ctrl, Alt or Meta (or a function or media key), or it would be taken from typing"
+    plain = (modifiers - {"Meta"}) | ({"Ctrl"} if "Meta" in modifiers else set())
+    if "+".join([name for name in HOTKEY_MODIFIERS if name in plain] + [key]) in HOTKEY_RESERVED:
+        return "", "is used by the browser or by Agent Zero"
+    return "+".join([name for name in HOTKEY_MODIFIERS if name in modifiers] + [key]), ""
+
+
+def _validate_hotkeys(value):
+    if not isinstance(value, dict) or set(value) != set(DEFAULTS["hotkeys"]) or any(not isinstance(item, str) for item in value.values()):
+        raise ContractError("hotkeys must hold one combination (or nothing) for each of: " + ", ".join(DEFAULTS["hotkeys"]))
+    used = {}
+    for action, text in value.items():
+        if not text:
+            continue
+        combination, problem = _hotkey(text)
+        if problem:
+            raise ContractError("The hotkey for " + action + " " + problem)
+        if combination in used:
+            raise ContractError("The hotkeys for " + used[combination] + " and " + action + " are the same")
+        used[combination] = action
 
 
 def _validate_providers(result):
@@ -502,9 +568,9 @@ def public_settings(config):
     system_one = readiness(config) if selected else {'ready': False, 'state': 'disabled', 'capabilities': {}}
     return {key: copy.deepcopy(config[key]) for key in (
         "enabled", "ambient_enabled", "remote_ambient_consent", "transcription_enabled",
-        "developer_mode", "ai_link_development_mode", "hotkey", "max_audio_seconds", "echo_guard", "activation_names",
+        "developer_mode", "ai_link_development_mode", "hotkey", "hotkeys", "max_audio_seconds", "echo_guard", "activation_names",
         "voice_message_draft", "barge_in_seconds", "end_of_turn_seconds", "noise_gate_db", "voice_name",
-        "show_diagnostic_events", "show_rejected_responses") } | {
+        "show_diagnostic_events", "show_rejected_responses", "conversation_scope", "task_chat") } | {
         "remote_processing": any(r.get("remote", False) for r in config["roles"].values()) or config["sidecar"].get("remote", False) or system_one.get('remote', False),
         "system_one": system_one,
         # Only the conversation model's own audio capability decides this. A classifier that cannot take audio

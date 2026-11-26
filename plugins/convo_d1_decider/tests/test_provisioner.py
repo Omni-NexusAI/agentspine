@@ -31,7 +31,7 @@ D1_TEXT = {'backend': 'openrouter', 'provider': 'openrouter', 'model': 'typesafe
 # The same table as plugins/_convo/tests/test_classifier_catalog.py: the conversation model's rule. This machine, Convo's containers
 # and private networks as they are (http or https); a public address only with the classifier's consent and over HTTPS.
 GOOD = ('http://host.docker.internal:9931', 'http://localhost:9931/', 'http://127.0.0.1:1', 'http://[::1]:9931', 'http://LOCALHOST:9931',
-        'http://192.168.0.178:9931', 'http://10.0.0.2', 'https://localhost:9931', 'https://172.16.0.4:8443', 'http://convo-runtime:8090',
+        'http://192.168.1.30:9931', 'http://10.0.0.2', 'https://localhost:9931', 'https://172.16.0.4:8443', 'http://convo-runtime:8090',
         'http://100.101.102.103:9931', 'http://my-desktop.tail1234.ts.net:9931', 'http://desktop:9931', 'http://nas.local:9931')
 PUBLIC_HTTPS = ('https://api.typesafe.ai', 'https://example.com:9931', 'https://localhost.evil.com:1', 'https://8.8.8.8')
 PUBLIC_HTTP = ('http://example.com:9931', 'http://localhost.evil.com:1', 'http://0.0.0.0:9931', 'http://169.254.0.5:9931', 'http://100.128.0.1:9931')
@@ -226,8 +226,8 @@ class SourceTests(Base):
         self.decider('system_one')
         self.write('system_1', {'decider': {'backend': 'd1_llama_cpp', 'model': 'd1', 'endpoint': 'http://host.docker.internal:9944/v1/systemone'}})
         self.assertEqual(provisioner.resolve_endpoint(), {'source': 'system_one', 'base_url': 'http://host.docker.internal:9944', 'host': 'host.docker.internal:9944'})
-        self.write('system_1', {'decider': {'backend': 'd1_llama_cpp', 'model': 'd1', 'endpoint': 'http://192.168.0.178:9944/v1/systemone'}})
-        self.assertEqual(provisioner.resolve_endpoint()['base_url'], 'http://192.168.0.178:9944')         # a private network is local
+        self.write('system_1', {'decider': {'backend': 'd1_llama_cpp', 'model': 'd1', 'endpoint': 'http://192.168.1.30:9944/v1/systemone'}})
+        self.assertEqual(provisioner.resolve_endpoint()['base_url'], 'http://192.168.1.30:9944')         # a private network is local
         self.write('system_1', {'decider': {'backend': 'd1_llama_cpp', 'model': 'd1', 'endpoint': 'https://d1.example.com/v1/systemone'}})
         with self.assertRaises(provisioner.DeciderUnavailable) as caught:
             provisioner.resolve_endpoint()

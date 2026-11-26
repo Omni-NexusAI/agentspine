@@ -298,11 +298,20 @@ test('where the canvas cannot dock it (phone width, or no chat yet), opening it 
 
 test('open sections are remembered per browser, and only known sections with true or false are read back', async () => {
     const f = await setup({ stored: { 'convo.diagnostics.sections': JSON.stringify({ live: false, turns: 'yes', evil: true }) } });
-    assert.deepEqual(plain(f.diagnostics.sections), { live: false, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false });
+    assert.deepEqual(plain(f.diagnostics.sections), { live: false, problems: true, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false });
     f.diagnostics.toggle('tune');
     assert.equal(JSON.parse(f.storage.values.get('convo.diagnostics.sections')).tune, true);
     const broken = await setup({ stored: { 'convo.diagnostics.sections': '{not json' } });
     assert.equal(broken.diagnostics.sections.live, true);
+});
+
+test('"Recent problems" lists the page’s errors newest first, each with its time, turn and how often it came in a row', async () => {
+    const f = await setup();
+    assert.deepEqual(plain(f.diagnostics.problemList()), []);
+    f.convo.problems = [{ id: 1, at: 1e12, message: 'First', turn: '', count: 1 }, { id: 2, at: 1e12 + 5000, message: 'Second', turn: 'turn-identifier', count: 3 }];
+    assert.deepEqual(plain(f.diagnostics.problemList().map(item => item.message)), ['Second', 'First']);
+    assert.match(f.diagnostics.problemText(f.convo.problems[1]), / · turn turn-ide · 3 times in a row$/);
+    assert.doesNotMatch(f.diagnostics.problemText(f.convo.problems[0]), /turn|times/);
 });
 
 test('the output tiles show the AudioContext state and device, and "Play test sound" says where the tone went or why it could not play', async () => {

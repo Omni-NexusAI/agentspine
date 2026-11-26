@@ -78,6 +78,19 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
       </div>
     </section>
 
+    <!-- 1b. Recent problems: the errors the panel showed, which clear themselves there -->
+    <section class="convo-diag-section">
+      <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.problems)" :aria-controls="uid + '-problems'" @click="$store.convoDiagnostics.toggle('problems')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Recent problems</button></h3>
+      <div :id="uid + '-problems'" class="convo-diag-content" x-show="$store.convoDiagnostics.sections.problems">
+        <p class="convo-diag-note" x-show="!$store.convoDiagnostics.problemList().length">No problems since this page was opened.</p>
+        <ul class="convo-diag-issues convo-diag-problems" aria-label="Recent problems" x-show="$store.convoDiagnostics.problemList().length">
+          <template x-for="item in $store.convoDiagnostics.problemList()" :key="item.id"><li class="convo-diag-issue" data-severity="error"><span class="material-symbols-outlined" aria-hidden="true">error</span><span><span x-text="item.message"></span><small x-text="$store.convoDiagnostics.problemText(item)"></small></span></li></template>
+        </ul>
+        <button type="button" class="button" x-show="$store.convoDiagnostics.problemList().length" @click="$store.convo?.clearProblems()">Clear</button>
+        <p class="convo-diag-note">What went wrong in this page, newest first, at most 50, until the page is closed. Nothing is stored.</p>
+      </div>
+    </section>
+
     <!-- 2. Turns: a waterfall on one time axis, which is also a list -->
     <section class="convo-diag-section">
       <h3><button type="button" class="convo-diag-toggle" :aria-expanded="String(!!$store.convoDiagnostics.sections.turns)" :aria-controls="uid + '-turns'" @click="$store.convoDiagnostics.toggle('turns')"><span class="material-symbols-outlined convo-diag-chevron" aria-hidden="true">expand_more</span>Turns</button></h3>

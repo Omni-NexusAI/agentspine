@@ -42,11 +42,19 @@ The companion plugin `plugins/convo_d1_decider` is a development-only backend th
 
 **Tools and delegation**
 
-- Direct, read-only tools: `web_search`, `memory_read`, `recall_conversation` and `camera_context`. One read-only call per reply; every use is journaled and shown in the panel, and a result reaches the model labelled as untrusted data.
-- Web search uses Agent Zero's own search service through a ladder: the ordinary request first; when it returns nothing, the news category and up to four further engines the service has loaded. At most three requests and eight seconds per search. Engines refusing the request is reported as a failed search, which is different from a search that worked and found nothing.
-- The camera is offered only while "Share camera" is on and the model has been measured to accept images. One frame is taken when the model asks, and it is never stored.
-- `delegate_task` queues longer work for the selected Agent Zero chat after a short hold, so an immediate correction can replace it. The confirmation says "queued", never "done". Jobs keep the chat they were submitted for and continue when the voice session ends; "Spoken task updates" sets how much is said about them.
-- A task Convo cannot tie to your own request is not started, and the refusal is said and shown, never silent.
+- The voice agent does quick things itself and hands longer work to an Agent Zero chat's agent. Its tools: search the web and read a public page; read long-term memory and (after your yes) save to it; hand over a task, check on it and cancel it; check the machine and the voice services; the time anywhere; timers and reminders; list chats and read one; open a chat, Settings, the file browser or a link; speak slower or faster; listen again to the last sounds it heard; look through a camera or at a screen you share with a button; look up what was said earlier in the conversation.
+- Settings has one switch per group of tools ("What the voice agent may do"). A group that is off is not offered to the model at all. A model that takes tools in writing is offered a smaller set.
+- Read-only tools run directly, up to three in a row in one reply. A small visible change (a timer, opening something) runs directly in a conversation you started. Work that is started, stopped or saved runs when your own words asked for it; when Convo cannot tell that, it asks you first ("shall I go ahead?") instead of refusing. Your spoken yes or no is read from your own utterance by a separate, isolated request, so no text in the conversation can answer for you; the panel shows the same question with Run and Dismiss. Nothing that changes anything runs right after the model has read a tool's result.
+- Web search uses Agent Zero's own search service through a ladder: the ordinary request first; when it returns nothing, the news category and up to four further engines the service has loaded. At most three requests and eight seconds per search; the same search within 90 seconds is answered from its last result. No paid search key is used. When the search gets nothing (the engines refuse, or return nothing), the question is handed to the chat's agent, which looks it up with its own browser, and the answer is spoken when it comes back.
+- Reading a page is Convo's own bounded fetch of public addresses only, without cookies or sign-ins.
+- The camera and the screen are offered only while you share them and the model has been measured to accept images. One frame is taken when the model asks, and it is never stored.
+- A handed-over task is queued after a short hold, so an immediate correction can replace it. The model says it is queued, never that it is done. Jobs keep the chat they were submitted for and continue when voice stops; a finished task is spoken in the conversation that asked for it.
+- Every tool use is journaled and shown in the panel, and a result reaches the model labelled as untrusted data.
+
+**One conversation across chats**
+
+- By default a conversation belongs to the selected chat. With "One conversation across chats" (or when voice is started with no chat selected) there is one conversation, with one memory, whichever chat is open; selecting another chat only changes where work goes by default.
+- A task goes to the chat you name, or to a new chat, or to the selected chat, as the setting says. Finished tasks are reported back in that one conversation.
 
 **Echo protection and the Sound panel**
 
@@ -109,7 +117,8 @@ node --experimental-vm-modules --test _convo/tests/*.test.mjs
 
 - Listening acceptance with a real microphone, real models and a real room, and the measurements in [ACCEPTANCE.md](ACCEPTANCE.md).
 - Voice agent modes (tuned harness, native duplex, auto) are a design only: [VOICE_AGENT_MODES.md](VOICE_AGENT_MODES.md). Today's runtime is the hybrid foundation it describes.
-- Conversations that span chats or a project are designed, not built: [GLOBAL_CONVERSATION.md](GLOBAL_CONVERSATION.md).
+- The decision model does not carry out spoken commands itself: measured on held-out speech it could not tell a spoken yes, no, "repeat that" or "slower" from other speech, so those go through the conversation model.
+- Opening apps on your PC and tools from MCP servers are not built.
 - Incremental or duplex audio input. The model receives completed turns.
 - Interruption: the thresholds are starting points not yet measured on real overlapped speech, an interruption shorter than about half a second of voice is not detected, and there is no undo for a reply that was cut.
 - The speech gate is fitted to one decision model. The decision plugin is development-only and still carries that model's address default, question set and thresholds; these are to become per-model profiles.
@@ -120,6 +129,6 @@ node --experimental-vm-modules --test _convo/tests/*.test.mjs
 ## Design notes and attribution
 
 - [AGENTS.md](AGENTS.md) is the binding contract for this plugin; `webui/AGENTS.md` and `sidecar/AGENTS.md` cover the interface and the gateway.
-- [SYSTEM_ONE.md](SYSTEM_ONE.md), [VOICE_AGENT_MODES.md](VOICE_AGENT_MODES.md) and [GLOBAL_CONVERSATION.md](GLOBAL_CONVERSATION.md) are design notes.
+- [SYSTEM_ONE.md](SYSTEM_ONE.md) and [VOICE_AGENT_MODES.md](VOICE_AGENT_MODES.md) are design notes.
 - The echo guard (`webui/echo-guard.js`), the continuation tracker (`helpers/convo_continuation.py`) and the phrase pacing (`helpers/convo_firstclause.py`) are adapted from the same owner's standalone speech-to-speech fork (Apache-2.0); each file's header names its source.
 - `sidecar/audiocpp/NOTICE.md` records the vendored speech runtime, the adapted Voice Studio and the audio.cpp engine revision; the Apache-2.0 text is in `sidecar/audiocpp/LICENSE.speech-to-speech`. No model weights or voice profiles are bundled, and model licences are shown before an explicit download.

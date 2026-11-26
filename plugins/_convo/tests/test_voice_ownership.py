@@ -33,6 +33,7 @@ class HostStub:
         if target not in {'a', 'b'}: raise ValueError('Unknown target')
     async def persona(self, target, style, cache): return 'Calm voice'
     async def summarize(self, target, source): return 'Older context'
+    def chat_name(self, target): return ''          # the stand-in chats have no title
 
 
 class SidecarStub:

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { loadModule, hostStubs } from './vm-loader.mjs';
 import { storeFixture } from './store-fixture.mjs';
 import { describeEvent, foldTurns, notAnsweredText, wrapTab, mergeEvents, nearBottom, STICK_PX } from '../webui/view-helpers.js';
@@ -163,14 +164,13 @@ test('Bookkeeping is hidden, delivered speech and real activity are shown, and n
     await f.store.mountPanel();
     const shown = Array.from(f.store.visibleEvents, event => [event.seq, f.store.eventRole(event), f.store.eventLabel(event), f.store.eventText(event)]);
     assert.deepEqual(shown, [
-        [1, 'user', 'You', '[Audio input; no verbatim transcript]'],
         [3, 'assistant', 'Convo', 'spoken'],
         [5, 'activity', 'Background task queued', 'Write the weekly report for the team'],
         [7, 'activity', 'Background task completed', 'Done: report.md'],
         [8, 'activity', 'Reply interrupted', '']]);
     assert.ok(!shown.some(([, , label]) => /generated|not delivered/.test(label)));   // an undelivered draft is never shown as speech
     f.store.settings.developer_mode = true;
-    // Developer mode alone: the same entries; bookkeeping rows and undelivered text need their own settings.
+    // Developer mode alone: the same entries, and the turn without words as a faint note; bookkeeping rows and undelivered text need their own settings.
     assert.deepEqual(Array.from(f.store.visibleEvents, event => [event.key ?? event.seq, f.store.eventLabel(event)]), [
         [1, 'You'], [3, 'Convo'], [5, 'Background task queued'], [7, 'Background task completed'], [8, 'Reply interrupted']]);
     f.store.settings.show_diagnostic_events = true; f.store.settings.show_rejected_responses = true;
@@ -246,24 +246,24 @@ test('A reply heard in three phrases is one Convo entry, spoken text joined as d
     assert.equal(events[0].payload.transcript, undefined);                            // the journal itself is never changed
     const reply = foldTurns(events.slice(0, 3));                                        // before the rest arrived: one phrase, same place
     assert.deepEqual(shown(reply).at(-1), [3, 'assistant', 'Convo', 'First sentence.']);
-    assert.equal(shown(foldTurns([ev(1, 't', 'user.accepted', {})]))[0][3], '[Audio input; no verbatim transcript]');
+    assert.deepEqual(foldTurns([ev(1, 't', 'user.accepted', {})]), []);                   // no words: no row (the reply to it still shows)
     const early = foldTurns([ev(1, 't', 'user.accepted', {}), ev(2, 't', 'assistant.generated', { text: 'All of it.' }), ev(3, 't', 'assistant.delivered', { text: 'All of it.' })]);
     assert.deepEqual(shown(early).at(-1), [2, 'assistant', 'Convo', 'All of it.']);  // generated first: the entry sits at that event
 });
 
 test('A reply is labelled interrupted when the journal says so, or when less was heard than generated and the user went on', () => {
-    const base = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'Half of' }), ev(3, 't1', 'assistant.generated', { text: 'Half of the answer.' })];
+    const base = [ev(1, 't1', 'user.accepted', { transcript: 'Tell me' }), ev(2, 't1', 'assistant.delivered', { text: 'Half of' }), ev(3, 't1', 'assistant.generated', { text: 'Half of the answer.' })];
     assert.equal(foldTurns(base)[1].label, 'Convo');                                     // still the newest turn: it may yet be heard
     assert.equal(foldTurns([...base, ev(4, 't2', 'user.accepted', {})])[1].label, 'Convo · interrupted');
     const said = foldTurns([...base.slice(0, 2), ev(3, 't1', 'turn.interrupted', { reason: 'interrupted' })]);
     assert.deepEqual(shown(said).slice(1), [[2, 'assistant', 'Convo · interrupted', 'Half of'], [3, 'activity', 'Reply interrupted', '']]);
-    const whole = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'All  of\nit.' }), ev(3, 't1', 'assistant.generated', { text: 'All of it.' }), ev(4, 't2', 'user.accepted', {})];
+    const whole = [ev(1, 't1', 'user.accepted', { transcript: 'Tell me' }), ev(2, 't1', 'assistant.delivered', { text: 'All  of\nit.' }), ev(3, 't1', 'assistant.generated', { text: 'All of it.' }), ev(4, 't2', 'user.accepted', {})];
     assert.equal(foldTurns(whole)[1].label, 'Convo');                                    // whitespace is not a missing part
 });
 
 test('Phrases are spoken trimmed: the panel joins them as the history does, and a reply heard in full is never called interrupted', () => {
     // As journaled live (2026-11-17): each phrase without the space that separated it from the next.
-    const turn = [ev(1, 't1', 'user.accepted', {}), ev(2, 't1', 'assistant.delivered', { text: 'Octopuses have blue blood.' }),
+    const turn = [ev(1, 't1', 'user.accepted', { transcript: 'Tell me' }), ev(2, 't1', 'assistant.delivered', { text: 'Octopuses have blue blood.' }),
                   ev(3, 't1', 'assistant.delivered', { text: 'Two hearts pump it.' }),
                   ev(4, 't1', 'assistant.generated', { text: 'Octopuses have blue blood. Two hearts pump it.' }), ev(5, 't2', 'user.accepted', {})];
     const entry = foldTurns(turn)[1];
@@ -272,8 +272,8 @@ test('Phrases are spoken trimmed: the panel joins them as the history does, and 
 });
 
 test('Turns are folded per session and turn; events without a turn are never folded together', () => {
-    const events = [ev(1, 'x', 'user.accepted', {}), { seq: 2, session: 'other', turn: 'x', kind: 'user.accepted', payload: { transcript: 'other session' } },
-                    { seq: 3, kind: 'user.accepted', payload: {} }, { seq: 4, kind: 'assistant.delivered', payload: { text: 'loose' } }, { seq: 5, kind: 'user.transcript', payload: { text: 'orphan' } }];
+    const events = [ev(1, 'x', 'user.accepted', { transcript: 'this session' }), { seq: 2, session: 'other', turn: 'x', kind: 'user.accepted', payload: { transcript: 'other session' } },
+                    { seq: 3, kind: 'user.accepted', payload: { transcript: 'alone' } }, { seq: 4, kind: 'assistant.delivered', payload: { text: 'loose' } }, { seq: 5, kind: 'user.transcript', payload: { text: 'orphan' } }];
     assert.deepEqual(shown(foldTurns(events)).map(row => row.slice(0, 3)), [[1, 'user', 'You'], [2, 'user', 'You'], [3, 'user', 'You'], [4, 'assistant', 'Convo']]);
 });
 
@@ -290,7 +290,7 @@ test('Developer mode: the same entries plus a secondary line, the reply never de
         [3, 'Convo · interrupted', '1 phrase heard · not heard: “there was a fox.”'],
         [5, 'turn.interrupted', ''],
         ['n:gone', 'You · not answered', 'Not answered: talk to someone else'],          // no journal entry of its own: placed by time
-        [6, 'You', 'Not answered: waiting for you to finish'],                            // its own entry carries the reason
+        [6, 'You', 'No words captured · Not answered: waiting for you to finish'],        // its own entry carries the reason
         [7, 'Convo · generated, not delivered', 'Generated, never delivered: nothing of it was heard'],
         [8, 'context.compacted', ''],
         ['n:late', 'You · not answered', 'Not answered: odd new reason']]);
@@ -355,4 +355,56 @@ test('The draft follows one turn and gives way once that turn\'s words are in th
     send({ type: 'text.delta', text: ' and more' });                                     // a server that sends no turn id: appended as before
     assert.equal(f.store.draft, 'Other and more');
     await f.store.stop();
+});
+
+// ---- turns without words, and turns taken over by what the user said next (turn.superseded)
+const rows = (events, options) => foldTurns(events, options).map(entry => [entry.key ?? entry.seq, entry.text ?? '', entry.detail ?? '']);
+
+test('A turn without words is no row outside developer mode; its reply is; developers see a faint note with the reason when it is known', () => {
+    const events = [ev(1, 't1', 'user.accepted'), ev(2, 't1', 'assistant.delivered', { text: 'An answer.' }), ev(3, 't2', 'user.accepted'),
+        ev(4, 't2', 'turn.interrupted', { reason: 'interrupted' }), ev(5, 't3', 'user.accepted'), ev(6, 't3', 'turn.held', { decision: 'silent', reason: 'side_talk' }),
+        ev(7, 't4', 'turn.held', { decision: 'wait', reason: 'unfinished' }), ev(8, 't5', 'user.accepted'), ev(9, 't5', 'turn.superseded', { by: 't6' }), ev(10, 't6', 'user.accepted')];
+    assert.deepEqual(rows(events), [[2, 'An answer.', '']]);                               // 4: nothing of that reply was heard, so no row says it was cut
+    assert.deepEqual(rows([...events, ev(11, 't2', 'assistant.delivered', { text: 'Half an' })]).map(row => row[0]), [2, 4, 11]);    // some of it was: as before
+    const developer = foldTurns(events, { developer: true, diagnostics: false });
+    assert.deepEqual(developer.map(entry => [entry.key ?? entry.seq, describeEvent(entry).text, entry.detail ?? '']), [
+        [1, '', 'No words captured'], [2, 'An answer.', '1 phrase heard'],
+        [3, '', 'No words captured · interrupted before the words were known'], [4, '', ''],
+        [5, '', 'No words captured · stayed silent: side talk'], [7, '', 'No words captured · waiting for you to finish'],
+        [10, '', 'No words captured · said in 2 parts']]);                                  // one entry for what was said with pauses
+    assert.deepEqual(developer.filter(entry => entry.faint).map(entry => entry.key), [1, 3, 5, 7, 10]);
+    const known = foldTurns([...events.slice(0, 2), ev(11, 't1', 'user.transcript', { text: 'The words came later', source: 'whisper' })]);
+    assert.deepEqual(known.map(entry => entry.text), ['The words came later', 'An answer.']);   // at its own place, before the reply
+    assert.equal(describeEvent({ kind: 'user.accepted', payload: {} }).text, '');
+    assert.equal(describeEvent({ kind: 'turn.superseded', payload: { by: 'x' } }).label, 'Taken over by what you said next');
+});
+
+test('A taken-over turn is hidden once a turn that took it over carries words; while none does, its own words are shown once', () => {
+    const taken = [ev(1, 'a', 'user.accepted', { transcript: 'Book a table' }), ev(2, 'a', 'turn.superseded', { by: 'b' }), ev(3, 'b', 'user.accepted')];
+    assert.deepEqual(rows(taken), [[1, 'Book a table', '']]);                             // only the earlier words exist
+    const joined = [...taken, ev(4, 'b', 'user.transcript', { text: 'Book a table for six' }), ev(5, 'b', 'assistant.delivered', { text: 'Done.' })];
+    assert.deepEqual(rows(joined), [[3, 'Book a table for six', ''], [5, 'Done.', '']]);  // the joined words hold them
+    // A chain: the last turn with words stands for all before it.
+    const chain = [ev(1, 'a', 'user.accepted', { transcript: 'One' }), ev(2, 'a', 'turn.superseded', { by: 'b' }), ev(3, 'b', 'user.accepted', { transcript: 'One two' }),
+        ev(4, 'b', 'turn.superseded', { by: 'c' }), ev(5, 'c', 'user.accepted')];
+    assert.deepEqual(rows(chain), [[3, 'One two', '']]);
+    assert.deepEqual(rows([...chain, ev(6, 'c', 'user.transcript', { text: 'One two three' })]), [[5, 'One two three', '']]);
+    // Developers see every row, each with what became of it; the bookkeeping row only with the diagnostics rows.
+    assert.deepEqual(rows(chain, { developer: true, diagnostics: false }), [[1, 'One', 'taken over by what you said next'],
+        [3, 'One two', 'taken over by what you said next'], [5, '', 'No words captured · said in 3 parts']]);
+    assert.ok(foldTurns(chain, { developer: true }).some(entry => entry.kind === 'turn.superseded'));
+    // The turn that took it over is not on this page, is in another session, or the two name each other: the words stay shown.
+    assert.deepEqual(rows(taken.slice(0, 2)), [[1, 'Book a table', '']]);
+    assert.deepEqual(rows([...taken.slice(0, 2), { seq: 9, session: 'other', turn: 'b', kind: 'user.accepted', payload: { transcript: 'elsewhere' } }]), [[1, 'Book a table', ''], [9, 'elsewhere', '']]);
+    assert.deepEqual(rows([ev(1, 'a', 'user.accepted', { transcript: 'loop' }), ev(2, 'a', 'turn.superseded', { by: 'b' }), ev(3, 'b', 'user.accepted'), ev(4, 'b', 'turn.superseded', { by: 'a' })]),
+        [[1, 'loop', '']]);
+    // A held fragment (no accepted event) that was taken over follows the same rule.
+    assert.deepEqual(rows([ev(1, 'a', 'turn.held', { decision: 'wait', transcript: 'and then' }), ev(2, 'a', 'turn.superseded', { by: 'b' }), ev(3, 'b', 'user.accepted', { transcript: 'and then home' })]),
+        [[3, 'and then home', '']]);
+});
+
+test('The panel dims a row without words and never shows a placeholder for one', async () => {
+    const html = await readFile(new URL('../webui/main.html', import.meta.url), 'utf8');
+    assert.match(html, /:data-faint="event\.faint \? '' : null"/);
+    for (const file of ['main.html', 'view-helpers.js', 'convo-store.js']) assert.doesNotMatch(await readFile(new URL('../webui/' + file, import.meta.url), 'utf8'), /no verbatim transcript/);
 });

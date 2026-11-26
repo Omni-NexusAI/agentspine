@@ -15,6 +15,7 @@ What it accepts, like the fork's parser:
 * the words on the same line, or on the line after an empty `USER:` when that line is indented or a LANGUAGE line follows it (so an
   empty USER line followed directly by the answer never turns the answer's first sentence into "what the user said");
 * deltas split anywhere, including mid-marker;
+* a header written as one bracketed tag, `[LANGUAGE: English] The answer...` (2026-11-24: spoken aloud with its brackets);
 * an optional leading answer label (`ASSISTANT:`, `RESPONSE:`, ...), which is removed.
 Everything held is bounded (SCAN characters); past that the text is released as answer, except a line that already began with a
 header marker: that line is dropped up to its newline (at most DISCARD characters) and never spoken, its start kept as the words.
@@ -24,9 +25,9 @@ from __future__ import annotations
 import re
 
 PREFIX = 'USER:'
-LIMIT = 600
+LIMIT = 1600            # a request said in several parts may take a minute (convo_continuation)
 LANGUAGE_LIMIT = 40
-SCAN = 720              # characters held while the header is still undecided
+SCAN = 1720             # characters held while the header is still undecided
 DISCARD = 4000          # characters of one over-long header line dropped while waiting for its newline
 HEADER_LINES = 4
 
@@ -34,6 +35,9 @@ USER_NAMES = ('USER_TRANSCRIPT', 'USER', 'TRANSCRIPT')
 LANGUAGE_NAMES = ('ASSISTANT_LANGUAGE', 'LANGUAGE', 'LANG')
 LABEL_NAMES = ('ASSISTANT_RESPONSE', 'ASSISTANT_PREAMBLE', 'ASSISTANT', 'RESPONSE')
 _LEAD = r'^[\s>*_#`-]*'
+# `[NAME: value]` (or in parentheses or braces), closed on the same line; what follows it on that line is the next line.
+TAG = re.compile(r'^[\s>*_#`-]*[\[({]\s*(' + '|'.join(USER_NAMES + LANGUAGE_NAMES) + r')[\s*_`]*:([^\n]*?)[\])}][ \t]*', re.I)
+TAG_OPEN = re.compile(r'^[\s>*_#`-]*[\[({]\s*([A-Za-z_]*)([\s*_`]*:)?')
 _MARK = r'[\s*_`]*:[\s*_`]*'
 MARKER = re.compile(_LEAD + r'(' + '|'.join(USER_NAMES + LANGUAGE_NAMES) + r')' + _MARK + r'(.*)$', re.I | re.S)
 LABEL = re.compile(_LEAD + r'(' + '|'.join(LABEL_NAMES) + r')' + _MARK, re.I)
@@ -118,9 +122,27 @@ class HeaderFilter:
         return self._advance(final=True)
 
     # -- internals ------------------------------------------------------------------------------------------------------------
+    def _untag(self):
+        """A bracketed header tag at the start of the buffer becomes an ordinary header line. False while it may still become one."""
+        if self.skipping is not None or self.lines >= HEADER_LINES:
+            return True
+        found = TAG.match(self.buffer)
+        if found:
+            self.buffer = found.group(1) + ':' + found.group(2) + '\n' + self.buffer[found.end():]
+            return True
+        opened = TAG_OPEN.match(self.buffer)
+        if not opened or '\n' in self.buffer.lstrip() or len(self.buffer) > SCAN:
+            return True
+        names, word = USER_NAMES + LANGUAGE_NAMES, opened.group(1).upper()
+        if opened.group(2):
+            return word not in names                            # `[LANGUAGE: Eng`: wait for the closing bracket
+        return opened.end() < len(self.buffer) or not any(name.startswith(word) for name in names)
+
     def _advance(self, final):
         out = []
         while not self.done:
+            if not self._untag() and not final:
+                return ''.join(out)
             if self.skipping is not None:
                 # An over-long header line: drop everything up to its newline (bounded); its start becomes the words.
                 newline = self.buffer.find('\n')

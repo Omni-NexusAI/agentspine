@@ -1,7 +1,11 @@
 """Durable, single-operation ownership for external speech synthesis.
 
-No IO occurs on import. Only a complete terminal provider response can release
-admission; disconnect, timeout, process exit and OFF are not terminal evidence.
+No IO occurs on import. A complete terminal provider response releases admission
+at once; a disconnect, a timeout, a process exit and OFF are not such evidence.
+An operation without it is settled, never left blocking for good: the provider is
+asked how the request ended where it can say (its own request id), and otherwise
+the record is released after a grace period no single phrase outlives (`GRACE`,
+`RECORD_STALE`). Nothing is ever sent to the provider again for it.
 """
 from __future__ import annotations
 
@@ -15,11 +19,19 @@ import uuid
 
 
 DEADLINE_SECONDS = 35
-RECOVERY = ('Verify the external speech provider has no in-flight synthesis, then explicitly '
-            'reconcile the Convo speech admission record. Restarting Convo or turning it OFF '
-            'does not prove the provider is idle; automatic reconciliation is unavailable.')
+# Seconds an operation with no confirmed end keeps its lock. The provider closed the connection or answered an error: it has ended
+# the request, so only a moment. Convo gave up waiting or stopped: the closed connection stops most servers; one that goes on queues
+# the next request itself.
+GRACE = {'provider_failure': 3.0, 'transport_failure': 3.0, 'response_limit': 3.0}
+GRACE_UNKNOWN = 20.0
+# A record left by a process that is gone: older than any request could still be (the deadline above plus the longest grace).
+RECORD_STALE = DEADLINE_SECONDS + GRACE_UNKNOWN + 5
+OUTCOME_POLL = 1.0
+OUTCOME_ENDED = frozenset({'completed', 'error', 'cancelled', 'limited'})
+RECOVERY = 'The lock is released by itself once the provider confirms the request ended, or after a short wait.'
 _active = {}
 _last = {}
+_settling = {}          # path -> (operation id, monotonic time its lock is released at the latest)
 
 
 class SpeechAdmissionError(Exception):
@@ -40,7 +52,7 @@ class DefinitiveRejection(Exception):
 # 5xx answers that are nonetheless terminal: the speech server's own words that the generation finished before it could be streamed
 # (sidecar/audiocpp/supervisor.py, a phrase too short for two native PCM pieces). The engine is idle, so holding Convo's speech lock
 # on them would refuse every later reply. Anything else 5xx stays "outcome unknown".
-DEFINITE_STATES = frozenset({'native-stream-not-incremental'})
+DEFINITE_STATES = frozenset({'native-stream-not-incremental', 'generation-limit'})
 # A complete 2xx answer Convo cannot use (a whole-phrase WAV that is not 16-bit or float mono): the provider finished, so it is
 # terminal too, reported as a refusal.
 LOCAL_TERMINAL = frozenset({'whole-phrase-format'})
@@ -125,10 +137,74 @@ def status():
         return {'state': 'idle', 'blocked': False, 'last_operation': _last.get(str(path))}
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return {'state': 'uncertain', 'blocked': True, 'reason': 'Speech admission record cannot be verified',
-                'recovery': RECOVERY}
+                'recovery': RECOVERY, 'clears_in_ms': _clears_in(path, None)}
     return {'state': 'uncertain', 'blocked': True, 'operation_id': data['operation_id'],
             'elapsed_ms': max(0, int((time.time() - data['started_at']) * 1000)),
-            'reason': 'Previous speech synthesis has no confirmed terminal outcome', 'recovery': RECOVERY}
+            'reason': 'Previous speech synthesis has no confirmed terminal outcome', 'recovery': RECOVERY,
+            'clears_in_ms': _clears_in(path, data['operation_id'])}
+
+
+def _clears_in(path, operation_id):
+    """Milliseconds until the record at `path` is released at the latest."""
+    settling = _settling.get(str(path))
+    if settling and settling[0] == operation_id:
+        return max(0, int((settling[1] - time.monotonic()) * 1000))
+    return max(0, int((RECORD_STALE - _age(path)) * 1000))
+
+
+def _age(path):
+    """Seconds since the record was written (0 when it cannot be read: it then keeps blocking)."""
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def expire():
+    """Release a record that can no longer stand for a running request: one left by an earlier process, or one whose settling time
+    is over. Never touches a running operation or a record still within its time. Returns whether it released one."""
+    try:
+        path = _path()
+    except ValueError:
+        return False
+    operation = _active.get(str(path))
+    if operation is not None and not operation.task.done():
+        return False
+    settling = _settling.get(str(path))
+    try:
+        owner = _read(path)['operation_id']
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        owner = None
+    if settling and settling[0] == owner:
+        if time.monotonic() < settling[1]:
+            return False
+    elif _age(path) < RECORD_STALE:
+        return False
+    return _release(path, owner)
+
+
+def _release(path, owner):
+    """Remove the record if it is still `owner`'s (None: an unreadable one)."""
+    try:
+        current = _read(path)['operation_id']
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        current = None
+    if current != owner:
+        return False
+    try:
+        path.unlink()
+        _sync_directory(path.parent)
+    except OSError:
+        return False
+    _settling.pop(str(path), None)
+    last = _last.get(str(path))
+    if isinstance(last, dict):
+        _last[str(path)] = {**last, 'state': 'settled', 'blocked': False}
+    return True
 
 
 class Operation:
@@ -139,6 +215,7 @@ class Operation:
         self.detached = False
         self.detached_event = asyncio.Event()
         self.task = None
+        self.outcome = None            # async () -> how the provider says this request ended ('' unknown), once it named the request
 
     def detach(self):
         self.detached = True
@@ -172,9 +249,34 @@ class Operation:
         _last[str(self.path)] = self.details(state, 'Provider operation reached a confirmed terminal response', blocked=False)
 
     def _uncertain(self, reason):
-        # The claim is already durable. Keep it on every unproved outcome;
-        # diagnostic persistence failure must never remove or replace the claim.
-        _last[str(self.path)] = self.details('uncertain', reason, blocked=True)
+        # The claim is already durable. It is kept on every unproved outcome and settled in the background: by the provider's own
+        # word where it has one, else after the grace period.
+        grace = GRACE.get(reason, GRACE_UNKNOWN)
+        _settling[str(self.path)] = (self.operation_id, time.monotonic() + grace)
+        _last[str(self.path)] = {**self.details('uncertain', reason, blocked=True), 'clears_in_ms': int(grace * 1000)}
+        try:
+            task = asyncio.get_running_loop().create_task(self._settle())
+        except RuntimeError:
+            return                     # no loop any more: the next start or health check releases it (expire)
+        task.add_done_callback(_consume_exception)
+
+    async def _settle(self):
+        while True:
+            settling = _settling.get(str(self.path))
+            if not settling or settling[0] != self.operation_id:
+                return
+            if self.outcome is not None:
+                try:
+                    if await self.outcome() in OUTCOME_ENDED:
+                        _release(self.path, self.operation_id)
+                        return
+                except Exception:
+                    pass
+            left = settling[1] - time.monotonic()
+            if left <= 0:
+                _release(self.path, self.operation_id)
+                return
+            await asyncio.sleep(min(OUTCOME_POLL, left))
 
     async def _run(self, work):
         try:
@@ -200,7 +302,8 @@ class Operation:
                       error.reason if isinstance(error, UncertainOutcome) else 'transport_failure')
             self._uncertain(reason)
             raise SpeechAdmissionError(504 if reason == 'timeout' else 502,
-                self.details('uncertain', 'Speech outcome is unconfirmed (' + reason + ')', blocked=True)) from None
+                {**self.details('uncertain', 'Speech outcome is unconfirmed (' + reason + ')', blocked=True),
+                 'clears_in_ms': int(GRACE.get(reason, GRACE_UNKNOWN) * 1000)}) from None
         try:
             self._terminal('completed')
         except (OSError, ValueError, TypeError, OverflowError, RecursionError):
@@ -245,6 +348,7 @@ def _consume_exception(task):
 def start(work):
     """Claim persistent admission before starting exactly one independent worker."""
     loop = asyncio.get_running_loop()
+    expire()
     current = status()
     if current['blocked']:
         raise SpeechAdmissionError(503 if current['state'] == 'configuration_required' else 409, current)

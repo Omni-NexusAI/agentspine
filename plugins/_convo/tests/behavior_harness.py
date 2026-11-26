@@ -141,13 +141,85 @@ def script(decision=None, delay=.2, fail=False, stubborn=0):
     return {'decision': dict(decision or SILENT), 'delay': delay, 'fail': fail, 'stubborn': stubborn}
 
 
+def typed_decision(explicit=.1, attention='addressed', share=.9, **fields):
+    """A typed (System One) classifier's envelope: `share` of the mass on `attention`, the rest spread evenly, and the chance
+    `explicit` that the user's own audio carries a request. Use with `typed=True` (a JSON classifier cannot carry these).
+    `fields` adds or overrides envelope keys (for example speech_seconds and ack_respond for a short acknowledgement)."""
+    rest = round((1 - share) / (len(convo_policy.ATTENTION) - 1), 6)
+    distribution = {name: rest for name in convo_policy.ATTENTION}
+    distribution[attention] = round(1 - rest * (len(convo_policy.ATTENTION) - 1), 6)
+    return {'speech': 'speak' if attention in ('addressed', 'unclear') else 'silent', 'action': 'none', 'confidence': .99,
+            'explicit_request': explicit >= .9, 'context_note': 'Typed', 'attention': attention, 'attention_probabilities': distribution,
+            'explicit_probability': explicit, 'name_probability': 0.0, **fields}
+
+
+def is_reader(payload):
+    """Whether a request to the conversation model is Convo's isolated reading of the user's answer to its own question
+    ("shall I go ahead?": convo_voice_tools.reading), not a reply."""
+    from plugins._convo.helpers import convo_voice_tools
+    reader = getattr(convo_voice_tools, 'READER', None)
+    return bool(reader) and isinstance(payload.get('system'), str) and payload['system'].startswith(reader)
+
+
+def is_asked(payload):
+    """Whether a request is the isolated reading of whether the user asked for this kind of work themself (convo_voice_tools.asked)."""
+    from plugins._convo.helpers import convo_voice_tools
+    return str(payload.get('system') or '').startswith(convo_voice_tools.ASKED.split('%s')[0])
+
+
+def is_belongs(payload):
+    """Whether a request is the check whether speech taken for talk to someone else goes on with the conversation
+    (convo_voice_tools.belongs)."""
+    from plugins._convo.helpers import convo_voice_tools
+    return str(payload.get('system') or '').startswith(convo_voice_tools.BELONGS)
+
+
 class RecordingHost(HostStub):
+    """The host adapter's small surface, scripted: what a tool asked of it is recorded, never carried out."""
     def __init__(self):
         self.directs = []
+        self.notifications = []
+        self.chats = []                  # (id, name) of the user's other chats (besides the stand-in chats 'a' and 'b')
+        self.created = []                # (title, like) of every chat `new_chat` made
+        self.last_search = None
+
+    def context(self, target):
+        """The stand-in chats, the scripted ones, and the conversation that belongs to no chat (convo_contract.GLOBAL_SCOPE)."""
+        from plugins._convo.helpers.convo_contract import GLOBAL_SCOPE
+        if target != GLOBAL_SCOPE and target not in dict(self.chats):
+            super().context(target)
+
+    def new_chat(self, title='', like=''):
+        self.created.append((title, like))
+        chat = ('new-%d' % len(self.created), title or 'Untitled')
+        self.chats.append(chat)
+        return {'id': chat[0], 'name': chat[1]}
 
     async def direct(self, target, name, args):
         self.directs.append((target, name, args))
         return 'Search result'
+
+    def notify(self, title, message):
+        self.notifications.append((title, message))
+
+    def local_clock(self, at):
+        return '12:00'
+
+    def search_state(self):
+        return {'state': 'unknown', 'checked_at': '', 'answered': 0, 'refused': 0}
+
+    def chat_contexts(self):
+        return [types.SimpleNamespace(id=chat_id, name=name) for chat_id, name in self.chats]
+
+    def chat_name(self, target):
+        return dict(self.chats).get(target, '')
+
+    def recent_chats(self, limit=8):
+        return [{'id': chat_id, 'name': name} for chat_id, name in self.chats[:limit]]
+
+    async def find_chat(self, name):
+        from plugins._convo.helpers.convo_host import Host
+        return await Host.find_chat(self, name)          # the real matching rule, over the scripted chats
 
 
 class ScriptedSidecar:
@@ -209,17 +281,64 @@ class ScriptedSidecar:
     async def answer(self, payload):
         loop = asyncio.get_running_loop()
         tag = self._tag(payload.get('audio'), '<text>')
+        if is_asked(payload):
+            self.calls.append('asked')
+            self.h.asked.append(copy.deepcopy(payload))
+            await asyncio.sleep(.1)
+            yield {'type': 'text.delta', 'text': self.h.asked_for}
+            yield {'type': 'answer.done'}
+            return
+        if is_belongs(payload):
+            self.calls.append('belongs')
+            self.h.weighed.append(copy.deepcopy(payload))
+            await asyncio.sleep(self.h.belongs_delay)
+            yield {'type': 'text.delta', 'text': self.h.belongs.get(tag, 'NO') if isinstance(self.h.belongs, dict) else self.h.belongs}
+            yield {'type': 'answer.done'}
+            return
+        if is_reader(payload):
+            # Convo reading the user's answer to its own question: one isolated request, kept apart from the replies (h.readings),
+            # answered with the one word scripted for this utterance (`reading`), after its delay, or failing.
+            self.calls.append('reading')
+            self.h.readings.append(copy.deepcopy(payload))
+            item = self.h.reading or 'OTHER'
+            if isinstance(item, dict) and not set(item) & {'text', 'delay', 'fail'}:
+                item = item.get(tag, 'OTHER')                 # scripted per utterance
+            item = item if isinstance(item, dict) else {'text': item}
+            self.log.append(('reading.start', loop.time(), tag))
+            await asyncio.sleep(item.get('delay', .1))
+            if item.get('fail'):
+                yield {'type': 'error', 'message': 'The conversation model did not answer.'}
+                return
+            yield {'type': 'text.delta', 'text': item.get('text', 'OTHER')}
+            yield {'type': 'answer.done'}
+            self.log.append(('reading.done', loop.time(), tag))
+            return
         self.calls.append('answer')
         self.h.answers.append(copy.deepcopy(payload))  # the host mutates its request between model calls
         self.log.append(('answer.start', loop.time(), tag, bool(payload.get('allow_tools'))))
-        for text, delay in self.h.model_deltas:
+        # How many of this reply's tool calls the request already carries: 0 on the first pass, n on the n-th tool follow-up.
+        carried = payload.get('tool_turns') or ([payload['tool_turn']] if payload.get('tool_turn') else [])
+        deltas = self.h.model_deltas
+        if carried and self.h.follow_deltas is not None:
+            # What the model says once it has a tool's result: one script for every follow-up, or one per follow-up (the last repeats).
+            deltas = self.h.follow_deltas
+            if deltas and isinstance(deltas[0], list):
+                deltas = deltas[min(len(carried), len(deltas)) - 1]
+        for text, delay in deltas:
             await self._nap(delay)
             yield {'type': 'text.delta', 'text': text}
-        # A misbehaving model may propose tools it was not offered; the host must still refuse them.
-        proposals = self.h.proposal if isinstance(self.h.proposal, list) else ([self.h.proposal] if self.h.proposal else [])
-        for item in proposals:
-            if self.h.proposal_always or payload.get('allow_tools'):
-                yield dict(item)
+        if self.h.proposals is not None:
+            # Scripted per pass: item n is what the model calls on a request that carries n tool turns (None, or past the end: nothing).
+            item = self.h.proposals[len(carried)] if len(carried) < len(self.h.proposals) else None
+            proposals = item if isinstance(item, list) else ([item] if item else [])
+            for item in proposals:
+                yield copy.deepcopy(item)
+        elif not (carried and self.h.follow_deltas is not None):
+            # A misbehaving model may propose tools it was not offered; the host must still refuse them.
+            proposals = self.h.proposal if isinstance(self.h.proposal, list) else ([self.h.proposal] if self.h.proposal else [])
+            for item in proposals:
+                if self.h.proposal_always or payload.get('allow_tools'):
+                    yield dict(item)
         yield {'type': 'answer.done'}
         self.log.append(('answer.done', loop.time(), tag))
 
@@ -227,6 +346,7 @@ class ScriptedSidecar:
         loop = asyncio.get_running_loop()
         now = loop.time()
         self.calls.append('speech')
+        self.h.speech_roles.append(copy.deepcopy(role))
         if self.h.tts_admission and now < self.busy_until:
             # Mirrors sidecar/speech_admission.py: an owned worker keeps draining after its caller detached.
             self.log.append(('speech.409', now, text))
@@ -254,7 +374,15 @@ class Harness:
 
     async def _start(self, config=None, classifier=None, model_deltas=None, tts_delay=.1, tts_admission=False,
                      proposal=None, proposal_always=True, mode='active', system_one=None, stubborn_answer=0, backend=None,
-                     truth=None, default=None):
+                     truth=None, default=None, follow_deltas=None, proposals=None, typed=False, reading=None, target='a', chats=None):
+        """`proposal` (+ `proposal_always`) scripts a model that asks for the same tool on every pass. For a realistic reply use
+        `follow_deltas` (what the model says once the request carries a tool's result; it then calls nothing more) and/or
+        `proposals` (a list: what the model calls on the first pass, on the first follow-up, ...). `typed` makes the classifier's
+        scripted envelopes count as a typed System One backend's (see typed_decision). `reading` scripts the conversation model's
+        one-word reading of the user's answer to Convo's own question (see is_reader): a text or {'text': ..., 'delay': seconds,
+        'fail': bool} for every utterance, or a dict of those per audio tag; those requests are kept in `readings`, never in
+        `answers`. `target` is the chat selected when voice starts ('' for none) and `chats` the user's other chats as
+        (id, name); the session's own journal key is `scope` (the chat, or GLOBAL_SCOPE for a conversation across chats)."""
         loop = asyncio.get_running_loop()
         self.t0 = loop.time()
         self.tmp = tempfile.TemporaryDirectory(); self.store = Store(Path(self.tmp.name) / 'db')
@@ -262,9 +390,17 @@ class Harness:
         self.model_deltas = list(model_deltas if model_deltas is not None else [('A complete answer.', .2)])
         self.tts_delay, self.tts_admission, self.proposal, self.stubborn_answer = tts_delay, tts_admission, proposal, stubborn_answer
         self.proposal_always = proposal_always
+        self.follow_deltas, self.proposals = follow_deltas, proposals
+        self.asked = []                  # the isolated requests whether the user asked for the work themself
+        self.asked_for = 'OTHER'         # the one word they answer with
+        self.weighed = []                # the requests whether speech taken for talk to someone else goes on with the conversation
+        self.belongs, self.belongs_delay = 'NO', .5      # the one word they answer with (or a dict per audio tag), and how long they take
+        self.reading, self.readings, self.speech_roles = reading, [], []
         self.timeline, self.dispatches, self.answers, self.spoken, self.arrivals = [], [], [], [], []
         self.truth = dict(truth or {}); self.dummy = None
         self.host = RecordingHost()
+        self.host.chats = list(chats or [])
+        self.scope = target
         self.sidecar = backend if backend is not None else ScriptedSidecar(self)
         self.service = types.SimpleNamespace(store=self.store, host=self.host, persona_cache={},
             dispatcher=types.SimpleNamespace(start=lambda: self.dispatches.append('wake'), cancel=lambda job: self.dispatches.append(('cancel', job))),
@@ -283,19 +419,23 @@ class Harness:
             convo_policy, types.SimpleNamespace(Sidecar=lambda config: self.sidecar)))
         self.patch.start()
         self.handler = self.module.Realtime()
+        if typed:
+            self.handler._typed = lambda state: True
         original = self.handler.emit_to
         async def emit(sid, event, payload):
             self.timeline.append((asyncio.get_running_loop().time() - self.t0, payload))
             await original(sid, event, payload)
         self.handler.emit_to = emit
         try:
-            response = await self.handler.process('convo.start', {'target': 'a', 'mode': mode}, 'browser')
+            response = await self.handler.process('convo.start', {'target': target, 'mode': mode}, 'browser')
             if not response.get('ok'):
                 raise ValueError(response['message'])      # a refused start is data on the wire; tests read it as the refusal it is
         except BaseException:
             await self.close()  # a refused start must not leak the store or the patch
             raise
+        self.started = response
         self.session = response['session']
+        self.scope = self.session['target']
         self.state = self.handler.connections['browser']
 
     # ---- time
@@ -356,7 +496,7 @@ class Harness:
     async def settle(self, limit=120):
         """Run until the candidate loop, any real reply and compaction have finished."""
         for _ in range(20):
-            tasks = [t for t in (self.state.get(key) for key in ('candidate_task', 'task', 'compact_task'))
+            tasks = [t for t in (self.state.get(key) for key in ('candidate_task', 'weigh_task', 'task', 'compact_task'))
                      if t and not t.done() and t is not self.dummy]
             if not tasks:
                 return
@@ -384,13 +524,13 @@ class Harness:
         return found[0][0] if found else None
 
     def journal(self, kind=None):
-        return [r for r in self.store.events('a', 0, 500) if kind is None or r['kind'] == kind]
+        return [r for r in self.store.events(self.scope, 0, 500) if kind is None or r['kind'] == kind]
 
     def accepted_turns(self):
         return [r['turn'] for r in self.journal('user.accepted')]
 
     def jobs(self):
-        return self.store.jobs('a')
+        return self.store.jobs(self.scope)
 
     def epoch(self):
         return self.store.session(self.session['id'], 'browser')['epoch']

@@ -3,10 +3,14 @@
 What the model sees decides what it says next. Earlier versions told it "[The user spoke; their words were not captured.]" for a turn
 with no words, and that placeholder (with the user-line wording) primed replies about audio quality, which then filled the history and
 were repeated. The rule now:
-* a turn the model declined (`held`: [SILENT]/[WAIT]) or that a newer fragment took over (`superseded`) never appears;
+* a turn the model declined as not for it (`held` silent) or that a newer fragment took over (`superseded`) never appears; a thought
+  it waited on (`held` wait) does, with the user's words and no reply: what they say next continues it, however long they paused;
 * every assistant message follows the user's words (a Whisper transcript, the model's own USER line or the classifier's note), else
   the turn's audio while it is still in memory, for a model that takes audio;
-* an exchange with neither is left out entirely, both sides: the model never sees an answer to a question it cannot see;
+* an exchange with neither, but in which Convo used a tool and its answer was heard, stays: the dated tool use (what was looked up)
+  stands in the user's place, never a placeholder (2026-11-25: a heard, searched answer was left out because the user's words were
+  not captured, and a minute later the model said it had never mentioned it);
+* any other exchange with neither is left out entirely, both sides: the model never sees an answer to a question it cannot see;
 * an interrupted reply says so;
 * consecutive user messages (a turn that got no reply) are joined, so roles always alternate (some chat templates require it).
 """
@@ -18,6 +22,11 @@ TEXT_LIMIT = 12000
 
 def words(turn):
     return str(turn.get("transcript") or turn.get("user_line") or turn.get("note") or "")
+
+
+def hidden(turn):
+    """Whether a turn's content is left out of what the model sees."""
+    return bool(turn.get("superseded")) or (bool(turn.get("held")) and turn.get("held") != "wait")
 
 
 def _parts(content):
@@ -50,17 +59,24 @@ def messages(history, *, audio_input, audio_part=None, tool_messages=False):
     from . import convo_tools
     result = []
     for turn in history or ():
-        if not isinstance(turn, dict) or turn.get("held") or turn.get("superseded"):
+        if not isinstance(turn, dict) or hidden(turn):
             continue
         user = words(turn)
         clip = turn.get("user_audio") if audio_input else None
         if user:
             content = user[:TEXT_LIMIT]
         elif clip:
-            content = audio_part(clip) if audio_part else "[audio]"
+            # One request may have been said in several clips (convo_continuation parts): all of them, in order.
+            heard = [audio_part(one) if audio_part else "[audio]" for one in (clip if isinstance(clip, list) else [clip])]
+            content = " ".join(heard) if all(isinstance(one, str) for one in heard) else [part for one in heard for part in _parts(one)]
         else:
-            continue
+            content = ""
         uses = [entry for entry in (turn.get("tools") or [])[:convo_tools.HISTORY_LIMIT] if isinstance(entry, dict) and entry.get("name")]
+        if not content:
+            if not (uses and str(turn.get("assistant") or "").strip()):
+                continue
+            # The look-up itself says what was asked: shown as text in either form (a call needs a user message before it).
+            content, uses = "\n".join(convo_tools.history_text(entry) for entry in uses), []
         if uses and not tool_messages:
             notes = "\n".join(convo_tools.history_text(entry) for entry in uses)
             content = (content + "\n" + notes) if isinstance(content, str) else content + [{"type": "text", "text": notes}]
@@ -89,6 +105,8 @@ def view(request):
         text = content if isinstance(content, str) else " ".join(part.get("text", "") for part in content)
         shown.append({"role": message["role"], "text": text[:4000]})
     current = placeholder(request["audio"]) if request.get("audio") else str(request.get("transcript") or "")[:4000]
+    if request.get("earlier_audio") and request.get("audio"):
+        current = " ".join(placeholder(clip) for clip in request["earlier_audio"]) + " " + current
     if request.get("context_audio"):
         current = "[%d overheard clip(s)] " % len(request["context_audio"]) + current
     add_user_view = shown[-1]["role"] == "user"

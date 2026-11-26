@@ -177,6 +177,18 @@ class Conversation(ApiHandler):
                 return {'ok': recordings.delete(data, input.get('id'))}
             except ValueError as exc:
                 return {'ok': False, 'error': str(exc)[:300]}
+        if action in {'search_health', 'search_check'}:
+            # Settings shows the search engines' last known state (from memory: opening Settings never sends a search); the
+            # "Check search" button sends one small search through the same ladder the voice agent uses.
+            try:
+                if action == 'search_health':
+                    instance = getattr(m, '_instance', None)       # only a service that already runs: a read creates nothing
+                    state = instance.host.search_state() if instance is not None else {'state': 'unknown', 'checked_at': '', 'answered': 0, 'refused': 0}
+                else:
+                    state = await asyncio.wait_for(m.service().host.search_check(), 20)
+                return {'ok': True, **state}
+            except Exception as exc:
+                return {'ok': False, 'error': 'The search service did not answer' if not isinstance(exc, ValueError) else str(exc)[:200]}
         if action == "status":
             config = m.settings()
             contract = importlib.import_module(m.__package__ + ".convo_contract")

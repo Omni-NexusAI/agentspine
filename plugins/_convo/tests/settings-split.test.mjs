@@ -7,7 +7,7 @@ import { COMPONENT, ENTRY_POINTS, readWebui, settingsFiles, settingsMarkup } fro
 
 const fixture = name => readFile(new URL('./fixtures/' + name, import.meta.url), 'utf8');
 const CARDS = ['settings-banner.html', 'conversation-model-field.html', 'classifier-model-field.html', 'speech-output-field.html',
-               'runtime-field.html', 'speech-voice-field.html', 'sound-panel.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
+               'runtime-field.html', 'hotkeys-field.html', 'speech-voice-field.html', 'sound-panel.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
 
 test('Both entry points embed the one shell, and the shell composes every card exactly once', async () => {
     for (const entry of ENTRY_POINTS) assert.match(await readWebui(entry), /<x-component path="\/plugins\/_convo\/webui\/settings-controls\.html">/, entry);

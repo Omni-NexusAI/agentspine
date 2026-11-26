@@ -71,24 +71,72 @@ class JoinUnit(unittest.IsolatedAsyncioTestCase):
     async def test_the_combined_length_is_bounded_by_the_turn_limit_and_the_hard_cap(self):
         cont = continuation.Continuation(7, 20)
         cont.hold(self.wav(300, 12.0), 0.0)
-        self.assertIsNone(cont.plan(self.wav(500, 9.0), 10.0))               # 21 s > 20 s
-        self.assertIsNotNone(cont.plan(self.wav(500, 7.0), 8.0))             # 19 s
+        kept = cont.plan(self.wav(500, 9.0), 10.0)                            # 21 s > 20 s: not one clip, but nothing is lost
+        self.assertEqual((kept.audio, kept.earlier), (self.wav(500, 9.0), [self.wav(300, 12.0)]))
+        joined = cont.plan(self.wav(500, 7.0), 8.0)                           # 19 s
+        self.assertEqual(joined.parts, ())
+        self.assertLessEqual(joined.seconds, 20.0)
         wide = continuation.Continuation(7, 45)                              # max_audio_seconds may be 45, but joined audio stops at 30
         wide.hold(self.wav(300, 20.0), 0.0)
-        self.assertIsNone(wide.plan(self.wav(500, 11.0), 12.0))
-        self.assertIsNotNone(wide.plan(self.wav(500, 9.0), 10.0))
+        self.assertEqual(len(wide.plan(self.wav(500, 11.0), 12.0).parts), 1)
+        self.assertEqual(wide.plan(self.wav(500, 9.0), 10.0).parts, ())
+
+    async def test_one_request_in_several_clips_is_bounded_in_length_and_number(self):
+        cont = continuation.Continuation(7, 20)
+        at, parts, pcm = 0.0, (), self.wav(300, 15.0)
+        cont.remember(pcm, at, 'f1')
+        for index in range(2, 6):
+            at += 15.5
+            merge = cont.plan(self.wav(300 + index, 15.0), at)
+            self.assertEqual((len(merge.parts), merge.audio), (index - 1, self.wav(300 + index, 15.0)))
+            cont.remember(merge.audio, at, 'f%d' % index, parts=merge.parts, revisions=merge.revisions)
+        self.assertEqual(cont.pending.total, 75.0)
+        self.assertIsNone(cont.plan(self.wav(900, 1.0), at + 1.5))            # 76 s: what follows is a request of its own
+        self.assertIsNotNone(cont.pending)                                    # ...and the earlier one is not dropped by that
+        short = continuation.Continuation(7, 1)
+        short.remember(self.wav(300, .9), 0.0, 'p0')
+        for index in range(1, continuation.MAX_PARTS + 1):
+            merge = short.plan(self.wav(400 + index, .9), index * 1.0)
+            short.remember(merge.audio, index * 1.0, 'p%d' % index, parts=merge.parts, revisions=merge.revisions)
+        self.assertEqual(len(short.pending.parts), continuation.MAX_PARTS)
+        self.assertIsNone(short.plan(self.wav(900, .9), 8.0))
+
+    async def test_an_answer_still_being_prepared_stays_joinable_however_long_the_pause(self):
+        cont = continuation.Continuation(7, 20)
+        first, second = self.wav(300, 1.0), self.wav(500, 1.0)
+        cont.remember(first, 0.0, 'f1')
+        self.assertEqual(cont.plan(second, 31.0, open=True).audio, concat_wavs(first, silence(1.5), second))
+        self.assertTrue(cont.holds('f1'))
+        preparing = ['f1']
+        cont.alive = lambda turn: turn in preparing
+        cont._expire()
+        self.assertTrue(cont.holds('f1'))                                     # its time is up, but its answer is still being prepared
+        self.assertIsNotNone(cont._timer)
+        preparing.clear()
+        cont._expire()
+        self.assertIsNone(cont.pending)
+
+    async def test_an_unfinished_fragment_with_no_answer_expires_even_while_something_is_prepared(self):
+        cont = continuation.Continuation(7, 20)
+        cont.alive = lambda turn: True
+        cont.hold(self.wav(300, 1.0), 0.0)
+        cont._expire()
+        self.assertIsNone(cont.pending)
 
     async def test_the_revision_limit(self):
         cont = continuation.Continuation(7, 20)
-        cont.hold(self.wav(300, .2), 0.0, revisions=7)
-        self.assertEqual(cont.plan(self.wav(500, .2), 1.0).revisions, 8)
-        cont.hold(self.wav(300, .2), 0.0, revisions=8)
+        limit = continuation.MAX_REVISIONS
+        cont.hold(self.wav(300, .2), 0.0, revisions=limit - 1)
+        self.assertEqual(cont.plan(self.wav(500, .2), 1.0).revisions, limit)
+        cont.hold(self.wav(300, .2), 0.0, revisions=limit)
         self.assertIsNone(cont.pending)                                       # nothing is kept past the limit
 
-    async def test_different_sample_rates_never_join(self):
+    async def test_different_sample_rates_are_never_one_clip(self):
         cont = continuation.Continuation(7, 20)
         cont.hold(make_wav(300, 1.0, rate=16000), 0.0)
-        self.assertIsNone(cont.plan(make_wav(500, 1.0, rate=24000), 1.0))
+        merge = cont.plan(make_wav(500, 1.0, rate=24000), 1.0)
+        self.assertEqual((merge.audio, merge.earlier), (make_wav(500, 1.0, rate=24000), [make_wav(300, 1.0, rate=16000)]))
+        self.assertEqual(continuation.whole(merge.earlier, merge.audio), merge.audio)        # nothing to put together: the newest alone
 
     async def test_an_admitted_utterance_is_forgotten_the_moment_its_reply_is_heard(self):
         cont = continuation.Continuation(7, 20)
@@ -247,7 +295,7 @@ class Held(Scenario):
         async def scenario(h):
             typed(h)
             seen = []
-            for index in range(1, 11):
+            for index in range(1, continuation.MAX_REVISIONS + 3):
                 await h.candidate('f%d' % index, h.audio('more', level=300 + index, seconds=.5), final=True)
                 await h.advance(1.0)                                                 # the next fragment starts inside the wait
                 pending = h.state['cont'].pending
@@ -255,7 +303,8 @@ class Held(Scenario):
             await h.settle()
             return seen, len(h.answers)
         (seen, answers), _ = self.play(scenario, default=UNFINISHED)
-        self.assertEqual(seen[:9], [0, 1, 2, 3, 4, 5, 6, 7, None])                    # eight joins at most, then nothing is kept
+        limit = continuation.MAX_REVISIONS
+        self.assertEqual(seen[:limit + 1], list(range(limit)) + [None])              # so many joins at most, then nothing is kept
         self.assertEqual(answers, 1)                                                  # one answer, after the user stopped
 
     def test_joining_is_off_when_the_horizon_is_zero(self):
@@ -263,7 +312,7 @@ class Held(Scenario):
         self.assertFalse(facts['held'])
         self.assertEqual(facts['requests'], [facts['f1_frames'], facts['f2_frames']])   # each answered on its own
 
-    def test_a_joined_utterance_longer_than_the_turn_limit_is_not_joined(self):
+    def test_what_does_not_fit_one_clip_is_answered_together_as_two(self):
         async def scenario(h):
             typed(h)
             first, second = h.audio('part one', seconds=12.0), h.audio('part two', level=900, seconds=9.0)
@@ -273,10 +322,12 @@ class Held(Scenario):
             await h.until(10.2)
             await h.candidate('f2', second, sequence=2, final=True)
             await h.settle()
-            return [frame_count(a['audio']) for a in h.answers], frame_count(second)
-        (requests, two), _ = self.play(scenario, model_deltas=[(PHRASE, .3)], default=ADDRESSED_PLAIN,
+            return [(frame_count(a['audio']), [frame_count(clip) for clip in a.get('earlier_audio') or ()]) for a in h.answers], \
+                frame_count(first), frame_count(second), h.accepted_turns(), len(h.audible())
+        (requests, one, two, accepted, heard), _ = self.play(scenario, model_deltas=[(PHRASE, .3)], default=ADDRESSED_PLAIN,
                                        classifier={'part one': script(UNFINISHED, .2), 'part two so far': script(ADDRESSED_PLAIN, .2)})
-        self.assertEqual(requests, [two])        # 22 s together is past the turn limit: f2 alone; f1's answer never talked over it
+        # 22 s together is past one clip's limit: the model hears both, in order, and answers once; f1's answer never talked over f2.
+        self.assertEqual((requests, accepted, heard), ([(two, [one])], ['f1', 'f2'], 1))
 
 
 class Unanswered(Scenario):

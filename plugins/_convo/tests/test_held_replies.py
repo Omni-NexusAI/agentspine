@@ -1,6 +1,7 @@
 """The conversation model declining ([SILENT]) or waiting for the rest of a thought ([WAIT]), the answer to a tool's result, the
 voice turn's clock, and interruption while the classifier is still busy. Virtual clock, scripted providers, synthetic audio."""
 import asyncio
+import importlib
 import unittest
 
 if __package__:
@@ -118,11 +119,13 @@ class ToolAnswers(Scenario):
             await h.candidate('t', h.audio('ask'), final=True)
             await h.settle()
             return h.answers, [p['message'] for _, p in h.events('error', 't')]
-        (answers, errors), _ = self.play(scenario, classifier={'ask': script(SPEAK_PLAIN, .2)}, proposal=WEB_SEARCH,
-                                          model_deltas=[('Let me check.', .1)])
+        (answers, errors), _ = self.play(scenario, classifier={'ask': script(SPEAK_PLAIN, .2)}, proposals=[WEB_SEARCH],
+                                          model_deltas=[('Let me check.', .1)], follow_deltas=[('The search is not answering right now.', .1)])
         self.assertEqual(len(answers), 2)
         self.assertIn('The web search failed: the search service did not answer', answers[1]['tool_turn']['result'])
-        self.assertFalse(answers[1]['allow_tools'])
+        # A failed look-up is one of the reply's few rounds, not its end: the model may still try another read-only tool.
+        self.assertTrue(answers[1]['allow_tools'])
+        self.assertIn(importlib.import_module('plugins._convo.helpers.convo_tools').ONE_MORE, answers[1]['tool_turn']['result'])
         self.assertEqual(errors, [])                                   # not Convo's generic failure: the model says what happened
 
     def test_the_clock_is_in_the_voice_system_text_and_the_held_reply_still_matches(self):

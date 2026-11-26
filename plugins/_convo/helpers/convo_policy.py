@@ -329,6 +329,68 @@ def verified(decision):
     return bool(decision.explicit_request and decision.confidence >= .9)
 
 
+EXPLICIT_LIKELY = .5   # under this the classifier heard no request at all: the model is acting on its own initiative
+
+
+def asked_for_something(decision):
+    """Whether the user's audio plausibly carries a request (weaker than `verified`): a typed classifier's explicit reading at
+    EXPLICIT_LIKELY or more. Where nothing typed judged the turn there is no reading either way, and the model's call stands
+    as it did before a classifier existed (a text typed by the user, a classifier that was busy)."""
+    if decision.calibrated:
+        return decision.explicit_probability + EPSILON >= EXPLICIT_LIKELY
+    return True
+
+
+_AUTHORIZER = None
+
+
+def set_authorizer(function):
+    """The join for a permission system (modes, allow and deny lists): `function(tool, arguments, decision, context)` returns
+    'run', 'confirm', 'refuse', or None to leave the built-in rule in charge. `context` is {'kind', 'conversing', 'followup',
+    'untrusted', 'default'}. Read-only tools and the follow-up rule are decided before it is asked. Pass None to remove it."""
+    global _AUTHORIZER
+    _AUTHORIZER = function
+
+
+def authorize(tool, kind, decision, *, conversing, followup=False, untrusted=False, always_ask=False, arguments=None):
+    """What it takes to run a tool the conversation model called: 'run', 'confirm' (ask the user first; nothing starts until
+    their yes) or 'refuse'. Decided by what the tool does (convo_tools kinds), not by what happens to be in the conversation:
+
+    - read-only tools run.
+    - Nothing that starts or changes anything runs in a tool's follow-up: text a tool just returned (a web page, a chat, a
+      memory) may carry instructions, and the follow-up is the pass that has just read it.
+    - A quick, visible change (a timer, opening a screen) runs in a conversation the user started; elsewhere it needs the
+      classifier's confident request.
+    - Work that is started, stopped or saved runs when the user's own audio carries the request (`verified`). A request the user
+      plainly made is therefore never refused and never asked about twice. When that evidence is missing, Convo asks instead
+      of refusing: always for a tool that asks by design (`always_ask`: saving to long-term memory), when someone else's text is
+      in the request (`untrusted`), and when the classifier heard no request at all (the model acting on its own initiative).
+      Outside a conversation the user started there is nobody to ask: it is refused."""
+    if kind == 'read':
+        return 'run'
+    if kind not in ('quick', 'work') or followup:
+        return 'refuse'
+    if kind == 'quick':
+        default = 'run' if conversing or verified(decision) else 'refuse'
+    elif not conversing:
+        default = 'run' if verified(decision) and not always_ask else 'refuse'
+    elif always_ask:
+        default = 'confirm'
+    elif verified(decision):
+        default = 'run'
+    else:
+        default = 'confirm' if untrusted or not asked_for_something(decision) else 'run'
+    if _AUTHORIZER is not None:
+        try:
+            chosen = _AUTHORIZER(tool, arguments or {}, decision, {'kind': kind, 'conversing': conversing, 'followup': followup,
+                                                                 'untrusted': untrusted, 'default': default})
+        except Exception:
+            chosen = None                      # a failing permission layer never widens or blocks: the built-in rule decides
+        if chosen in ('run', 'confirm', 'refuse'):
+            return chosen
+    return default
+
+
 DIRECT_TOOLS = frozenset({"web_search", "camera_context", "memory_read", "recall_conversation"})
 
 

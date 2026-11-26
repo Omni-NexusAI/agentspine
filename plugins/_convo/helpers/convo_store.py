@@ -158,6 +158,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS memories(target TEXT PRIMARY KEY, summary TEXT NOT NULL, covered TEXT NOT NULL, revision INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, session TEXT NOT NULL, target TEXT NOT NULL, turn TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS notices(job TEXT PRIMARY KEY, session TEXT NOT NULL, turn TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS job_scope(job TEXT PRIMARY KEY, scope TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_chapters(target TEXT NOT NULL, seq INTEGER NOT NULL, summary TEXT NOT NULL, covered TEXT NOT NULL, last_rowid INTEGER NOT NULL, revision INTEGER NOT NULL, stale INTEGER NOT NULL DEFAULT 0, time REAL NOT NULL, PRIMARY KEY(target, seq));
         CREATE TABLE IF NOT EXISTS memory_standing(target TEXT PRIMARY KEY, text TEXT NOT NULL, time REAL NOT NULL);
         """)
@@ -279,6 +280,18 @@ class Store:
             self._event(session, turn, "user.accepted", content)
             return True
 
+    def first_words(self, target):
+        """The first thing the user was answered about in this conversation, as captured ('' while nothing was): what a chat used
+        only by voice is named after (Host.keep). A declined, unfinished or taken-over turn does not count."""
+        with self.lock:
+            rows = self.db.execute("SELECT content FROM turns WHERE target=? ORDER BY rowid LIMIT 40", (target,)).fetchall()
+        for row in rows:
+            content = json.loads(row["content"])
+            text = " ".join(str(content.get("transcript") or "").split())
+            if not content.get("held") and not content.get("superseded") and len(text.split()) >= 2:
+                return text
+        return ""
+
     def settle(self, sid, owner, epoch, turn, response):
         with self.transaction():
             session = self.session(sid, owner)
@@ -291,9 +304,10 @@ class Store:
             self._event(session, turn, "assistant.generated", {"text": response})
             return True
 
-    def supersede(self, sid, owner, epoch, turn, by):
+    def supersede(self, sid, owner, epoch, turn, by, joined=True):
         """A newer fragment took over this turn's reply before it was heard: the turn leaves model history and its queued work
-        is cancelled. Work that already started is left alone (it needs its own cancel). Returns the cancelled job IDs."""
+        is cancelled. Work that already started is left alone (it needs its own cancel). `joined`: the newer turn's audio holds this
+        one's words too (else it replaced it, and the panel keeps showing them). Returns the cancelled job IDs."""
         with self.transaction():
             session = self.session(sid, owner)
             row = self.db.execute("SELECT * FROM turns WHERE id=? AND session=?", (turn, sid)).fetchone()
@@ -302,7 +316,7 @@ class Store:
             content = json.loads(row["content"])
             content["superseded"] = by
             self.db.execute("UPDATE turns SET content=?,settled=1,revision=revision+1 WHERE id=?", (encoded(content), turn))
-            self._event(session, turn, "turn.superseded", {"by": by})
+            self._event(session, turn, "turn.superseded", {"by": by} if joined else {"by": by, "joined": False})
             cancelled = []
             for job in self.db.execute("SELECT id FROM jobs WHERE session=? AND turn=? AND status='queued' ORDER BY rowid", (sid, turn)).fetchall():
                 if self.db.execute("UPDATE jobs SET status='cancelled',result='' WHERE id=? AND status='queued'", (job["id"],)).rowcount:
@@ -793,19 +807,26 @@ class Store:
         row = self.db.execute("SELECT max(rowid) FROM turns WHERE target=? AND id IN (%s)" % ",".join("?" * len(ids)), [target] + list(ids)).fetchone()
         return int(row[0] or 0)
 
-    def submit(self, sid, owner, epoch, turn, request_key, prompt):
+    def submit(self, sid, owner, epoch, turn, request_key, prompt, target=None):
+        """Queue one task. `target` is the chat whose agent does it (default: the session's own chat). A task for another chat than
+        the conversation's own key (a conversation across chats, or a named chat) keeps the conversation it came from in
+        `job_scope`, so its events, its list and its completion notice stay with that conversation; an older Convo ignores the
+        table and still dispatches the job to its chat."""
         with self.transaction():
             session = self.session(sid, owner)
             if epoch != session["epoch"]:
                 raise ValueError("Stale job proposal")
+            target = str(target or session["target"])
             key = sid + ":" + request_key
             row = self.db.execute("SELECT * FROM jobs WHERE request_key=?", (key,)).fetchone()
             if row:
-                if row["prompt"] != prompt or row["target"] != session["target"] or row["turn"] != turn:
+                if row["prompt"] != prompt or row["target"] != target or row["turn"] != turn:
                     raise ValueError("Idempotency key reused for another job")
                 return dict(row)
             job = uuid.uuid4().hex
-            self.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,'queued','')", (job, key, sid, session["target"], turn, prompt))
+            self.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,'queued','')", (job, key, sid, target, turn, prompt))
+            if target != session["target"]:
+                self.db.execute("INSERT OR REPLACE INTO job_scope VALUES(?,?)", (job, session["target"]))
             row = self.db.execute("SELECT content FROM turns WHERE id=? AND session=?", (turn, sid)).fetchone()
             if row:
                 content = json.loads(row["content"])
@@ -821,11 +842,32 @@ class Store:
                 raise ValueError("Unknown job")
             return dict(row)
 
+    def note_turn(self, sid, owner, epoch, note, kind, payload=None):
+        """A turn for something Convo says on its own (a timer that went off): the note is what the model's history shows as its
+        cause, and the event journals it. Returns the new turn's id."""
+        with self.transaction():
+            session = self.session(sid, owner)
+            if session['epoch'] != epoch:
+                raise ValueError('Stale session for a notice')
+            turn = uuid.uuid4().hex
+            self.db.execute('INSERT INTO turns VALUES(?,?,?,?,?,0,0)', (turn, sid, session['target'], epoch, encoded({'note': str(note)[:300]})))
+            self._event(session, turn, str(kind), dict(payload or {}))
+            return turn
+
+    def scope_of(self, job):
+        """The conversation a job belongs to: the one that asked for it (`job_scope`), else its chat."""
+        row = self.db.execute("SELECT scope FROM job_scope WHERE job=?", (job["id"],)).fetchone()
+        return row["scope"] if row else job["target"]
+
     def claim_notice(self, sid, owner, epoch, job_id):
         with self.transaction():
             session = self.session(sid, owner)
             job = self.job(job_id)
-            if session['epoch'] != epoch or job['target'] != session['target'] or job['session'] != sid or job['status'] not in {'completed','failed','uncertain'}:
+            scope = self.scope_of(job)
+            # A chat's own conversation says the completions of its own session's tasks, as before. A conversation across chats
+            # outlives a voice session: a task finished after voice was stopped is said by the next session of that conversation.
+            own = job['session'] == sid or scope != job['target']
+            if session['epoch'] != epoch or scope != session['target'] or not own or job['status'] not in {'completed','failed','uncertain'}:
                 raise ValueError('Job is not eligible for this conversation notice')
             turn = uuid.uuid4().hex
             cursor = self.db.execute('INSERT OR IGNORE INTO notices VALUES(?,?,?)', (job_id, sid, turn))
@@ -835,9 +877,18 @@ class Store:
             self._event(session, turn, 'job.notice_claimed', {'job_id': job_id})
             return {**job, 'notice_turn': turn}
 
+    def release_notice(self, sid, owner, job_id, turn):
+        """A notice nothing was heard of: its claim is given back so it can be offered again. Returns whether it was."""
+        with self.transaction():
+            self.session(sid, owner)
+            return bool(self.db.execute('DELETE FROM notices WHERE job=? AND turn=?', (job_id, turn)).rowcount)
+
     def jobs(self, target):
+        """The jobs of a conversation: those of its own chat, and those it handed to other chats (`job_scope`)."""
         with self.lock:
-            return [dict(r) for r in self.db.execute("SELECT * FROM jobs WHERE target=? ORDER BY rowid", (target,))]
+            return [dict(r) for r in self.db.execute(
+                "SELECT * FROM jobs WHERE (target=? AND id NOT IN (SELECT job FROM job_scope)) OR id IN (SELECT job FROM job_scope WHERE scope=?) "
+                "ORDER BY rowid", (target, target))]
 
     def transition(self, job_id, expected, status, result=""):
         allowed = {"queued": {"dispatching", "cancelled"}, "dispatching": {"running", "queued", "uncertain", "failed"}, "running": {"completed", "failed", "cancel_requested", "uncertain"}, "cancel_requested": {"cancelled", "completed", "uncertain"}}
@@ -848,6 +899,6 @@ class Store:
             if cursor.rowcount:
                 job = self.job(job_id)
                 session = self.session(job["session"], active=False)
-                session["target"] = job["target"]
+                session["target"] = self.scope_of(job)          # journalled with the conversation that asked for the task
                 self._event(session, job["turn"], "job." + status, {"job_id": job_id, "result": result})
             return bool(cursor.rowcount)

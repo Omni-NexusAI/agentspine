@@ -9,9 +9,9 @@ Virtual time; scripted classifier, model and speech (behavior_harness)."""
 import unittest
 
 if __package__:
-    from .behavior_harness import Harness, SPEAK, run_virtual, script
+    from .behavior_harness import Harness, frame_count, SPEAK, run_virtual, script
 else:
-    from behavior_harness import Harness, SPEAK, run_virtual, script
+    from behavior_harness import Harness, frame_count, SPEAK, run_virtual, script
 
 # What the classifier says about an acknowledgement or a remark: not confidently "not for the assistant" (a conversation still
 # presumes it is), and not a request either.
@@ -70,18 +70,21 @@ class RemarkWaits(unittest.TestCase):
 
     def test_a_request_after_a_waiting_remark_takes_over_both(self):
         async def scenario(h):
-            await h.candidate('q', h.audio('question'), final=True)
+            clips = h.audio('question'), h.audio('remark'), h.audio('correction')
+            await h.candidate('q', clips[0], final=True)
             await h.until(LATER)
-            await h.candidate('r', h.audio('remark'), final=True)
+            await h.candidate('r', clips[1], final=True)
             await h.until(LATER + 1.0)
-            await h.candidate('n', h.audio('correction'), final=True)
+            await h.candidate('n', clips[2], final=True)
             await h.settle()
-            return {'accepted': h.accepted_turns(), 'heard': [len(h.audible(t)) for t in ('q', 'r', 'n')],
+            return {'clips': clips, 'last': (frame_count(h.answers[-1]['audio']), h.answers[-1].get('earlier_audio')), 'accepted': h.accepted_turns(), 'heard': [len(h.audible(t)) for t in ('q', 'r', 'n')],
                     'answers': [tag for _, tag in answer_starts(h)], 'cancelled': len(h.log('answer.cancelled'))}
         facts = play(scenario, model_deltas=SLOW, classifier={'question': script(SPEAK, .2), 'remark': script(REMARK, .2),
                                                               'correction': script(SPEAK, .2)})
         self.assertEqual((facts['accepted'], facts['heard']), (['q', 'n'], [0, 0, 1]))
-        self.assertEqual((facts['answers'], facts['cancelled']), (['question', 'correction'], 1))   # the waiting remark never ran
+        # The waiting remark never ran on its own; the one answer is to everything said (a joined clip is a new one to the script).
+        self.assertEqual((facts['answers'], facts['cancelled']), (['question', '<text>'], 1))
+        self.assertEqual(facts['last'], (frame_count(facts['clips'][0]) + frame_count(facts['clips'][2]) + int(1.5 * 16000), [facts['clips'][1]]))
 
     def test_a_remark_while_the_answer_is_still_playing_waits_for_the_page_to_finish_it(self):
         async def scenario(h):

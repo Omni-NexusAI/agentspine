@@ -81,7 +81,7 @@ class Speculation:
         if mine['history'] != request['history']:
             return 'history'
         if (mine.get('audio') != request.get('audio') or mine.get('transcript') != request.get('transcript')
-                or mine.get('context_audio') != request.get('context_audio')):
+                or mine.get('context_audio') != request.get('context_audio') or mine.get('earlier_audio') != request.get('earlier_audio')):
             return 'input'
         if self.proposals and not allow_tools:
             return 'tools'

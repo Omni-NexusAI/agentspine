@@ -30,6 +30,7 @@ async function fixture(t, {respond} = {}) {
         './view-helpers.js':await import('../webui/view-helpers.js'),   // pure and import-free: the real modules
         './orb.js':await import('../webui/orb.js'),
         './dictation.js':await import('../webui/dictation.js'),
+        './hotkeys.js':await import('../webui/hotkeys.js'),
         './sound-setup.js':await import('../webui/sound-setup.js'),
         './plain-text.js':await import('../webui/plain-text.js'),
         '/plugins/_whisper_stt/webui/whisper-stt-store.js':{store:{initRuntime:async()=>{},getSelectedDevice:()=>({})}},
@@ -236,16 +237,16 @@ test('BP3c: the retry schedule is bounded and short enough to matter',async t=>{
     await f.store.stop();
 });
 
-test('A complaint about having no chat clears itself once a chat is chosen, and no other error is touched',async t=>{
+test('Starting with no chat selected is not refused, and an error stays until acted on whatever chat is chosen',async t=>{
     const f=await fixture(t);
     await f.store.stop(); f.setChat('');
     await f.store.start();
-    assert.equal(f.store.error,'Select or create a chat first.');
-    f.setChat('b'); await f.store.refresh();
-    assert.equal(f.store.error,'');                                       // a chat is selected now: the complaint was true, is no longer
+    assert.equal(f.store.error,'');                                       // no "select a chat first": the server decides which conversation it is
+    assert.equal(f.calls.filter(c=>c.event==='convo.start').at(-1).data.target,'');
+    assert.equal(f.store.active,true);
     f.store.error='Voice disconnected. Jobs continue in their target chats.';
-    await f.store.refresh();
-    assert.equal(f.store.error,'Voice disconnected. Jobs continue in their target chats.');   // anything else stays until acted on
+    f.setChat('b'); await f.store.refresh();
+    assert.equal(f.store.error,'Voice disconnected. Jobs continue in their target chats.');   // choosing a chat clears nothing
     await f.store.stop();
 });
 

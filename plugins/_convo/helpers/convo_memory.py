@@ -65,7 +65,8 @@ class Budget:
 
 def verbatim(turns):
     """The word-for-word part as the model sees it (turns that left the history do not count)."""
-    return [t['content'] for t in turns if not t['content'].get('superseded') and not t['content'].get('held')]
+    from .convo_history import hidden
+    return [t['content'] for t in turns if not hidden(t['content'])]
 
 
 def chunk(turns, budget, ratio=BYTES_PER_TOKEN):
@@ -88,10 +89,11 @@ def chunk(turns, budget, ratio=BYTES_PER_TOKEN):
 
 def chapter_source(turns, previous=''):
     """The summariser's data: what the user said and what they heard of each reply (never audio), plus the chapter before."""
+    from .convo_history import hidden
     rows = []
     for t in turns:
         c = t['content'] if 'content' in t else t
-        if c.get('superseded') or c.get('held'):
+        if hidden(c):
             continue
         row = {'user': c.get('transcript') or c.get('user_line') or c.get('note') or '', 'assistant': c.get('assistant', '')}
         if c.get('interrupted'):

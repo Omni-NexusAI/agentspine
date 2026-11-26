@@ -27,6 +27,8 @@ INSTRUCTION = ('After the USER and LANGUAGE lines you may write one control word
                'you were asked not to respond, or there were no words meant for you (noise, someone talking to someone else, media, '
                'your own voice); [WAIT] when the user\'s thought is clearly unfinished and they are about to go on (for example they '
                'said "I need to..." and stopped). A few words of reason may follow it on the same line. Nobody hears a control word. '
+               'A request to do something is never [SILENT], however short it is: do it (with a tool when it needs one) and '
+               'answer; never write that something was done after a control word. '
                'A bare acknowledgement of your answer that adds nothing new (such as "okay", "got it" or "thanks") usually needs no '
                'reply: write [SILENT]. Give it at most one brief reply, and never reply to a repeated acknowledgement. '
                'Otherwise answer normally. Do not bring up audio quality yourself (when the user asks about their voice or a sound, '

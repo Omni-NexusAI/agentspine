@@ -236,18 +236,39 @@ test('`continue` lets the reply play on and hands the release to the audio sessi
     assert.deepEqual(f.audio.calls.slice(-2), ['releaseAfterSpeech', ['duck', false, false]]);
 });
 
-test('`listen` keeps the reply ducked and renews the hold, also for a completed turn, which stays open for the next decision', async t => {
+test('`listen` keeps the reply ducked while the user speaks; for a finished utterance it turns nothing down and stays open', async t => {
+    const f = await storeRig(t);
+    f.audio.next = { overlap: true, heard: null };
+    f.audio.onStart(); f.audio.onProbe('wave', { voiced_s: .5 }); await settle();
+    const probe = f.sent()[0];
+    f.send({ type: 'candidate.state', turn_id: probe.turn_id, sequence: 1, state: 'listen', final: false });
+    assert.deepEqual(f.ducks().at(-1), ['duck', true, false]);
+    assert.equal(f.store.policyHold, true);
+    f.audio.onTurn('final', { voiced_s: .9 }); await settle();
+    const final = f.sent().at(-1);
+    // Whether it goes on with the conversation is being read (Realtime._weigh): the reply plays on at full volume meanwhile.
+    f.send({ type: 'candidate.state', turn_id: final.turn_id, sequence: final.sequence, state: 'listen', final: true });
+    assert.deepEqual(f.ducks().at(-1), ['duck', false, false]);
+    assert.equal(f.store.policyHold, false);
+    // The utterance was not forgotten: its later admission still moves the conversation to the new epoch.
+    const epoch = f.store.session.epoch;
+    f.send({ type: 'candidate.admitted', turn_id: final.turn_id, previous_epoch: epoch, new_session: { ...f.store.session, epoch: epoch + 1 }, sequence: final.sequence });
+    assert.equal(f.store.session.epoch, epoch + 1);
+});
+
+test('`listen` for a finished utterance does not release the duck of a newer one that is open', async t => {
     const f = await storeRig(t);
     f.audio.next = { overlap: true, heard: null };
     f.audio.onStart(); f.audio.onProbe('wave', { voiced_s: .5 }); await settle();
     f.audio.onTurn('final', { voiced_s: .9 }); await settle();
     const final = f.sent().at(-1);
+    f.audio.onStart(); f.audio.onProbe('wave', { voiced_s: .5 }); await settle();
+    const newer = f.sent().at(-1);
+    f.send({ type: 'candidate.state', turn_id: newer.turn_id, sequence: 1, state: 'considering', final: false });
+    const held = f.store.policyHold;
     f.send({ type: 'candidate.state', turn_id: final.turn_id, sequence: final.sequence, state: 'listen', final: true });
-    assert.deepEqual(f.ducks().at(-1), ['duck', true, false]);
-    assert.equal(f.store.policyHold, true);
-    f.send({ type: 'candidate.state', turn_id: final.turn_id, sequence: final.sequence, state: 'ignore', final: true, reason: 'waiting_for_more' });
-    assert.deepEqual(f.ducks().at(-1), ['duck', false, false]);          // the candidate was still known: its later decision applied
-    assert.equal(f.store.policyHold, false);
+    assert.equal(f.store.policyHold, held);
+    assert.equal(held, true);
 });
 
 test('`ignore` with a reason is remembered for the developer view as "Not answered", bounded', async t => {

@@ -246,6 +246,14 @@ export class SpeechBoundary {
             if (admitted) this.onTurn(chunks);
         }
     }
+    // The utterance ends here (the microphone was let go of): what it holds is completed as a turn when it was admitted, else dropped.
+    finish() {
+        const chunks = this.chunks, admitted = this.admitted;
+        if (chunks.length) this.lastTurn = { onsetAt: this.onsetAt, voicedAt: this.voicedAt, endedAt: this.clock(), duration: this.duration, cut: false, voiced: this.speech, preRolled: this.preRolled };
+        this.reset();
+        if (admitted) this.onTurn(chunks);
+        return admitted;
+    }
     // Probe at once, then every `seconds` for the rest of this utterance (overlap). Called from onStart, the probe is taken in the
     // same block; the next utterance starts at the ordinary cadence again (reset).
     quicken(seconds = OVERLAP_PROBE_SECONDS) { this.probeEvery = seconds; this.lastProbe = -Infinity; }
@@ -583,10 +591,12 @@ export class AudioSession {
     // keep "listening" to nothing; restart: true offers a restart) and 'unmuted'.
     constructor({ onStart, onTurn, onProbe = () => {}, onError, maximum, deviceId, onLevel = () => {}, echoGuard = 'adaptive', echoState = null, onEchoMetric = () => {}, onPlaybackState = () => {},
                   duck = {}, stuckMs = STUCK_PHRASE_MS, resumeWaitMs = RESUME_WAIT_MS, sound = {}, onMeter = () => {}, onMicrophone = () => {},
-                  page = null, processing = null, onOutput = () => {} }) {
+                  page = null, processing = null, onOutput = () => {}, muted = false }) {
         // page: the page's one output (PageAudio); without it this session owns a context of its own (tests, older callers).
         // processing: the microphone's echoCancellation / noiseSuppression / autoGainControl (captureProcessing); default all on.
         // onOutput receives {message} when the chosen output device went away or came back.
+        // muted: start with the microphone off (setMuted); a conversation that was muted before a chat switch stays muted.
+        this.muted = !!muted;
         Object.assign(this, { onStart, onTurn, onProbe, onError, maximum, deviceId, onLevel, echoState, onEchoMetric, onPlaybackState, stuckMs, resumeWaitMs, onMeter, onMicrophone, page, onOutput });
         this.processing = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(processing || {}) };
         this.underruns = 0; this.rawTap = null;
@@ -626,6 +636,7 @@ export class AudioSession {
                 autoGainControl: !!this.processing.autoGainControl,
             }});
             if (this.closed) return this.close();
+            this.enableTracks();
             if (this.page) { this.context = await this.page.acquire(); this.acquired = true; }
             else this.context = new AudioContext();
             if (this.closed) return this.close();
@@ -651,7 +662,7 @@ export class AudioSession {
                 // Input 0: the microphone. Input 1: the exact post-duck playback output, the reference the guard compares against.
                 this.capture = new AudioWorkletNode(this.context, 'convo-capture-guard', { numberOfInputs: 2, numberOfOutputs: 1,
                     processorOptions: { mode: this.echoGuard, nativeAec: this.nativeAec(), state: this.echoState } });
-                this.source.connect(this.capture);
+                if (!this.muted) this.source.connect(this.capture);
                 this.outputGain.connect(this.capture, 0, 1);
                 this.capture.connect(this.sink).connect(this.context.destination);
                 this.gate = new NoiseGate({ rate: this.context.sampleRate, gateDb: this.gateDb });   // after the guard's analysis
@@ -661,6 +672,7 @@ export class AudioSession {
                     const data = event.data;
                     if (data?.kind === 'echo_metric') { this.echoMetric = data; try { this.onEchoMetric(data); } catch {} return; }
                     if (data?.kind === 'echo_state') { this.echoState = data.state; return; }
+                    if (this.muted) return;                       // a block on its way when the microphone was muted
                     const level = feedBoundary(this.boundary, data, this.gate);
                     this.emitLevel('input', Math.min(1, level * 8)); // Visuals cannot gate capture.
                     this.emitMeter({ level, withheld: !!data?.withheld, voiced: !!data?.voicedNow, state: String(data?.acousticState || ''), playback: !!data?.playback || this.playbackNow() });
@@ -668,10 +680,11 @@ export class AudioSession {
                 };
             } else {
                 this.capture = new AudioWorkletNode(this.context, 'convo-capture');
-                this.source.connect(this.capture).connect(this.sink).connect(this.context.destination);
+                if (!this.muted) this.source.connect(this.capture);
+                this.capture.connect(this.sink).connect(this.context.destination);
                 this.unguarded = new UnguardedCapture({ rate: this.context.sampleRate, gateDb: this.gateDb });
                 this.capture.port.onmessage = event => {
-                    if (this.closed) return;
+                    if (this.closed || this.muted) return;
                     const { level, voiced } = this.unguarded.feed(this.boundary, event.data);
                     this.emitLevel('input', Math.min(1, level * 8)); // Visuals cannot gate capture.
                     this.emitMeter({ level, withheld: false, voiced, state: 'off', playback: this.playbackNow() });
@@ -679,6 +692,37 @@ export class AudioSession {
                 };
             }
         } catch (error) { this.close(); throw error; }
+    }
+    // ---- mute: the microphone track is disabled and the capture is fed nothing, while playback goes on
+    enableTracks() { for (const track of this.stream?.getAudioTracks?.() || []) track.enabled = !this.muted; }
+    // Muting drops the utterance in progress with its pre-roll (`finish`: an admitted one is completed as a turn first, for a
+    // push-to-talk that was let go of). The capture is disconnected rather than fed silence: silence during playback would read as a
+    // room with no echo, and the echo guard would then take the assistant's own voice for the user's once the microphone is back.
+    // Unmuting starts the capture as a recreated session does: the guard's held frames, voicing and calibration are reset, its learned
+    // echo path is kept, and the boundary and its pre-roll are empty, so nothing from before can be sent.
+    setMuted(muted, { finish = false } = {}) {
+        muted = !!muted;
+        if (this.muted === muted || this.closed) return false;
+        this.muted = muted;
+        this.enableTracks();
+        if (muted) {
+            if (finish) this.boundary?.finish();
+            this.boundary?.reset(); this.encoder?.clear();
+            this.stopRawTap();
+            try { if (this.capture) this.source?.disconnect?.(this.capture); } catch { /* it was not connected */ }
+            this.emitLevel('input', 0);
+            this.checkQuiet();                       // a duck waiting for the user's speech to end has nothing left to wait for
+            return true;
+        }
+        if (!this.capture || !this.source) return true;         // still starting: start() connects it
+        this.boundary?.reset(); this.encoder?.clear();
+        if (this.echoGuard !== 'off') {
+            this.capture.port?.postMessage?.({ kind: 'echo_reset' });
+            if (this.echoState) this.capture.port?.postMessage?.({ kind: 'echo_restore', state: this.echoState });
+            this.gate = new NoiseGate({ rate: this.context.sampleRate, gateDb: this.gateDb });
+        } else this.unguarded = new UnguardedCapture({ rate: this.context.sampleRate, gateDb: this.gateDb });
+        this.source.connect(this.capture);
+        return true;
     }
     // Whether the browser says its own echo cancellation is on for this microphone (read from the live track's settings).
     nativeAec() { return !!this.stream?.getAudioTracks?.()[0]?.getSettings?.().echoCancellation; }
@@ -718,10 +762,10 @@ export class AudioSession {
     // RAW_MAX_SECONDS, the newest kept). It is a separate silent branch through the untouched legacy capture worklet; the
     // conversation's own capture is not changed.
     async startRawTap() {
-        if (this.rawTap || !this.context || !this.source || this.closed) return false;
+        if (this.rawTap || !this.context || !this.source || this.closed || this.muted) return false;
         const module = '/plugins/_convo/webui/audio-worklet.js';
         if (this.page) await this.page.addModule(this.context, module); else await this.context.audioWorklet.addModule(module);
-        if (this.closed || this.rawTap || !this.source) return false;
+        if (this.closed || this.rawTap || !this.source || this.muted) return false;
         const node = new AudioWorkletNode(this.context, 'convo-capture'), sink = this.context.createGain();
         sink.gain.value = 0;
         const tap = { node, sink, chunks: [], samples: 0, rate: this.context.sampleRate };

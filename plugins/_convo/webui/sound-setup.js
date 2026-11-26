@@ -237,7 +237,7 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
             return true;
         },
         // Meter view: the raw microphone level and the handle on one axis.
-        get canMeasure() { return !!this.convo?.active && !this.measuring && !this.assistantPlaying; },
+        get canMeasure() { return !!this.convo?.active && !this.convo.micMuted && !this.measuring && !this.assistantPlaying; },
         // The assistant is speaking (or its echo tail): its voice would be measured as the room, so Measure room waits.
         get assistantPlaying() { return this.convo?.state === 'speaking' || !!this.convo?.meter?.playback; },
         meter() {

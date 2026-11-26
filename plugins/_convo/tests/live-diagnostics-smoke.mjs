@@ -97,7 +97,7 @@ try {
     const wrapper = await page.eval(`(() => { const w = document.querySelector('[data-surface-id="${SURFACE}"]'); const cs = getComputedStyle(w); return { opacity: cs.opacity, pointer: cs.pointerEvents, hidden: w.getAttribute('aria-hidden') }; })()`);
     check('the docked panel is visible and clickable (host wrapper contract)', wrapper.opacity === '1' && wrapper.pointer === 'auto' && wrapper.hidden === 'false', JSON.stringify(wrapper));
     const toggles = await page.eval(`[...document.querySelectorAll('[data-surface-id="${SURFACE}"] .convo-diag-toggle')].map(b => b.textContent.trim().replace(/^expand_(more|less)\s*/, ''))`);   // without the arrow icon's ligature text
-    check('the panel offers its ten sections', JSON.stringify(toggles) === JSON.stringify(['Live', 'Turns', 'Speech gate', 'Early reply', 'Over recent turns', 'Context', 'What the model saw / wrote', 'Memory', 'Test clips', 'Tune']), toggles.join(', '));
+    check('the panel offers its eleven sections', JSON.stringify(toggles) === JSON.stringify(['Live', 'Recent problems', 'Turns', 'Speech gate', 'Early reply', 'Over recent turns', 'Context', 'What the model saw / wrote', 'Memory', 'Test clips', 'Tune']), toggles.join(', '));
     for (const [index, name] of toggles.entries()) {
         await tag(`document.querySelectorAll('[data-surface-id="${SURFACE}"] .convo-diag-toggle')[${index}]`, 'toggle-' + index);
         if (await page.eval(`document.querySelector('[data-smoke="toggle-${index}"]').getAttribute('aria-expanded')`) !== 'true') await page.click(`[data-smoke="toggle-${index}"]`);

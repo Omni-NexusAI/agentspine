@@ -153,7 +153,7 @@ class WithARegisteredBackend(unittest.TestCase):
 # The same table as the decision plugin's tests and test_classifier_catalog.py: the conversation model's rule. Local and private
 # addresses as they are; a public one only with the classifier's consent and over HTTPS; never credentials, a query or a fragment.
 GOOD = ('http://host.docker.internal:9931', 'http://localhost:9931/', 'http://127.0.0.1:1', 'http://[::1]:9931', 'http://LOCALHOST:9931',
-        'http://192.168.0.178:9931', 'http://10.0.0.2', 'https://localhost:9931')
+        'http://192.168.1.30:9931', 'http://10.0.0.2', 'https://localhost:9931')
 PUBLIC_HTTPS = ('https://api.typesafe.ai', 'https://example.com:9931', 'https://localhost.evil.com:1')
 PUBLIC_HTTP = ('http://example.com:9931', 'http://localhost.evil.com:1', 'http://0.0.0.0:9931')
 INVALID = ('http://user:pw@localhost:1', 'http://localhost:1/x', 'http://localhost:1/?a=b', 'ftp://localhost:1',
@@ -211,7 +211,7 @@ class InheritVerdict(unittest.TestCase):
 
     def test_an_audio_kind_is_usable_locally_and_on_a_public_address_only_with_consent(self):
         self.assertEqual(self.verdict(AUDIO_DECIDER)['audio']['state'], 'audio')
-        for endpoint, consent, state in (('http://192.168.0.178:9944/v1/systemone', False, 'audio'), ('https://localhost:9944/v1/systemone', False, 'audio'),
+        for endpoint, consent, state in (('http://192.168.1.30:9944/v1/systemone', False, 'audio'), ('https://localhost:9944/v1/systemone', False, 'audio'),
                                          ('https://api.example.com/v1/systemone', False, 'remote'), ('https://api.example.com/v1/systemone', True, 'audio'),
                                          ('http://api.example.com/v1/systemone', True, 'invalid'), ('http://localhost:9944/other', True, 'invalid'),
                                          ('', True, 'not_configured')):

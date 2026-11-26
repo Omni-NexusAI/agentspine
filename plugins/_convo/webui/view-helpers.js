@@ -3,6 +3,9 @@
 
 export const STICK_PX = 48;   // within this distance of the bottom the transcript keeps following new messages
 export const PAGE = 60;       // journal events fetched per history page
+// The history key of the one conversation across chats (`session.target`, the `history` action's `target`): never a chat's id.
+// The browser copy of convo_contract.GLOBAL_SCOPE.
+export const GLOBAL_SCOPE = 'convo:global';
 
 export function nearBottom(element, threshold = STICK_PX) {
     return !element || element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
@@ -26,10 +29,14 @@ export const ACTIVE_JOB = new Set(['queued', 'dispatching', 'running', 'cancel_r
 
 // Journal facts that are bookkeeping rather than conversation; developer mode still shows them.
 export const HIDDEN_KINDS = new Set(['context.compacted', 'assistant.generated', 'assistant.playback_started', 'user.transcript',
-    'job.dispatching', 'job.running', 'job.cancel_requested', 'job.notice_claimed', 'tool.requested']);
+    'job.dispatching', 'job.running', 'job.cancel_requested', 'job.notice_claimed', 'tool.requested', 'turn.superseded',
+    // Asking first (the pending-action card): the assistant says what happened, the journal rows are bookkeeping.
+    'action.asked', 'action.confirmed', 'action.declined', 'action.expired', 'action.replaced']);
 
 const TOOL_LABELS = { web_search: 'Web search', memory_read: 'Memory search', delegate_task: 'Task', camera_context: 'Camera look',
-    recall_conversation: 'Conversation lookup' };
+    recall_conversation: 'Conversation lookup', web_read: 'Page read', remember: 'Memory save', task_status: 'Task check',
+    cancel_task: 'Cancellation', system_status: 'System check', world_time: 'Time lookup', set_timer: 'Timer', chats: 'Chat lookup',
+    open: 'Opening', voice_speed: 'Voice speed', listen_back: 'Listening back', screen_context: 'Screen look' };
 const REASONS = { interrupted: 'Reply interrupted', stopped: 'Conversation stopped', retargeted: 'Voice moved to another chat' };
 const JOB_END = { 'job.completed': 'Background task completed', 'job.failed': 'Background task failed',
     'job.cancelled': 'Background task cancelled', 'job.uncertain': 'Background task outcome unconfirmed' };
@@ -42,10 +49,15 @@ export function clip(value, limit) {
 // ---- one "You" and one "Convo" entry per turn
 // The journal writes a turn as several facts: user.accepted, user.transcript (from the conversation model's own transcript line or
 // Whisper), assistant.delivered once per phrase heard, assistant.generated once for the whole reply, playback starts, and
-// turn.interrupted. The panel shows them folded: the user's entry at the accepted event (its newest transcript, or the audio
-// placeholder), the assistant's at its first delivered/generated event with the delivered phrases joined as the server's history joins
-// them (each is spoken trimmed: one space between two that do not already meet at a space). A reply nothing of which was delivered is never shown as speech; in developer mode it is listed as generated
-// only. Everything else (jobs, segments, interruptions) stays one entry per event. Events without a turn are never folded together.
+// turn.interrupted. The panel shows them folded: the user's entry at the accepted event (its newest transcript; without words it is not
+// shown at all, and developer mode shows the faint note "No words captured" with the reason when it is known), the assistant's at its
+// first delivered/generated event with the delivered phrases joined as the server's history joins them (each is spoken trimmed: one
+// space between two that do not already meet at a space). A reply nothing of which was delivered is never shown as speech; in developer
+// mode it is listed as generated only. Everything else (jobs, segments, interruptions) stays one entry per event. Events without a turn
+// are never folded together.
+// `turn.superseded` {by, joined: false when replaced by a short command}: what the user said next took that turn over (their audio is joined, so the later turn's words repeat the
+// earlier ones). Outside developer mode the earlier row is hidden once a turn that took it over carries words; while none does, the
+// earlier words are the only ones there are and stay shown.
 const TURN_KINDS = new Set(['user.accepted', 'user.transcript', 'assistant.delivered', 'assistant.generated', 'assistant.playback_started', 'turn.held']);
 const NOT_ANSWERED = { backchannel: 'an acknowledgement', for_someone_else: 'talk to someone else', waiting_for_more: 'waiting for you to finish' };
 // `turn.held` {decision: 'silent'|'wait', reason}: the assistant chose to stay silent, or waits for the user to finish.
@@ -54,6 +66,8 @@ export const heldText = held => (held?.decision === 'wait' ? '· waiting for you
 export const notAnsweredText = reason => `Not answered: ${NOT_ANSWERED[reason] || clip(String(reason || '').replaceAll('_', ' '), 60) || 'no reason given'}`;
 const squash = text => String(text ?? '').replace(/\s+/g, ' ').trim();
 const joinPhrases = phrases => phrases.reduce((text, phrase) => (text && phrase && !/\s$/.test(text) && !/^\s/.test(phrase) ? text + ' ' + phrase : text + phrase), '');
+export const NO_WORDS = 'No words captured';
+const TAKEN_OVER = 'taken over by what you said next';
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 // `events`: the journal page in sequence order. `developer`: add a secondary line (phrases heard, the unheard remainder, why the
@@ -66,15 +80,16 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 // mode with the settings show_diagnostic_events / show_rejected_responses on; called without them they follow `developer`.
 export function foldTurns(events = [], { developer = false, notes = [], assistantName = '', diagnostics = developer, rejected = developer } = {}) {
     const name = clip(assistantName, 64) || 'Convo';
-    const groupOf = event => (event.turn ? `${event.session ?? ''}:${event.turn}` : `seq:${event.seq}`);
+    const turnKey = (session, turn) => `${session ?? ''}:${turn}`;
+    const groupOf = event => (event.turn ? turnKey(event.session, event.turn) : `seq:${event.seq}`);
     const groups = new Map();
     let lastAccepted = -Infinity;
     for (const event of events) {
         const payload = event.payload || {};
         if (event.kind === 'user.accepted') lastAccepted = Math.max(lastAccepted, event.seq);
-        if (!TURN_KINDS.has(event.kind) && event.kind !== 'turn.interrupted') continue;
+        if (!TURN_KINDS.has(event.kind) && event.kind !== 'turn.interrupted' && event.kind !== 'turn.superseded') continue;
         const id = groupOf(event);
-        const group = groups.get(id) || { turn: event.turn, accepted: null, transcript: '', source: '', phrases: [], generated: '', anchor: null, interrupted: false, held: null };
+        const group = groups.get(id) || { turn: event.turn, accepted: null, transcript: '', source: '', phrases: [], generated: '', anchor: null, interrupted: false, held: null, by: '' };
         groups.set(id, group);
         if (event.kind === 'user.accepted' && !group.accepted) group.accepted = event;
         if (event.kind === 'user.transcript' && payload.text) { group.transcript = String(payload.text); group.source = String(payload.source || ''); }
@@ -82,26 +97,56 @@ export function foldTurns(events = [], { developer = false, notes = [], assistan
         if (event.kind === 'assistant.generated' && payload.text) group.generated = String(payload.text);
         if ((event.kind === 'assistant.delivered' || event.kind === 'assistant.generated') && group.anchor === null) group.anchor = event.seq;
         if (event.kind === 'turn.interrupted') group.interrupted = true;
+        if (event.kind === 'turn.superseded' && payload.by) { group.by = turnKey(event.session, payload.by); group.alone = payload.joined === false; }
         if (event.kind === 'turn.held' && !group.held) group.held = { seq: event.seq, time: event.time, session: event.session, decision: payload.decision, reason: payload.reason, text: payload.transcript || payload.text || '' };
     }
     const reasons = new Map((notes || []).filter(note => note?.turn).map(note => [note.turn, note]));
     const placed = new Set();
+    const wordsOf = group => group.transcript || group.accepted?.payload?.transcript || group.held?.text || '';
+    // A turn that took this one over (or took that one over, and so on) carries words, which then hold this one's too.
+    const repeated = group => {
+        if (group.alone) return false;                                  // replaced, not joined: the later turn does not hold these words
+        const seen = new Set([group]);
+        for (let next = groups.get(group.by); next && !seen.has(next); next = groups.get(next.by)) { if (wordsOf(next)) return true; seen.add(next); }
+        return false;
+    };
+    // The turn that finally holds what was said in this one (its audio was joined there), or null.
+    const joinedInto = group => {
+        const seen = new Set([group]);
+        let last = null;
+        for (let at = group; at && at.by && !at.alone; ) {
+            const next = groups.get(at.by);
+            if (!next || seen.has(next)) break;
+            seen.add(next);
+            last = at = next;
+        }
+        return last;
+    };
+    const partsOf = new Map();
+    for (const group of groups.values()) { const into = joinedInto(group); if (into) partsOf.set(into, (partsOf.get(into) || 1) + 1); }
+    // The secondary line of a row without words (developer mode): that there are none, and why when it is known.
+    const wordless = group => [NO_WORDS, group.by ? '· ' + TAKEN_OVER : group.interrupted && !group.held ? '· interrupted before the words were known' : ''].filter(Boolean).join(' ');
     const user = (group, event) => {
         const note = developer ? reasons.get(group.turn) : null;
         if (note) placed.add(note.turn);
         const transcript = group.transcript || event.payload?.transcript || '';
+        if (!developer && (!transcript || (group.by && repeated(group)))) return null;
+        if (!transcript && joinedInto(group)) return null;          // one part of what the user went on saying: that entry has the words
+        const parts = partsOf.get(group) ? `said in ${partsOf.get(group)} parts` : '';
         const source = { whisper: 'Transcript: Whisper', model: 'Transcript: the conversation model' }[group.source] || '';
         const held = developer && group.held ? heldText(group.held) : '';
-        const detail = developer ? [source, note ? notAnsweredText(note.reason) : '', held].filter(Boolean).join(' · ') : '';
+        const unanswered = note ? notAnsweredText(note.reason) : '';
+        const detail = !developer ? '' : (transcript ? [source, parts, group.by ? TAKEN_OVER : '', unanswered, held]
+            : [[wordless(group), held].filter(Boolean).join(' '), parts, unanswered]).filter(Boolean).join(' · ');
         return { key: event.seq, seq: event.seq, time: event.time, kind: 'turn.user', session: event.session, turn: event.turn, role: 'user', label: 'You',
-                 text: transcript || '[Audio input; no verbatim transcript]', detail };
+                 text: transcript, detail, faint: !transcript };
     };
     // A held turn without an accepted event: the user's words still show; the note only in developer mode.
     const heldOnly = group => {
         const text = group.transcript || group.held.text;
-        if (!text && !developer) return null;
+        if (!developer && (!text || (group.by && repeated(group)))) return null;
         return { key: group.held.seq, seq: group.held.seq, time: group.held.time, kind: 'turn.user', session: group.held.session, turn: group.turn, role: 'user', label: 'You',
-                 text: text || '', detail: developer ? heldText(group.held) : '' };
+                 text: text || '', detail: !developer ? '' : text ? heldText(group.held) : [wordless(group), heldText(group.held)].join(' '), faint: !text };
     };
     const assistant = (group, event) => {
         const heard = joinPhrases(group.phrases);
@@ -122,11 +167,13 @@ export function foldTurns(events = [], { developer = false, notes = [], assistan
     for (const event of events) {
         if (TURN_KINDS.has(event.kind)) {
             const group = groups.get(groupOf(event));
-            if (event.kind === 'user.accepted' && group.accepted === event) entries.push(user(group, event));
+            if (event.kind === 'user.accepted' && group.accepted === event) { const entry = user(group, event); if (entry) entries.push(entry); }
             else if (event.kind === 'turn.held' && !group.accepted && group.held?.seq === event.seq) { const entry = heldOnly(group); if (entry) entries.push(entry); }
             else if (event.seq === group.anchor) { const entry = assistant(group, event); if (entry) entries.push(entry); }
             continue;
         }
+        // An answer that was still being prepared when the user spoke on is not an interrupted reply: nothing of it was heard.
+        if (event.kind === 'turn.interrupted' && event.turn && !developer && event.payload?.reason === 'interrupted' && !groups.get(groupOf(event))?.phrases.length) continue;
         if (diagnostics || !HIDDEN_KINDS.has(event.kind)) entries.push(event);
     }
     if (!developer) return entries;
@@ -147,7 +194,7 @@ export function describeEvent(event, jobs = []) {
         case 'turn.user': case 'turn.assistant': case 'turn.note':      // already folded (foldTurns)
             return { role: event.role, label: event.label, text: event.text || '' };
         case 'user.accepted':
-            return { role: 'user', label: 'You', text: payload.transcript || '[Audio input; no verbatim transcript]' };
+            return { role: 'user', label: 'You', text: payload.transcript || '' };
         case 'assistant.delivered':
             return { role: 'assistant', label: 'Convo', text: payload.text || '' };
         case 'assistant.generated':
@@ -158,6 +205,8 @@ export function describeEvent(event, jobs = []) {
             return { role: 'activity', label: 'Background task queued', text: clip(job?.prompt, 240) };
         case 'turn.interrupted':
             return { role: 'activity', label: REASONS[payload.reason] || 'Turn ended early', text: '' };
+        case 'turn.superseded':
+            return { role: 'activity', label: 'Taken over by what you said next', text: '' };
         case 'segment.closed':
             return { role: 'activity', label: 'Voice moved to another chat', text: '' };
         case 'segment.opened':

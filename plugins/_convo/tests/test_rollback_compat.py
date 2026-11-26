@@ -28,7 +28,7 @@ HASHES = {'convo_contract.py': '4c8c84c4acab1688e74c38f4a55f2f8b66309b4ad87b3f1c
           'speech_providers.py': '47e4f2b4ca7303106de89a6da6aef8699b5d9d233a574deff0dce0a754a3bb58'}
 NEW_KEYS = ('voice_message_draft', 'decider', 'roles.conversation.provider', 'roles.conversation.key_source', 'roles.conversation.api_base',
             'roles.tts.provider', 'roles.tts.connection', 'roles.tts.key_source', 'roles.tts.provider_saved',
-            'summary_writer', 'utility_summary_consent')
+            'summary_writer', 'utility_summary_consent', 'voice_tools', 'conversation_scope', 'task_chat', 'hotkeys')
 
 
 def at(config, path):
@@ -42,6 +42,8 @@ def everything_set():
     return current.validate_settings({
         'voice_message_draft': 'continuous',
         'summary_writer': 'utility', 'utility_summary_consent': True,
+        'voice_tools': {'web': False, 'tasks': False, 'interface': False}, 'conversation_scope': 'global', 'task_chat': 'selected',
+        'hotkeys': {'toggle_conversation': 'Ctrl+Alt+V', 'mute': 'F8', 'push_to_talk': '', 'open_panel': 'Alt+O'},
         'decider': {'source': 'convo', 'kind': 'd1_llama_cpp', 'url': 'http://host.docker.internal:9931', 'model': 'd1-omni-600M'},
         'roles': {
             'conversation': {'provider': 'openrouter', 'key_source': 'convo', 'api_base': 'https://openrouter.ai/api/v1', 'remote': True,
@@ -179,6 +181,99 @@ class ClassifierRollback(unittest.TestCase):
             for path in RUNTIME_KEYS:
                 self.assertEqual(at(normalized, path), at(written, path), path)
             self.assertEqual(normalized['roles']['classifier']['provider'], '')
+
+
+VOICE_KEYS = ('voice_tools', 'conversation_scope', 'task_chat')
+
+
+def voice_settings():
+    """What this version writes (through its whole normalizer chain) for the voice agent's permissions and its conversation's scope."""
+    groups = tuple(current.DEFAULTS['voice_tools'])
+    cases = {
+        'defaults': {},
+        'one group off': {'voice_tools': {'web': False}},
+        'everything off': {'voice_tools': {group: False for group in groups}},
+        'only the senses': {'voice_tools': {group: group == 'senses' for group in groups}},
+        'one conversation across chats': {'conversation_scope': 'global', 'task_chat': 'selected', 'voice_tools': {'tasks': False}},
+    }
+    return {name: setup_store.normalize(copy.deepcopy(case)) for name, case in cases.items()}
+
+
+class VoiceToolsRollback(unittest.TestCase):
+    """The voice agent's permission switches (2026-11-22) are a new top-level object the versions before know nothing about: a
+    configuration that holds them still loads there, is saved there without losing them, and is read unchanged after upgrading
+    again. The older runtime simply offers its own three tools, whatever the switches say."""
+    def test_a_configuration_holding_the_switches_loads_in_both_previous_versions_with_them_kept(self):
+        for name, config in voice_settings().items():
+            for version in (v2, old):
+                with self.subTest(case=name, version=version.__name__):
+                    loaded = version.validate_settings(copy.deepcopy(config))
+                    for key in VOICE_KEYS:
+                        self.assertEqual(loaded[key], config[key], key)
+                    self.assertEqual(set(loaded['voice_tools']), set(current.DEFAULTS['voice_tools']))
+
+    def test_the_previous_runtimes_read_what_they_know_and_never_see_the_switches(self):
+        for name, config in voice_settings().items():
+            for version in (v2, old):
+                with self.subTest(case=name, version=version.__name__):
+                    settings = version.public_settings(version.validate_settings(copy.deepcopy(config)))
+                    self.assertFalse(set(VOICE_KEYS) & set(settings))                    # an older browser is simply never told
+                    self.assertEqual(version.input_modality_conflict(version.validate_settings(copy.deepcopy(config))), '')
+
+    def test_an_old_editor_saving_such_a_configuration_keeps_the_switches(self):
+        for name, stored in voice_settings().items():
+            with self.subTest(case=name):
+                browser = v2.validate_settings(copy.deepcopy(stored))                    # what the previous interface loads and edits
+                browser['style'] = 'edited after a rollback'
+                saved = v2_save(v2.merge(stored, browser))
+                oldest = old.validate_settings(old.merge(stored, old.validate_settings(copy.deepcopy(stored))))
+                for written in (saved, oldest):
+                    for key in VOICE_KEYS:
+                        self.assertEqual(written[key], stored[key], key)
+                again = setup_store.normalize(copy.deepcopy(saved))                      # upgrading again reads them unchanged
+                for key in VOICE_KEYS:
+                    self.assertEqual(again[key], stored[key], key)
+                self.assertEqual(again['style'], 'edited after a rollback')
+
+    def test_a_configuration_the_previous_versions_wrote_gets_every_switch_on_here(self):
+        for written in (v2_save({'style': 's'}), old.validate_settings({'style': 's'})):
+            self.assertFalse(set(VOICE_KEYS) & set(written))                             # they never wrote the keys
+            config = current.validate_settings(copy.deepcopy(written))
+            self.assertEqual(config['voice_tools'], current.DEFAULTS['voice_tools'])
+            self.assertEqual(set(config['voice_tools'].values()), {True})
+            self.assertEqual((config['conversation_scope'], config['task_chat'], config['style']), ('chat', 'new', 's'))
+
+    def test_a_switch_an_older_editor_mangled_is_refused_here_not_read_as_a_permission(self):
+        stored = voice_settings()['one group off']
+        mangled = old.validate_settings(old.merge(stored, {'voice_tools': {'web': 'off'}}))      # the old contract checks nothing about it
+        self.assertEqual(mangled['voice_tools']['web'], 'off')
+        with self.assertRaises(current.ContractError):
+            current.validate_settings(copy.deepcopy(mangled))
+
+
+class HotkeysRollback(unittest.TestCase):
+    """The configurable hotkeys are a new top-level object: the versions before load, keep and save it without knowing it, and go on
+    using their own single `hotkey`, which this version never takes away."""
+    STORED = {'hotkey': 'Ctrl+Alt+K', 'hotkeys': {'toggle_conversation': '', 'mute': 'F8', 'run_action': 'Alt+Y'}}
+
+    def test_a_configuration_holding_them_loads_and_is_saved_in_both_previous_versions_with_them_kept(self):
+        config = setup_store.normalize(copy.deepcopy(self.STORED))
+        for version in (v2, old):
+            with self.subTest(version=version.__name__):
+                loaded = version.validate_settings(copy.deepcopy(config))
+                self.assertEqual((loaded['hotkeys'], loaded['hotkey']), (config['hotkeys'], 'Ctrl+Alt+K'))
+                settings = version.public_settings(loaded)
+                self.assertNotIn('hotkeys', settings)                                    # an older browser is simply never told
+                self.assertEqual(settings['hotkey'], 'Ctrl+Alt+K')
+        saved = v2_save(v2.merge(config, {**v2.validate_settings(copy.deepcopy(config)), 'style': 'edited after a rollback'}))
+        again = setup_store.normalize(copy.deepcopy(saved))
+        self.assertEqual((again['hotkeys'], again['hotkey'], again['style']), (config['hotkeys'], 'Ctrl+Alt+K', 'edited after a rollback'))
+
+    def test_a_configuration_the_previous_versions_wrote_gets_the_defaults_here(self):
+        for written in (v2_save({'hotkey': 'Ctrl+Alt+K'}), old.validate_settings({'hotkey': 'Ctrl+Alt+K'})):
+            self.assertNotIn('hotkeys', written)
+            config = current.validate_settings(copy.deepcopy(written))
+            self.assertEqual((config['hotkeys'], config['hotkey']), (current.DEFAULTS['hotkeys'], 'Ctrl+Alt+K'))
 
 
 if __name__ == '__main__':

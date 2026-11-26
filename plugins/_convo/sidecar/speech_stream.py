@@ -19,6 +19,7 @@ import base64
 import copy
 import hashlib
 import json
+import re
 
 import httpx
 
@@ -63,6 +64,11 @@ def speech_request(role, text):
         if not caps.instruction_control:
             raise ContractError('This variant does not support instruction control')
         body['instructions'] = role['instructions']
+    if role.get('speed') is not None:
+        speed = role['speed']
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not 0.5 <= speed <= 2.0:
+            raise ContractError('Invalid speech speed')
+        body['speed'] = float(speed)                       # "speak slower / faster" for this conversation (the voice_speed tool)
     return endpoint(role), credentials(role), body
 
 
@@ -75,8 +81,42 @@ def prepare_request(role, text):
         raise ContractError('Invalid streaming speech request; nothing was dispatched') from None
 
 
-async def provider_pcm(role=None, text=None, *, prepared=None):
-    """Yield bounded PCM metadata/audio chunks, keeping response ownership local."""
+REQUEST_ID = 'x-tts-request-id'
+
+
+def outcome_check(prepared, headers):
+    """How to ask the provider later how this request ended, when it named the request (audio.cpp's `X-TTS-Request-Id` and
+    /v1/audio/outcomes/<id>); None for a server that does not. The check returns its state, 'completed' when the server no longer
+    knows the request (it is not running), and '' when it cannot be told."""
+    ident = str(headers.get(REQUEST_ID) or '')
+    if not re.fullmatch(r'[0-9a-f]{32}', ident):
+        return None
+    url = str(prepared.url)
+    if not url.endswith('/audio/speech'):
+        return None
+    url = url[:-len('speech')] + 'outcomes/' + ident
+    key = {name: value for name, value in prepared.headers.items() if name.lower() == 'authorization'}
+
+    async def check():
+        async with convo_net.client(3) as client:
+            response = await client.get(url, headers=key)
+            if len(response.content) > 16384:
+                return ''
+            try:
+                body = response.json()
+            except ValueError:
+                return ''
+        if response.status_code == 200 and isinstance(body, dict):
+            return str(body.get('state') or '')
+        if response.status_code == 404 and isinstance(body, dict) and str(body.get('detail') or 'Not Found') != 'Not Found':
+            return 'completed'
+        return ''
+    return check
+
+
+async def provider_pcm(role=None, text=None, *, prepared=None, named=None):
+    """Yield bounded PCM metadata/audio chunks, keeping response ownership local. `named(check)` is told how to ask for the
+    request's outcome as soon as the provider names it."""
     prepared = prepared or prepare_request(role, text)
     try:
         async with convo_net.client(httpx.Timeout(35, connect=5)) as client:
@@ -90,6 +130,8 @@ async def provider_pcm(role=None, text=None, *, prepared=None):
                         if len(body) > REJECTION_BYTES:
                             raise speech_admission.UncertainOutcome('response_limit')
                     speech_admission.raise_for_provider(response.status_code, body)
+                if named is not None:
+                    named(outcome_check(prepared, response.headers))
                 async for chunk in pcm_chunks(response):
                     yield chunk
     except httpx.TimeoutException:
@@ -213,7 +255,7 @@ class AdmittedPCM:
         else:
             self.path = 'stream'
             try:
-                await self._relay(provider_pcm(prepared=self.prepared))
+                await self._relay(provider_pcm(prepared=self.prepared, named=lambda check: setattr(self.operation, 'outcome', check)))
             except speech_admission.DefinitiveRejection as error:
                 if self.counters[0] or error.reason != 'native-stream-not-incremental':
                     raise

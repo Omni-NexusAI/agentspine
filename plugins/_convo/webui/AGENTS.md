@@ -1,6 +1,7 @@
 # Convo interfaces
 
-- The native sidebar and expanded Studio are separate interfaces. Navigation must not stop, recreate, or retarget an active voice session.
+- The native sidebar and expanded Studio are separate interfaces. Navigation must not stop, recreate, or retarget an active voice session. The one exception is not a retarget either: in a conversation across chats, selecting a chat changes only the default place for work (`convo.work`), never the session, its audio or its history.
+- One conversation across chats (`GLOBAL_SCOPE` = `'convo:global'` in `view-helpers.js`, the browser copy of the server's; the store's `across` is `target === GLOBAL_SCOPE`): the server decides which conversation a start is and says so in `session.target` (the setting `conversation_scope` "global", or no chat selected); a session without a target is the chat's own. `start` sends the selected chat's id or `''` and never refuses for want of a chat. While voice is off the panel shows `idleTarget()`: that conversation when the setting is "global", else the selected chat's own. Across chats the status poll's look at the selected chat (`noteWork`) sends `convo.work {chat}` after `workDebounceMs` (300), never while starting or re-attaching, once per selection (`workAsked`; a `stale`/`busy` answer is tried again, any other refusal is said once); the answer's `work`/`name` are what the chat line shows: "Working in: <name>", "Working in: an untitled chat" or "No chat selected" (`targetPrefix` + `targetLabel`). No "Use selected chat" there (`canRetarget` is false, `retarget()` only sends `work`). History, earlier pages and memory use `target`, so they are that conversation's. Completion notices are claimed for every job its history returned, whichever chat it ran in (`job.target` is the real chat; a chat's own conversation still claims only its own chat's). The task list names a job's chat (`jobChat`: the `job.queued` event's `chat`, else the host chat list's title, else nothing). The two settings (`conversation_scope`, `task_chat`) are plain selects near the top of Settings -> Conversation on the shared draft. A chat's own conversation is unchanged. Tests: `across-chats.test.mjs`.
 - Studio availability probes use native same-origin `fetch` on `/convo-studio/` after `studio_open` establishes the session. Host `fetchApi` adds `/api/` and must not be used for this root WSGI route.
 - Distinguish the rendered Studio interface from managed audio/profile readiness. Never render raw backend tracebacks; preserve unavailable saved voices visibly and disable their selection action until inventory verifies them.
 - Version the Studio modal and its module reference together when deploying interface changes; verify from a fresh page so a prior module instance cannot retain watchers.
@@ -26,7 +27,7 @@
 - Ducking is `DuckController` behind `setPolicyHold(held, immediate)`: attack 40 ms, hold at least 350 ms, release only 850 ms after the last request to duck (longer than the 750 ms probe cadence, so it does not pump), release ramp 250 ms, and a 12 s cap so it can never stick. A decision that already ended (admission, a new reply) passes `immediate`.
 - Speech over the assistant's playback: once the echo guard confirms the user's own voice, the store ducks at once and `SpeechBoundary.quicken()` probes
   immediately, then every 0.5 s (`reset()` restores 0.75 s). Probes and finals carry `voiced_s`; `overlap: true` and, at the onset, `heard
-  {phrase_id, played_s}` only when true. `continue` lifts the duck 400 ms after the user's speech ends (`releaseAfterSpeech`), `listen` keeps it
+  {phrase_id, played_s}` only when true. `continue` lifts the duck 400 ms after the user's speech ends (`releaseAfterSpeech`), `listen` for a finished utterance turns nothing down and keeps it open (its later admission applies); for speech still going on `listen` keeps it
   and renews the hold, `candidate.admitted.fade_ms` fades the old audio on its own gain before it stops (at most 1 s), `ignore` + `reason` is noted.
 - Playback can't go silent unnoticed: `devicechange` follows the chosen output, else the default (`setSinkId('')`; a browser that cannot choose is
   never suspended and resumed to "reopen" it, only its state is reported), a paused context is resumed on
@@ -40,9 +41,48 @@
   browser copy of the server's `convo_plaintext`); developer view adds detail and
   not-answered notes. Bookkeeping rows (`HIDDEN_KINDS`) need developer mode AND `show_diagnostic_events`; generated-but-undelivered text (the
   "generated, not delivered" entry and the "not heard" remainder) needs developer mode AND `show_rejected_responses` (the store passes both
-  flags; called without them `foldTurns` follows `developer`). `turn.held` {decision silent|wait, reason} keeps the user's words; developers see
+  flags; called without them `foldTurns` follows `developer`). A user turn without words is no row (its reply still is); developers see a
+  faint row (`faint`, `data-faint`) whose detail is "No words captured" and the reason when known (held, interrupted before the words were
+  known). A part without words that a later turn's audio holds is no row even there; that turn says "said in N parts". Outside developer
+  mode "Reply interrupted" is a row only when some of that reply was delivered. `turn.superseded` {by} (a `HIDDEN_KINDS` row): outside developer mode the taken-over row is hidden once any turn that
+  took it over, followed along the chain, carries words (their audio is joined); while none does, its own words stay shown. `turn.held` {decision silent|wait, reason} keeps the user's words; developers see
   "· stayed silent: <reason>" / "· waiting for you to finish". A live `notice` `kind: held` is a developer-only note, never a toast. The status
-  chip mirrors the orb (Hearing you, Thinking, Speaking, Waiting for a model, activity such as "Searching the web…").
+  chip mirrors the orb (Hearing you, Thinking, Speaking, Muted, Waiting for a model or a server, activity such as "Searching the web…").
+- Errors go away (`convo-store.js` `fail`, `clearError`): an error is shown and logged with a kind. 'turn' clears when a later turn's words or
+  sound arrive or its phrase plays (later = first met later by this page, `orderOf`; what is left of an earlier reply proves nothing),
+  'playback' when a phrase plays (`playbackRecovered`), 'page' when the same `source` works later (`settled`: status, history, camera,
+  screen, settings, work, job, dictation, action); any of them after `errorShowMs` (12 s). 'ended' (refused start, lost connection, failed
+  chat switch or status) keeps its words until Dismiss or the next start, but the chip and orb stop being red after that time
+  (`errorQuiet`; the orb gets the error only while it is loud, and the line is an `alert` only then), and it comes back quietly after a
+  newer error cleared. A new `fail` call states its kind; a `stale`/`busy` playback acknowledgement is not an error. Every error (and an
+  ended microphone, a missing transcript, a tune refusal, a Settings failure through `noteProblem`) goes to `problems`: memory only, last 50,
+  consecutive identical ones merged with a count, shown in the diagnostics panel as "Recent problems" with Clear. Tests: `error-line.test.mjs`.
+- Waiting (`waiting` = `loading` || `unavailable`): `notice` kind `loading` as before; kind `unavailable` (a server Convo needs does not
+  answer) is the same chip state, orb state and note line in other words, never an error, and stays through states and errors. `ready`,
+  a reply's words or sound, or stop clears both. `notice_retry` {job_id} takes the job out of `noticeSeen` so the next quiet moment offers
+  it again (the server bounds how often); a job is marked seen before the request, so a retry that follows at once is not lost.
+- Mute (`setMuted`, `pushToTalk`, `micMuted` = muted and not held open; the panel's Mute button, only during a conversation): `AudioSession.setMuted`
+  disables the microphone track and disconnects the source from the capture, so the worklet and the echo guard are fed nothing (silence
+  during playback would read as a room without echo and the assistant's own voice would pass after unmuting); blocks on their way are
+  ignored. Playback, notices and the session go on. Unmuting resets the boundary, pre-roll, gate and voicing, and the guard (`echo_reset`)
+  with its learned path given back (`echo_restore`), as a recreated session has it. Muting drops the open utterance (`dropUtterance`): no
+  probe or final of it is sent, its candidate stays known so an admission on its way still moves the epoch, `convo.candidate_cancel
+  {turn_id}` tells the server when a probe had been sent, and until the server answers `cancelled` the next utterance carries on under its
+  id and sequence (`resumeAbandoned`) instead of being answered busy. Letting go of push-to-talk completes the utterance as a turn
+  (`SpeechBoundary.finish`). A completed turn waiting for its decision is kept. Survives a chat switch (the new session is created
+  `muted`) and a re-attach; cleared on stop. The chip and orb read "Muted" above the other live states (`over`: speaking, thinking); the
+  orb's muted glyph is struck through and nothing about it moves. Tests: `mute.test.mjs`.
+- Hotkeys (`hotkeys.js` pure parts and `bindHotkeys`, `store.hotkey(action)`, `hotkeys-setup.js` + `hotkeys-field.html`): the setting
+  `hotkeys` holds one combination or '' per action (`ACTIONS`), `KeyboardEvent.code` based, modifiers in one order; a key that types needs
+  Ctrl, Alt or Meta, AltGr is never one, reserved and duplicate combinations are refused in the card and by `convo_contract`
+  (`tests/fixtures/hotkey_cases.json` holds both tables together). The older `hotkey` stays a second way to start and stop, compared by
+  character as before, with its own row. One document listener, only while Convo is on: no auto-repeat, not in a password or masked field,
+  not while a combination is recorded (`recording.active`), and the press is taken from the page only when the action did something.
+  Push-to-talk ends on the release of any part of it, blur or a hidden page. The card records with window-level capture listeners that
+  stop every key (Escape cancels, Backspace/Delete turn off, Tab leaves), writes the shared draft, and says that hotkeys work only while
+  the Agent Zero page is focused. Tests: `hotkeys.test.mjs`.
+- The panel has no Dictate button: dictation is the held orb, the host's microphone button or the dictation hotkey (`toggleDictation`); the
+  chip and the note line say so while it runs, and the orb, the hotkey or Escape (which discards) ends it.
 - The voice row (`synthesis-controls.html`, `synthesis-setup.js`; the sound drawer and diagnostics Tune) shows only for the user's own audio.cpp
   server. Opening it calls `synthesis_read`, then `synthesis_resolve` once per listed profile (read-only) to pre-fill each field with the
   profile's own value; a dot (with hidden words) marks an override; "Reset to profile" clears overrides. The profiles are a segmented choice
@@ -128,7 +168,39 @@
 
   Bindings inside `x-if` stay null-safe, because the binding test evaluates them in every state. Only the newest discovery answer is shown, and only while the card's address, provider and key source are unchanged; typing a model name keeps it.
 
-- Camera (`convo-store.js`, the panel's "Share camera" button in `main.html`): `getUserMedia` video only, the stream kept in the page and released by Stop camera, a track ending, or Stop conversation; the session learns only `convo.camera {shared}` (its answer `offered` drives the label). A frame is encoded only on the server's `camera.request` (longest edge 768 px, JPEG 0.7, `snapshotSize`) and sent once as `convo.camera_snapshot`; nothing is stored. Tool uses show in the history as `tool.done`/`tool.failed` (name and words); `tool.requested` is bookkeeping (`HIDDEN_KINDS`).
+- Camera (`convo-store.js`, the panel's "Share camera" button in `main.html`): `getUserMedia` video only, the stream kept in the page and released by Stop camera, a track ending, or Stop conversation; the session learns only `convo.camera {shared}` (its answer `offered` drives the label). A frame is encoded only on the server's `camera.request` (longest edge 768 px, JPEG 0.7, `snapshotSize`) and sent once as `convo.camera_snapshot`; nothing is stored. Tool uses show in the history as `tool.done`/`tool.failed` (name and words); `tool.requested` is bookkeeping (`HIDDEN_KINDS`). Every tool the server can journal has its words in `TOOL_LABELS` (`view-helpers.js`); one without reads "Tool".
+- Screen (`convo-store.js`, the panel's "Share screen" button beside the camera's): the camera's twin over `getDisplayMedia` (video only,
+  called straight from the press), the stream kept in the page and released by Stop screen, the track's `ended` (the browser's own "Stop
+  sharing" bar) or Stop conversation; the session learns only `convo.screen {shared}` (its answer `offered` drives the label). A frame is
+  encoded only on the server's `screen.request`, with the camera's edge and quality handling (`videoFrame`), and sent once as
+  `convo.screen_snapshot` (`''` when it could not be taken). The button is hidden where `getDisplayMedia` does not exist (`canShareScreen`);
+  a closed picker is a note, not an error. Tests: `screen.test.mjs`.
+- Asking first (`convo-store.js` `pendingAction`, the panel's `.convo-ask` card): the question is asked aloud and `action.pending` comes with
+  its first audio (the card never precedes the voice); it shows one card (label and summary as
+  text through `x-text`, never HTML; bounded to 80 and 300 characters) with real Run and Dismiss buttons whose names start with the visible
+  word; the text block is `role="status"`, never assertive, and focus is not moved. A press sends `convo.action {id, run}` once (buttons
+  disabled meanwhile); the card goes on the server's answer, on `stale` (no longer open there), on `action.resolved` for its id, after its
+  `seconds` (a timer outside reactive state), when a newer question replaces it and on Stop conversation. Nothing else is shown about the
+  outcome: the `action.*` journal rows are bookkeeping (`HIDDEN_KINDS`). `action.*` and `ui.open` events are matched to the conversation,
+  not to its epoch. Tests: `action-card.test.mjs`.
+- "Open …" (`ui.open` -> `convo.ui_result {request_id, ok, detail}`): the page does one thing through the host's own functions, read at
+  the moment of use and each guarded; a missing or throwing one answers `ok: false`. Chat: `Alpine.store('chats').selectChat(id)` when
+  `contains(id)` (a scheduler task's chat: `Alpine.store('tasks').selectTask(id)`), confirmed against the list's `selected`. Settings:
+  `ensureModalOpen('settings/settings.html')`, else `openModal` (page globals). Files: `Alpine.store('chatInput').browseFiles()`, else
+  `Alpine.store('fileBrowser').open()`. A host modal's promise settles only when it closes, so these calls are never awaited to their end
+  (`hostCall`: at most `uiWaitMs` 1500 ms, under the server's three seconds). Page: `webAddress` accepts only `http:`/`https:` without
+  whitespace or a user name (parsed without `URL`); it becomes a link card only (`links`, at most three, the same address once;
+  `target="_blank" rel="noopener noreferrer"`; gone after the tap, on its close button and on Stop conversation). Agent Zero's own browser
+  panel is never navigated from here: it runs with the user's saved sign-ins and is theirs to steer. `detail` is one fixed sentence: never
+  an address, a chat's name or an exception's text. Selecting a chat never stops or retargets the conversation.
+  Tests: `ui-open.test.mjs`.
+- "What the voice agent may do" (Settings -> Conversation, in the shell; `voice-tools-setup.js`): one `convo-check` checkbox per
+  `voice_tools` group, each bound with `x-model` on the shared draft (label plus a `<small>` hint), saved by the one Save. Under the web
+  checkbox a `role="status"` line and "Check search": the group's `x-init` and a `$watch` on the section call `searchHealthShown`, which
+  reads `search_health` (from the server's memory; it never searches) whenever Conversation is showing; only the button's press calls
+  `search_check`. The line is the state's fixed words plus "Checked at …" when `checked_at` is set (`searchHealthLine`); an answer without a
+  known `state` or a failed call is a fixed plain line, never the server's or an exception's text, and never a settings error. View state
+  is `ui.voiceTools`; the newest request wins. Tests: `voice-tools-settings.test.mjs`.
 - One audio output per page (`audio.js` `PageAudio`, `sharedPageAudio()`, also `AudioSession.page`): every conversation, chat switch and
   sessionless test sound uses one AudioContext. `acquire()` when a microphone opens (resumes), `release()` when it closes (suspended only with
   no microphone open, never closed), `keep()` holds it running across a chat switch, `ensure()` recreates it only if the browser closed it

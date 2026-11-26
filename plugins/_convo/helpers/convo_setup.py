@@ -210,7 +210,7 @@ def read():
     speech_blocked = speech_record.exists() if config['sidecar']['managed'] else None
     checks.append({'id': 'speech_admission', 'label': 'Speech operation safety',
                    'state': 'unavailable' if speech_blocked else ('ready' if speech_blocked is False else 'unverified'),
-                   'detail': 'An external speech request remains recorded. Verify provider idleness before explicit reconciliation; OFF/restart cannot clear it.' if speech_blocked else 'Read-only managed admission check; no provider was contacted.' if speech_blocked is False else 'External gateway admission is checked at voice startup.'})
+                   'detail': 'The speech server has not confirmed the end of the last request yet. The lock ends by itself within a minute.' if speech_blocked else 'Read-only managed admission check; no provider was contacted.' if speech_blocked is False else 'External gateway admission is checked at voice startup.'})
     from .convo_model_catalog import readiness_rows as conversation_rows
     from .speech_providers import readiness_rows as speech_rows
     from .convo_system_one import decider_rows
@@ -548,11 +548,46 @@ def image_verdict(status, data):
     return False if status in (400, 413, 415, 422, 500, 501) else None
 
 
+THINKING_WORDS = {'off': 'thinks before answering, and is asked not to for voice replies',
+                  'on': 'thinks before answering and this provider does not let that be turned off (replies start later)'}
+
+
+def _reasoned(data):
+    """Whether an answer came with reasoning: reasoning text beside the answer, or reasoning tokens in the usage."""
+    message = _message(data)
+    if any(isinstance(message.get(key), str) and message[key].strip() for key in ('reasoning', 'reasoning_content')):
+        return True
+    usage = data.get('usage') if isinstance(data, dict) else None
+    details = usage.get('completion_tokens_details') if isinstance(usage, dict) else None
+    tokens = details.get('reasoning_tokens') if isinstance(details, dict) else None
+    return isinstance(tokens, int) and tokens > 0
+
+
+async def probe_thinking(url, base, headers):
+    """For a provider outside the user's own machines: does the model reason before a one-word answer, and which request turns
+    that off (convo_tools.THINKING_OFF, tried in order)? Returns {} (could not be asked), {'thinking': 'none'} (it does not),
+    {'thinking': 'off', 'thinking_off': fields} (it does, and these fields stop it) or {'thinking': 'on'} (nothing stops it)."""
+    from . import convo_tools
+    body = {**base, 'max_tokens': 128, 'messages': [{'role': 'user', 'content': 'Reply with the single word: ready'}]}
+    status, data = await _post(url + '/chat/completions', body, headers)
+    if status != 200:
+        return {}
+    if not _reasoned(data):
+        return {'thinking': 'none', 'thinking_off': None}
+    for fields in convo_tools.THINKING_OFF:
+        status, data = await _post(url + '/chat/completions', {**body, **fields}, headers)
+        if status == 200 and not _reasoned(data) and _content(_message(data)).strip():
+            return {'thinking': 'off', 'thinking_off': fields}
+    return {'thinking': 'on', 'thinking_off': None}
+
+
 def measured_text(record, declared=False):
     """The probe's verdict in words, for the card and the readiness row."""
     if not record or ('tool_mode' not in record and 'image_input' not in record):
         return 'Not measured yet: Test connection checks whether this model calls tools and accepts images.'
     parts = []
+    if record.get('thinking') in THINKING_WORDS:
+        parts.append(THINKING_WORDS[record['thinking']])
     if record.get('tool_mode') in TOOL_WORDS:
         words = TOOL_WORDS[record['tool_mode']]
         parts.append(words[0].upper() + words[1:])
@@ -618,6 +653,9 @@ async def probe_capabilities(role, url, headers):
         seen = image_verdict(*await _post(url + '/chat/completions', body, headers))
         if seen is not None:
             found['image_input'] = seen
+        if 'chat_template_kwargs' not in base:
+            # A provider outside your machines: whether the model thinks before answering, and how it is asked not to.
+            found.update(await probe_thinking(url, base, headers))
     except Exception:
         pass
     if not found:

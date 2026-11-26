@@ -267,9 +267,9 @@ test('Empty or silent speech says so and sends nothing; a failed transcription i
     });
 });
 
-test('No duplicate capture: arming twice, or the Dictate button during a latch, opens one recorder and the button stops it', () => withRig({}, async r => {
+test('No duplicate capture: arming twice, or the dictation hotkey during a latch, opens one recorder and the hotkey stops it', () => withRig({}, async r => {
     r.down(); await r.clock.advance(2100); r.up(); r.click(); await flush();
-    await r.store.beginDictation();                                      // e.g. the panel's button while already dictating
+    await r.store.beginDictation();                                      // e.g. the hotkey while already dictating
     await r.store.beginDictation({ held: true });
     assert.equal(r.recorders.length, 1);
     assert.equal(r.count('recorder.startManual'), 1);

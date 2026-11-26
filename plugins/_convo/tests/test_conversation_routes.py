@@ -53,6 +53,33 @@ class Routes(unittest.IsolatedAsyncioTestCase):
                 result = await self.call(action='classifier_check', **request)                 # refused before settings or keys are read
                 self.assertEqual((result['ok'], result['code'], result['state']), (False, code, 'refused'), request)
 
+    async def test_the_search_state_is_read_from_a_running_service_only_and_checked_only_on_request(self):
+        """Opening Settings never sends a search and never starts the service; "Check search" asks the host for one small search."""
+        unknown = {'state': 'unknown', 'checked_at': '', 'answered': 0, 'refused': 0}
+        limited = {'state': 'limited', 'checked_at': '2026-11-22T10:00:00+00:00', 'answered': 2, 'refused': 1}
+        checks = []
+
+        async def search_check():
+            checks.append(1)
+            return dict(limited, state='ok')
+        host = types.SimpleNamespace(search_state=lambda: dict(limited), search_check=search_check)
+        with patch.object(convo_service, '_instance', None, create=True), \
+                patch.object(convo_service, 'service', side_effect=AssertionError('a read creates nothing')):
+            self.assertEqual(await self.call(action='search_health'), {'ok': True, **unknown})
+        running = types.SimpleNamespace(host=host)
+        with patch.object(convo_service, '_instance', running, create=True), patch.object(convo_service, 'service', return_value=running):
+            self.assertEqual(await self.call(action='search_health'), {'ok': True, **limited})
+            self.assertEqual(checks, [])                                                              # reading it sent nothing
+            self.assertEqual(await self.call(action='search_check'), {'ok': True, **limited, 'state': 'ok'})
+            self.assertEqual(checks, [1])
+
+    async def test_a_search_check_that_fails_answers_in_plain_words_without_the_failures_own_text(self):
+        async def broken():
+            raise RuntimeError('connect to 10.0.0.7:8888 failed')
+        running = types.SimpleNamespace(host=types.SimpleNamespace(search_check=broken))
+        with patch.object(convo_service, 'service', return_value=running):
+            self.assertEqual(await self.call(action='search_check'), {'ok': False, 'error': 'The search service did not answer'})
+
     async def test_an_owned_action_may_be_asynchronous_and_receives_the_request(self):
         seen = []
         async def probe(request):

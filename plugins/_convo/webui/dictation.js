@@ -165,7 +165,7 @@ export function createGesture({ onEffect = () => {}, preOpenMs = PRE_OPEN_MS, la
         },
 
         // The store is the truth about whether a recorder is running. Dictation that ended on its own (an error, the plugin being
-        // turned off) frees the gesture; dictation started elsewhere (the Dictate button) is simply latched.
+        // turned off) frees the gesture; dictation started elsewhere (the hotkey) is simply latched.
         sync(dictating) {
             if (!dictating && phase === 'latched') go('idle');
             else if (!dictating && (phase === 'armed' || phase === 'ptt')) { stopHold(); go('void', holder); }
@@ -186,7 +186,7 @@ export function continuousDraft({ flag, messageMode, handler } = {}) {
 }
 
 // What a continuous dictation says when it ends (the note and the screen-reader announcement). `reason`: 'finish' (a tap or press,
-// push-to-talk released, the Dictate button, or the host stopped listening), 'sent' (the user sent the message), 'cancel' (Escape or
+// push-to-talk released, the hotkey, or the host stopped listening), 'sent' (the user sent the message), 'cancel' (Escape or
 // an interruption: the phrase in progress was dropped, the text already added stays) or 'off' (Convo was turned off).
 export function dictationEndNote({ phrases = 0, reason = 'finish' } = {}) {
     const count = Math.max(0, Math.floor(Number(phrases) || 0));

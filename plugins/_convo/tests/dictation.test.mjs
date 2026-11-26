@@ -261,7 +261,7 @@ test('The store is the truth: dictation that ended or started elsewhere re-syncs
     assert.equal(latched.gesture.dictating, false);
 
     const elsewhere = rig();
-    elsewhere.gesture.sync(true);                                      // the Dictate button started it
+    elsewhere.gesture.sync(true);                                      // the dictation hotkey started it
     assert.equal(elsewhere.gesture.phase, 'latched');
     elsewhere.gesture.press();
     assert.equal(elsewhere.types().at(-1), 'finish');

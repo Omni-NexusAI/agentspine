@@ -48,7 +48,7 @@ const safe = (run, fallback) => { try { return run(); } catch { return fallback;
 
 export const store = createStore('convoDiagnostics', {
     available: false, floating: false, dockedVisible: false, view: null, live: null, error: '', selectedTurn: '', tone: null,
-    sections: { live: true, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false },
+    sections: { live: true, problems: true, turns: true, gate: true, speculation: true, rolling: true, context: true, saw: false, memory: false, clips: false, tune: false },
     lastRequest: null,                       // `metrics` last_request: what the conversation model was sent last (developer mode only)
     clipLabel: 'request',                    // the label the test-clip recorder arms with
     // "What the model saw / wrote" (`inspect_turns`, developer mode, memory only on the server): read again only when the server's
@@ -69,6 +69,9 @@ export const store = createStore('convoDiagnostics', {
     },
     modelSawWhen() { const at = Number(this.lastRequest?.at); return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toLocaleTimeString() : ''; },
     wallTime(seconds) { const at = Number(seconds); return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toLocaleTimeString() : ''; },
+    // "Recent problems": the errors this page showed (convo.problems, memory only), newest first.
+    problemList() { return [...(convo.problems || [])].reverse(); },
+    problemText(item) { return this.wallTime((Number(item?.at) || 0) / 1000) + (item?.turn ? ' · turn ' + String(item.turn).slice(0, 8) : '') + (item?.count > 1 ? ' · ' + item.count + ' times in a row' : ''); },
     openInspected(turn) { this.openTurn = this.openTurn === turn ? '' : turn; },
     async loadInspected() {
         try {

@@ -113,6 +113,11 @@ def input_content(payload, role):
 MAX_CONTEXT_CLIPS = 8
 # Said beside the audio itself: a bare audio part reads to some models as words they were handed, not as a recording they hear.
 AUDIO_LABEL = "[The user's microphone audio for this turn follows]"
+MAX_EARLIER_PARTS = 8       # earlier clips of the same request (helpers/convo_continuation.py MAX_PARTS, and one left over)
+# The user paused, spoke on, and nothing was answered in between: one request said in several clips.
+PARTS_LABEL = ("[The user is saying one thing in several parts, with pauses, and none of it has been answered yet. The earlier parts follow "
+               "as audio, oldest first, then the newest. Read and answer all of them together, and write all of it on the USER line]")
+NEWEST_LABEL = "[The newest part follows]"
 
 
 def answer_content(payload, role):
@@ -122,7 +127,17 @@ def answer_content(payload, role):
     receives them, and each clip is validated like any other audio."""
     content = input_content(payload, role)
     if isinstance(content, list):
-        content = [{"type": "text", "text": AUDIO_LABEL}] + content
+        earlier = payload.get("earlier_audio")
+        if earlier:
+            if not isinstance(earlier, list) or len(earlier) > MAX_EARLIER_PARTS:
+                raise ContractError("At most %d earlier parts" % MAX_EARLIER_PARTS)
+            parts = [{"type": "text", "text": PARTS_LABEL}]
+            for clip in earlier:
+                validate_audio(clip)
+                parts.append({"type": "input_audio", "input_audio": {"data": clip, "format": "wav"}})
+            content = parts + [{"type": "text", "text": NEWEST_LABEL}] + content
+        else:
+            content = [{"type": "text", "text": AUDIO_LABEL}] + content
     clips = payload.get("context_audio")
     if not clips:
         return content
@@ -223,12 +238,30 @@ def proposal_arguments(text):
 
 
 TOOL_RESULT_LIMIT = 6000
+TRANSIENT = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529})
 
 
-def tool_turn_messages(turn, *, native):
+MAX_TOOL_TURNS = 24         # tool calls one reply's follow-up may carry (api/realtime.py MAX_TOOL_ROUNDS times convo_tools.MAX_CALLS, and a few)
+MAX_PROPOSALS = 8           # calls read from one pass; a model that writes more has the rest left out, never its reply failed
+PICTURE_LABEL = "[The picture the camera took just now, from the voice assistant's system]"
+RECORDINGS_LABEL = "[Recordings of what the microphone picked up earlier, oldest first, from the voice assistant's system]"
+
+
+def tool_turns(payload):
+    """The reply's tool calls so far, oldest first: `tool_turns` (several rounds) or the single `tool_turn`."""
+    turns = payload.get("tool_turns")
+    if turns is None:
+        return [payload["tool_turn"]] if payload.get("tool_turn") else []
+    if not isinstance(turns, list) or not 0 < len(turns) <= MAX_TOOL_TURNS:
+        raise ContractError("Invalid tool follow-up")
+    return turns
+
+
+def tool_turn_messages(turn, *, native, role=None):
     """A tool's follow-up, appended after the latest message: the assistant's words before the call and the call itself, then
     the result. Natively, an assistant message with `tool_calls` and a `tool` message; otherwise the written call and a trailing
-    results block clearly marked as the voice assistant's system's. A camera picture follows as a user image part (never stored)."""
+    results block clearly marked as the voice assistant's system's. A camera or screen picture follows as a user image part, and
+    replayed recordings (listen_back) as user audio parts for a model that takes audio; neither is ever stored."""
     if not isinstance(turn, dict):
         raise ContractError("Invalid tool follow-up")
     name = convo_tools.canonical(turn.get("name"))
@@ -249,14 +282,34 @@ def tool_turn_messages(turn, *, native):
                  {"role": "user", "content": "[Tool result from the voice assistant's system, not said by the user]\n" + result
                                              + "\n[End of tool result]"}]
     image = turn.get("image")
+    extra = []
     if image:
-        picture = [{"type": "text", "text": "[The picture the camera took just now, from the voice assistant's system]"},
-                   {"type": "image_url", "image_url": {"url": convo_tools.snapshot(image)}}]
+        label = turn.get("image_label")
+        extra = [{"type": "text", "text": label[:200] if isinstance(label, str) and label.strip() else PICTURE_LABEL},
+                 {"type": "image_url", "image_url": {"url": convo_tools.snapshot(image)}}]
+    clips = turn.get("audio")
+    if clips:
+        if not isinstance(clips, list) or len(clips) > MAX_CONTEXT_CLIPS:
+            raise ContractError("At most %d replayed recordings" % MAX_CONTEXT_CLIPS)
+        if role is None or not Capabilities.parse(role.get("capabilities", {})).audio_input:
+            raise ContractError("Replayed recordings need a conversation model that takes audio")
+        extra.append({"type": "text", "text": RECORDINGS_LABEL})
+        for clip in clips:
+            validate_audio(clip)
+            extra.append({"type": "input_audio", "input_audio": {"data": clip, "format": "wav"}})
+    if extra:
         if native:
-            found.append({"role": "user", "content": picture})
+            found.append({"role": "user", "content": extra})
         else:
-            found[-1] = {"role": "user", "content": [{"type": "text", "text": found[-1]["content"]}] + picture}
+            found[-1] = {"role": "user", "content": [{"type": "text", "text": found[-1]["content"]}] + extra}
     return found
+
+
+def speech_speed(value):
+    """A speech request's speed (1.0 is the voice's own pace): a plain number between 0.5 and 2."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.5 <= value <= 2.0:
+        raise ContractError("Invalid speech speed")
+    return float(value)
 
 
 def provider_status(code):
@@ -274,6 +327,7 @@ def event(kind, **data):
 
 @app.get("/health", dependencies=[Depends(authenticated)])
 async def health():
+    speech_admission.expire()
     return {"service": "convo", "protocol": 1, "loaded_models": False, "native_pcm_validated": False,
             'speech_admission': speech_admission.status(),
             'studio_available': bool(getattr(app.state, 'studio_enabled', False))}
@@ -464,6 +518,9 @@ async def answer(payload: dict):
     stable, late = split_system(payload["system"])
     content = with_late(answer_content(payload, role), late)
     tools = offered_tools(payload, role)
+    closed = payload.get("no_tools")                       # 'none': listed but not to be called; 'text': not sent at all
+    if closed == "text":
+        tools = []
     messages = [{"role": "system", "content": stable}] + history_messages(payload.get("history", []), role, native_tools=bool(tools))
     convo_history.add_user(messages, content)              # joined to an unanswered turn before it: roles alternate
     tokens = payload.get("max_tokens")
@@ -475,14 +532,19 @@ async def answer(payload: dict):
         body["chat_template_kwargs"] = {"enable_thinking": False}
         # The server's own count of the request's tokens (and how many it reused from its cache) calibrates Convo's size estimate.
         body["stream_options"] = {"include_usage": True}
+    elif payload.get("thinking_off") is not None:
+        # A provider outside your machines, asked not to think in the one way Test connection measured that it accepts.
+        if payload["thinking_off"] not in convo_tools.THINKING_OFF:
+            raise ContractError("Unknown thinking request")
+        body.update(copy.deepcopy(payload["thinking_off"]))
     if tools:
         # The same list on every request of a conversation (a tool's follow-up too), so the request's start never changes; Convo
         # decides what may run. Sent explicitly as `auto`, as the standalone fork did.
         body["tools"] = tools
-        body["tool_choice"] = "auto"
-    if payload.get("tool_turn"):
-        # A tool's follow-up: the first pass's request unchanged, then the assistant's call and the tool's answer at the end.
-        messages.extend(tool_turn_messages(payload["tool_turn"], native=bool(tools)))
+        body["tool_choice"] = "none" if closed == "none" else "auto"
+    # A tool's follow-up: the first pass's request unchanged, then each of the reply's calls and the tool's answer, at the end.
+    for item in tool_turns(payload):
+        messages.extend(tool_turn_messages(item, native=bool(tools), role=role))
     pin_slot(body, payload, url)
     async def generate():
         calls, finish, reasoning, usage = {}, "", 0, {}
@@ -525,8 +587,8 @@ async def answer(payload: dict):
                             if not isinstance(call, dict):
                                 continue
                             key = int(call.get("index") or 0)
-                            if key not in calls and len(calls) >= 4:
-                                raise ContractError("Too many tool proposals")
+                            if key not in calls and len(calls) >= MAX_PROPOSALS:
+                                continue
                             current = calls.setdefault(key, {"name": "", "arguments": ""})
                             function = call.get("function") or {}
                             current["name"] += function.get("name") or ""
@@ -537,8 +599,12 @@ async def answer(payload: dict):
                 yield event("tool.proposal", index=key, name=call["name"], arguments=proposal_arguments(call["arguments"]))
             yield event("answer.done", finish_reason=str(finish)[:32], reasoning_chars=reasoning, tool_calls=len(calls), **usage)
         except httpx.HTTPStatusError as error:
-            # Said in Convo's words: never the provider's own text, headers or raw audio.
-            yield event("error", message=provider_status(error.response.status_code))
+            # Said in Convo's words: never the provider's own text, headers or raw audio. `transient`: the same request may work in
+            # a moment (an overloaded or restarting server), so Convo asks the same model once more.
+            code = error.response.status_code
+            yield event("error", message=provider_status(code), **({"reason": "transient"} if code in TRANSIENT else {}))
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as error:
+            yield event("error", message="Conversation model: " + convo_net.describe(error, url, 180)[1] + " No fallback was used.", reason="transient")
         except httpx.HTTPError as error:
             yield event("error", message="Conversation model: " + convo_net.describe(error, url, 180)[1] + " No fallback was used.")
         except Exception:
@@ -574,6 +640,8 @@ async def speech(payload: dict, request: Request = None):
         if not caps.instruction_control:
             raise HTTPException(400, "This variant does not support instruction control")
         body["instructions"] = role["instructions"]
+    if role.get("speed") is not None:
+        body["speed"] = speech_speed(role["speed"])       # "speak slower / faster" for this conversation (the voice_speed tool)
     # Complete local serialization/header validation before creating a durable
     # dispatch claim. Freeze the exact request so caller mutations cannot leak in.
     try:
@@ -591,6 +659,8 @@ async def speech(payload: dict, request: Request = None):
                         if size > 16 * 1024 * 1024:
                             raise speech_admission.UncertainOutcome('response_limit')
                         parts.append(part)
+                    if 200 <= response.status_code < 300:
+                        operation.outcome = speech_stream.outcome_check(prepared, response.headers)
                     # Only a fully drained rejection proves a terminal outcome.
                     if not 200 <= response.status_code < 300:
                         speech_admission.raise_for_provider(response.status_code, b''.join(parts))   # 4xx / known terminal 5xx

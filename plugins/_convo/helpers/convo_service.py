@@ -85,6 +85,8 @@ class Service:
         self.store = Store(data / "convo.sqlite3")
         self.host = host or Host()
         self.dispatcher = Dispatcher(self.store, self.host)
+        self.voice_timers = None                      # convo_voice_tools.timers creates them on first use
+        self.dispatcher.side = self._fire_timers
         self.compactor = Compactor(self.store, self.host)
         self.persona_cache = {}
         self.connections = {}
@@ -96,6 +98,11 @@ class Service:
         self.connection_lock = threading.RLock()
         self.disabled = False
         self.studio_busy = False
+
+    def _fire_timers(self):
+        """Timers that are due become Agent Zero notifications, voice running or not (convo_voice_tools.fire_timers)."""
+        from . import convo_voice_tools
+        convo_voice_tools.fire_timers(self)
 
     def _ensure_retirement(self):
         # Called under connection_lock; safely retain state across class refresh.

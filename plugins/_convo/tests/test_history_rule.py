@@ -20,10 +20,17 @@ class Rule(unittest.TestCase):
             {'role': 'user', 'content': 'What about Kansas?'}, {'role': 'assistant', 'content': 'Topeka.'}])
         self.assertNotIn('not captured', repr(messages))
 
+    def test_a_thought_the_model_waited_on_stays_and_joins_what_the_user_says_next(self):
+        messages = history.messages([
+            {'transcript': 'See what the recent builds are, and if...', 'held': 'wait'},
+            {'transcript': 'they fixed the problem with the engines.', 'held': 'wait'},
+            {'transcript': 'Search that for me.', 'assistant': 'Looking.'}], audio_input=False)
+        self.assertEqual([m['role'] for m in messages], ['user', 'assistant'])
+        self.assertEqual(messages[0]['content'], 'See what the recent builds are, and if...\nthey fixed the problem with the engines.\nSearch that for me.')
+
     def test_declined_and_superseded_turns_never_appear(self):
         messages = history.messages([
             {'transcript': 'This is a test. Do not respond.', 'held': 'silent'},
-            {'transcript': 'I need to', 'held': 'wait'},
             {'transcript': 'I need to go', 'superseded': 'x', 'assistant': 'Go where?'},
             {'transcript': 'Hello', 'assistant': 'Hello, sir.'}], audio_input=False)
         self.assertEqual([m['content'] for m in messages], ['Hello', 'Hello, sir.'])

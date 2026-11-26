@@ -10,20 +10,24 @@ const LABELS = {
     hearing: ['Convo hearing you', 'Click to stop'],
     thinking: ['Convo thinking', 'Click to stop'],
     speaking: ['Convo speaking', 'Click to stop'],
+    muted: ['Convo muted', 'Microphone off; click to stop the conversation'],
     'dictating-latched': ['Hands-free dictation', 'Listening for speech; click to stop, Escape cancels'],
     'dictating-ptt': ['Push-to-talk', 'Listening only while held; release to finish'],
     error: ['Convo needs attention', 'Click to try again'],
     loading: ['Convo waiting for a model', 'Click to stop'],
 };
 export const ORB_STATES = Object.keys(LABELS);
-const ACTIVE = new Set(['connecting', 'loading', 'listening', 'hearing', 'thinking', 'speaking']);
+const ACTIVE = new Set(['connecting', 'loading', 'listening', 'hearing', 'thinking', 'speaking', 'muted']);
 const DICTATING = new Set(['dictating-latched', 'dictating-ptt']);
 // While the press that started latched dictation is still down, the label says what releasing does.
 const HELD_LATCHED_HINT = 'Release to keep listening hands-free; keep holding for push-to-talk';
 // Draft in composer (continuous): the same latched glyph and ring, but the words say that it goes on until the user sends or stops.
+const WAITING_FOR_SERVER = 'Convo waiting for a server';   // `unavailable`: a server it needs does not answer (the loading state in other words)
 const CONTINUOUS = ['Dictating into the composer', 'keeps listening until you send or stop', 'click to stop, Escape drops the phrase in progress'];
 
-// snapshot: { enabled, dictating, dictationMode, continuous, holding, pressing, error, busy, active, state, hearing, playing, devIdle, policyHold }
+// snapshot: { enabled, dictating, dictationMode, continuous, holding, pressing, error, busy, active, state, hearing, playing, muted, loading, unavailable, devIdle, policyHold }
+// `error` is only the error the orb should still show (a shown one stops being red after a while; its words stay in the panel).
+// `muted`: the conversation runs with its microphone off; what the assistant is doing meanwhile is `over` ('speaking', 'thinking', '').
 // `continuous`: latched dictation is drafting continuously into the composer (only the words change, never the state id).
 // `dictationMode` is 'latched' (the default) or 'ptt'; `holding` is the press still being down; `pressing` is a press that has not yet
 // reached the first threshold (the ring charges, nothing else changes). `capturing` is the silent pre-open buffer: the microphone is
@@ -37,7 +41,8 @@ export function orbView(snapshot) {
     let id;
     if (s.dictating) id = s.dictationMode === 'ptt' ? 'dictating-ptt' : 'dictating-latched';
     else if (s.error) id = 'error';
-    else if (s.loading) id = 'loading';
+    else if (s.muted && s.active && !s.busy) id = 'muted';
+    else if (s.loading || s.unavailable) id = 'loading';
     else if (s.busy || s.state === 'connecting') id = 'connecting';
     else if (!s.active) id = s.devIdle ? 'idle' : 'ready';
     else if (s.state === 'speaking' || s.playing) id = 'speaking';
@@ -45,11 +50,13 @@ export function orbView(snapshot) {
     else if (s.hearing) id = 'hearing';
     else id = 'listening';
     const continuous = id === 'dictating-latched' && !!s.continuous;
-    const [name, labelHint] = continuous ? CONTINUOUS : LABELS[id];
+    const [spokenName, labelHint] = continuous ? CONTINUOUS : LABELS[id];
+    const name = id === 'loading' && !s.loading ? WAITING_FOR_SERVER : spokenName;
+    const over = id !== 'muted' ? '' : s.state === 'speaking' || s.playing ? 'speaking' : s.state === 'considering' || s.state === 'thinking' ? 'thinking' : '';
     const hint = id === 'dictating-latched' && s.holding ? HELD_LATCHED_HINT : labelHint;
-    const detail = id === 'error' && s.error ? ` ${String(s.error).slice(0, 140)}` : id === 'loading' ? ` ${String(s.loading).slice(0, 140)}` : continuous && !s.holding ? `; ${CONTINUOUS[2]}` : '';
+    const detail = id === 'error' && s.error ? ` ${String(s.error).slice(0, 140)}` : id === 'loading' ? ` ${String(s.loading || s.unavailable).slice(0, 140)}` : continuous && !s.holding ? `; ${CONTINUOUS[2]}` : '';
 
-    return { id, hold: !!s.policyHold && id === 'speaking', press: !!s.pressing && !DICTATING.has(id), capture: !!s.capturing && !DICTATING.has(id),
+    return { id, over, hold: !!s.policyHold && id === 'speaking', press: !!s.pressing && !DICTATING.has(id), capture: !!s.capturing && !DICTATING.has(id),
              pressed: id !== 'ready' && id !== 'idle' && id !== 'error',
              label: continuous && !s.holding ? `${name} — ${hint}.` : `${name}. ${hint}.`, title: `${name} · ${hint}${detail}` };
 }
@@ -60,6 +67,7 @@ export function cueFor(previous, next) {
     if (DICTATING.has(next)) return DICTATING.has(previous) ? (next === 'dictating-ptt' ? 'dictation-ptt' : null) : 'dictation-start';
     if (DICTATING.has(previous)) return ACTIVE.has(next) ? 'activate' : 'dictation-end';
     if (next === 'error') return 'error';
+    if (previous === 'error' && next !== 'connecting' && next !== 'loading') return null;   // an error that cleared while the conversation went on
     if (!ACTIVE.has(previous) && ACTIVE.has(next)) return 'activate';
     if (ACTIVE.has(previous) && !ACTIVE.has(next) && previous !== 'error') return 'deactivate';
     return null;
@@ -81,6 +89,7 @@ const GLYPHS = '<svg class="co-glyph" viewBox="0 0 24 24" fill="none" stroke="cu
     + '<g class="g g-voice"><path d="M3.5 9.5h3.2L11 6v12l-4.3-3.5H3.5z" fill="currentColor" stroke="none"/><path class="w w1" d="M14.5 9.2a4.2 4.2 0 0 1 0 5.6"/><path class="w w2" d="M17.5 6.4a8.2 8.2 0 0 1 0 11.2"/></g>'
     + '<g class="g g-pen"><path d="M4.5 19.5l.9-3.9L16 5a2 2 0 0 1 3 3L8.4 18.6z"/><path d="M14.3 6.7l3 3"/></g>'
     + '<g class="g g-ptt"><rect x="9" y="2.5" width="6" height="10" rx="3"/><path d="M6 10.5a6 6 0 0 0 12 0"/><path d="M7 20.5h10" stroke-width="3"/></g>'
+    + '<g class="g g-muted"><path d="M9 9V6a3 3 0 0 1 6 0v5M9 11.5a3 3 0 0 0 4.6 2.1M5.5 11a6.5 6.5 0 0 0 9.6 5.7M18.5 11a6.5 6.5 0 0 1-.8 3.1M12 17.5V21"/><path d="M4 4l16 16" stroke-width="2.4"/></g>'
     + '<g class="g g-err"><path d="M12 5.5v8.5"/><circle cx="12" cy="18.3" r="1.2" fill="currentColor" stroke="none"/></g></svg>';
 
 // A polite, visually hidden live region for gesture transitions (latched, push-to-talk, cancelled, nothing heard). The orb's own

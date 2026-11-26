@@ -286,12 +286,18 @@ class Behaviour(Scenario):
         self.assertIsNotNone(facts['heard'])
 
     def test_a_tool_turn_speaks_the_models_words_then_the_confirmation(self):
+        """The words before the call are heard while the task is queued; then the model says, in its own words, that it is
+        queued (its answer to Convo's word on the call). Convo's fixed sentence is only for a model that adds nothing."""
         async def scenario(h):
             await h.candidate('t', h.audio('ask'), final=True)
             await h.settle()
             return [t for _, t in h.spoken], len(h.jobs())
-        (spoken, jobs), _ = self.play(scenario, model_deltas=[('Okay, doing that now. ', .1)], proposal=DELEGATE_TASK, config=ON, classifier={'ask': script(DELEGATE, .2)})
-        self.assertEqual((spoken, jobs), (['Okay, doing that now.', 'Queued that in the selected chat.'], 1))
+        for name, follow, confirmation in (('the model confirms', [('It is in the queue for the agent. ', .1)], 'It is in the queue for the agent.'),
+                                           ('the model adds nothing', [], 'Queued that in the selected chat.')):
+            with self.subTest(name):
+                (spoken, jobs), _ = self.play(scenario, model_deltas=[('Okay, doing that now. ', .1)], follow_deltas=follow, proposals=[DELEGATE_TASK],
+                                              config=ON, classifier={'ask': script(DELEGATE, .2)})
+                self.assertEqual((spoken, jobs), (['Okay, doing that now.', confirmation], 1))
 
 
 if __name__ == '__main__':

@@ -9,13 +9,25 @@ import hashlib
 import importlib
 import json
 import logging
+import os
 import threading
+import time
 from concurrent.futures import Future
 
 from .convo_store import encoded
 
 logger = logging.getLogger("_convo")
 PROFILES_SECONDS = 30.0
+CHAT_NAME_LIMIT = 40            # Agent Zero's own limit for a generated chat name (_chat_naming)
+
+
+def chat_title(words):
+    """A chat's name from the first words said in it: one line, at most CHAT_NAME_LIMIT characters, cut between words."""
+    text = ' '.join(str(words or '').split()).strip(' "\'`#*-–—.…,;:')
+    if len(text) <= CHAT_NAME_LIMIT:
+        return text
+    cut = text[:CHAT_NAME_LIMIT - 1]
+    return (cut.rsplit(' ', 1)[0] if ' ' in cut else cut).rstrip(' ,;:-–—.…') + '…'
 
 
 def clock_text(now, zone):
@@ -61,10 +73,110 @@ class Host:
 
     def context(self, target):
         from agent import AgentContext
+        from .convo_contract import GLOBAL_SCOPE
+        if target == GLOBAL_SCOPE:
+            return self._voice_context()
         context = AgentContext.get(target)
         if context is None:
             raise ValueError("Select an existing Agent Zero chat")
         return context
+
+    def _voice_context(self):
+        """The agent of a conversation that belongs to no chat (GLOBAL_SCOPE): a hidden Agent Zero background context, for the
+        persona (the default or the pinned profile), the utility model and the default memory. It is created on first use and
+        at once taken out of Agent Zero's registry and held here, so it is never listed, saved, or picked as "the first chat" for
+        a message typed with no chat selected. No task is ever dispatched to it."""
+        with self.dispatch_lock:
+            if getattr(self, '_voice', None) is None:
+                from agent import AgentContext, AgentContextType
+                from initialize import initialize_agent
+                context = AgentContext(config=initialize_agent(), name='Convo voice', type=AgentContextType.BACKGROUND)
+                AgentContext.remove(context.id)
+                self._voice = context
+            return self._voice
+
+    def chat_name(self, target):
+        """A chat's name as Agent Zero shows it ('' when it has none or does not exist)."""
+        from agent import AgentContext
+        context = AgentContext.get(str(target or ''))
+        return str(getattr(context, 'name', '') or '') if context is not None else ''
+
+    def keep(self, target, words='', final=False):
+        """Keep a chat that voice is used in. Agent Zero writes a chat to disk only when its own agent has worked in it, so a chat
+        used by voice alone lived in memory and was gone after the next restart (live 2026-11-25: two conversations), its
+        conversation left in Convo's journal with no chat to open it from. Saved with Agent Zero's own writer, as soon as a turn is
+        accepted; named after its first words when it has no name (unless Agent Zero's automatic naming is off), since its number
+        changes at a restart; `final` (voice stopped) saves when it was last used. A chat whose agent is working is left to Agent
+        Zero, which saves it after every step, and one the user has removed is never written back. Returns whether it was saved."""
+        from agent import AgentContext
+        from helpers import persist_chat
+        context = AgentContext.get(target)
+        if context is None or str(getattr(getattr(context, 'type', None), 'value', '')) == 'background':
+            return False
+        try:
+            from helpers.localization import Localization
+            context.last_message = Localization.get().now()
+        except Exception:
+            pass
+        title = chat_title(words) if not str(context.name or '').strip() and self._names_chats(context) else ''
+        saved = os.path.exists(os.path.join(persist_chat.get_chat_folder_path(target), persist_chat.CHAT_FILE_NAME))
+        if context.is_running() or (saved and not title and not final):
+            return False
+        if title:
+            context.name = title
+        persist_chat.save_tmp_chat(context)
+        if AgentContext.get(target) is None:
+            persist_chat.remove_chat(target)               # removed by the user while it was being written
+            return False
+        if title:
+            try:
+                from helpers.state_monitor_integration import mark_dirty_all
+                mark_dirty_all(reason="convo.keep")
+            except Exception:
+                pass
+        return True
+
+    @staticmethod
+    def _names_chats(context):
+        """Whether Agent Zero names chats by itself (its chat naming setting; on where it cannot be read)."""
+        try:
+            from helpers import plugins
+            return bool((plugins.get_plugin_config('_chat_naming', agent=context.agent0) or {}).get('automatic_naming', True))
+        except Exception:
+            return True
+
+    def recent_chats(self, limit=8):
+        """The user's chats, most recently active first, as [{'id', 'name'}] (Agent Zero's own registry; background contexts are
+        left out, as in its chat list). Never raises."""
+        try:
+            contexts = [context for context in self.chat_contexts() if str(getattr(getattr(context, 'type', None), 'value', '')) != 'background']
+            contexts.sort(key=lambda context: str(getattr(context, 'last_message', '') or ''), reverse=True)
+            return [{'id': str(context.id), 'name': str(getattr(context, 'name', '') or '')} for context in contexts[:limit]]
+        except Exception:
+            return []
+
+    def new_chat(self, title='', like=''):
+        """A new Agent Zero chat, made as its own "new chat" does (api/chat_create.py): it inherits the project of `like` (the
+        chat selected in the interface) when the user's "inherit project" setting says so, takes that project's agent profile,
+        and appears in every open chat list. Returns {'id', 'name'}."""
+        from agent import AgentContext
+        from helpers import guids, projects, settings
+        from initialize import initialize_agent
+        name = ' '.join(str(title or '').split())[:60]
+        context = AgentContext(config=initialize_agent(), id=guids.generate_id(), name=name or None)
+        current = AgentContext.get(str(like)) if like else None
+        if current is not None and settings.get_settings().get("chat_inherit_project", True):
+            for read, write in ((current.get_data, context.set_data), (current.get_output_data, context.set_output_data)):
+                value = read(projects.CONTEXT_DATA_KEY_PROJECT)
+                if value:
+                    write(projects.CONTEXT_DATA_KEY_PROJECT, value)
+        projects.reconcile_agent_profile(context, projects.get_context_project_name(context))
+        try:
+            from helpers.state_monitor_integration import mark_dirty_all
+            mark_dirty_all(reason="convo.new_chat")
+        except Exception:
+            pass
+        return {'id': str(context.id), 'name': name or str(context.id)}
 
     def install_dispatch_guard(self):
         from agent import AgentContext
@@ -122,9 +234,14 @@ class Host:
             context.communicate(UserMessage(text))
 
     def log(self, job, state):
+        """The task's mark in its chat. The agent's own answer is the record of a task that finished: a line after it would open a
+        processing group in the chat that never ends (and mark the chat as busy). One that ended without an answer says so."""
+        if state == "completed":
+            return
         try:
             context = self.context(job["target"])
-            context.log.log(type="info", heading="Convo job " + state, content=job.get("result", ""), kvps={"convo_job_id": job["id"], "convo_session_id": job["session"]})
+            context.log.log(type="info" if state == "started" else "error", heading="Convo task " + state, content=job.get("result", ""),
+                            kvps={"convo_job_id": job["id"], "convo_session_id": job["session"]}, update_progress="none")
         except Exception:
             logger.warning("Convo job log could not be mirrored to host")
 
@@ -326,11 +443,16 @@ class Host:
             from .convo_tools import format_search
             self.last_search = None
             try:
+                # `recency` (day, week, month, year) is the model's own word that the answer must be fresh: it brings the news
+                # engines in and bounds the dates. Convo never guesses it from the search's words.
                 found = await convo_search.search(str(args.get("query", ""))[:2000], self._search_ask, health=self.search_health(),
-                                                  config=self._search_config, cache=self._search_cache())
+                                                  config=self._search_config, cache=self._search_cache(),
+                                                  recency=str(args.get("recency") or ""))
+                self._search_checked = self._stamp()
             except convo_search.Blocked as error:
                 # Engines that refused are not "nothing found": the search could not be done, and the model is told so.
                 self.last_search = {'steps': [], 'asked': 0, 'answered': [], 'refused': list(error.refused), 'ms': 0, 'cached': False}
+                self._search_checked = self._stamp()
                 raise ValueError("The search engines refused the request" if error.refused else "The search service did not answer") from error
             except Exception as error:
                 raise ValueError("The search service did not answer") from error
@@ -362,6 +484,72 @@ class Host:
             return "\n\n".join(Memory.format_docs_plain(docs))[:12000]
         # Do not invoke a guessed memory API or silently broaden camera permission.
         raise ValueError("This host has no verified direct adapter for " + name + "; use an explicit delegated request")
+
+    def _stamp(self):
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+    def search_state(self):
+        """The last known state of the search engines, from memory (nothing is sent): {'state', 'checked_at', 'answered',
+        'refused'}. `unknown` until a search ran in this process; `ok` when engines answer and none is refused; `limited` when
+        some refuse and others answer; `blocked` when the last search found every engine it asked refusing."""
+        snapshot = self.search_health().snapshot()
+        answered, refused = len(snapshot.get('answered') or ()), len(snapshot.get('refused') or ())
+        last = getattr(self, 'last_search', None)
+        if snapshot.get('age') is None and not isinstance(last, dict):
+            state = 'unknown'
+        elif isinstance(last, dict) and last.get('refused') and not last.get('answered'):
+            state = 'blocked'
+        elif refused and answered:
+            state = 'limited'
+        elif refused:
+            state = 'blocked'
+        else:
+            state = 'ok'
+        return {'state': state, 'checked_at': getattr(self, '_search_checked', '') or '', 'answered': answered, 'refused': refused}
+
+    async def search_check(self):
+        """One small search now, on the user's press of "Check search" (never when Settings merely opens): the ladder runs as it
+        does for the voice agent, without the 90-second memory, and the engines' state afterwards is returned (search_state)."""
+        from . import convo_search
+        self.last_search = None
+        try:
+            found = await convo_search.search('weather forecast', self._search_ask, health=self.search_health(), config=self._search_config)
+            self.last_search = {key: found.get(key) for key in ('steps', 'asked', 'answered', 'refused', 'ms', 'cached')}
+        except convo_search.Blocked as error:
+            self.last_search = {'steps': [], 'asked': 0, 'answered': [], 'refused': list(error.refused), 'ms': 0, 'cached': False}
+        self._search_checked = self._stamp()
+        return self.search_state()
+
+    def notify(self, title, message):
+        """One Agent Zero notification (the bell in its interface): a timer that is due, voice running or not."""
+        from helpers.notification import NotificationManager, NotificationPriority, NotificationType
+        NotificationManager.send_notification(NotificationType.INFO, NotificationPriority.HIGH, str(message)[:300], str(title)[:80],
+                                              display_time=12, group='convo-timers')
+
+    def local_clock(self, at):
+        """An epoch time as the user's wall-clock time, 'HH:MM', in Agent Zero's own timezone setting."""
+        from datetime import datetime, timezone
+        now, _ = self._now()
+        return datetime.fromtimestamp(float(at), timezone.utc).astimezone(now.tzinfo).strftime('%H:%M')
+
+    def chat_contexts(self):
+        """Agent Zero's chats as its own in-process registry holds them (AgentContext.all()), for convo_actions.chats_*."""
+        from agent import AgentContext
+        return AgentContext.all()
+
+    async def find_chat(self, name):
+        """{'id', 'name'} of the one chat whose name or id matches (exact, else a unique part, whatever the case). Raises
+        ValueError in plain words when none or several match."""
+        wanted = ' '.join(str(name or '').split()).casefold()
+        chats = [(str(getattr(context, 'id', '')), str(getattr(context, 'name', '') or '')) for context in self.chat_contexts()]
+        exact = [chat for chat in chats if wanted and wanted in (chat[0].casefold(), chat[1].casefold())]
+        found = exact or [chat for chat in chats if wanted and wanted in chat[1].casefold()]
+        if not found:
+            raise ValueError('no chat matches that name')
+        if len(found) > 1:
+            raise ValueError('more than one chat matches that name')
+        return {'id': found[0][0], 'name': found[0][1] or found[0][0]}
 
     def search_health(self):
         """Which search engines answered or refused lately (convo_search.Health): in memory only, for the ladder and diagnostics."""
@@ -461,6 +649,8 @@ class Dispatcher:
         self.closed = threading.Event()
         self.paused = threading.Event()
         self.thread = None
+        self.side = None               # called about once a second on this thread (the voice timers), voice running or not
+        self._side_at = 0.0
 
     def start(self):
         with self.lock:
@@ -479,6 +669,12 @@ class Dispatcher:
                 self.tick()
             except Exception:
                 logger.exception("Convo job coordinator failed")
+            if self.side is not None and time.monotonic() - self._side_at >= 1.0:
+                self._side_at = time.monotonic()
+                try:
+                    self.side()
+                except Exception:
+                    logger.exception("Convo's once-a-second work failed")
             self.wake.wait(.25)
             self.wake.clear()
 

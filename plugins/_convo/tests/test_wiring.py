@@ -395,8 +395,9 @@ class PersonaRefresh(RealtimeBase):
 
 
 class ShortCommands(Scenario):
-    """A short, confident, explicit command is answered on its own (it supersedes an unheard reply instead of joining it);
-    everything else that continues an unanswered utterance is still joined."""
+    """A short, confident, explicit command is decided on its own (one classifier call for it); the model hears it with what was said
+    before it and not answered yet, like everything else that continues an unanswered utterance (2026-11-24: it was answered alone,
+    and a short request made while the first was being prepared cost the user the first)."""
     FIRST = 'explain how the engine works'
 
     def run_pair(self, second_decision, *, second_seconds=.6, first_decision=SPEAK_PLAIN, tags=None, **options):
@@ -414,9 +415,9 @@ class ShortCommands(Scenario):
                              default=SPEAK, classifier={'part one': script(first_decision, .2), 'part two': script(second_decision, .2), **(tags or {})}, **options)
         return facts
 
-    def test_a_short_explicit_command_is_answered_alone_and_supersedes_the_unheard_reply(self):
+    def test_a_short_explicit_command_is_decided_alone_heard_with_the_first_and_supersedes_the_unheard_reply(self):
         facts = self.run_pair(SPEAK)                                                    # explicit, confident, 0.6 s
-        self.assertEqual(facts['requests'][-1], facts['two'])                           # alone, not joined
+        self.assertEqual(facts['requests'][-1], facts['joined'])
         self.assertEqual(facts['policy'], ['part one', 'part two'])                     # one classifier call for it
         self.assertEqual(facts['superseded'], ['f1'])                                   # the unheard reply is still replaced
         self.assertIn(('turn.superseded', 'f1'), facts['journal'])
@@ -459,7 +460,7 @@ class ShortCommands(Scenario):
         facts = self.run_pair({**SPEAK, 'confidence': .88})
         self.assertEqual(facts['requests'][-1], facts['joined'])
 
-    def test_a_short_command_after_an_unfinished_utterance_is_answered_on_its_own(self):
+    def test_a_short_command_after_an_unfinished_utterance_is_decided_on_its_own_and_answered_with_it(self):
         async def scenario(h):
             typed(h)
             first, second = h.audio('part one', seconds=1.0), h.audio('part two', level=900, seconds=.6)
@@ -467,9 +468,11 @@ class ShortCommands(Scenario):
             await h.until(1.2)                                                       # inside the unfinished thought's wait
             await h.candidate('f2', second, final=True)
             await h.settle()
-            return [frame_count(a['audio']) for a in h.answers], frame_count(second), h.accepted_turns()
-        (requests, two, accepted), _ = self.play(scenario, classifier={'part one': script(UNFINISHED, .2), 'part two': script(EXPLICIT, .2)})
-        self.assertEqual((requests, accepted), ([two], ['f1', 'f2']))             # f1's answer never started; f2 alone was answered
+            return [frame_count(a['audio']) for a in h.answers], frame_count(first) + frame_count(second) + int(.6 * 16000), h.accepted_turns(), \
+                [c[2] for c in h.log('policy.start')]
+        (requests, joined, accepted, policy), _ = self.play(scenario, classifier={'part one': script(UNFINISHED, .2), 'part two': script(EXPLICIT, .2)})
+        self.assertEqual((requests, accepted), ([joined], ['f1', 'f2']))          # f1's answer never started; both were answered once
+        self.assertEqual(policy, ['part one', 'part two'])
 
     def test_a_short_continuation_after_an_unfinished_utterance_is_joined(self):
         async def scenario(h):
@@ -484,8 +487,8 @@ class ShortCommands(Scenario):
         self.assertGreaterEqual(requests[-1], one + two)
 
     def test_the_short_command_limit_is_two_and_a_half_seconds(self):
-        self.assertEqual(self.run_pair(SPEAK, second_seconds=2.5)['requests'][-1], int(2.5 * 16000))
-        self.assertGreater(self.run_pair(SPEAK, second_seconds=2.6)['requests'][-1], int(2.6 * 16000))
+        self.assertEqual(self.run_pair(SPEAK, second_seconds=2.5)['policy'], ['part one', 'part two'])          # decided on its own
+        self.assertNotEqual(self.run_pair(SPEAK, second_seconds=2.6)['policy'][-1], 'part two')                 # decided joined
 
 
 if __name__ == '__main__':

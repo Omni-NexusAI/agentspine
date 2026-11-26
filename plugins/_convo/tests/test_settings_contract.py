@@ -2,9 +2,11 @@
 the previous behaviour. Mirrors of DEFAULTS in webui/defaults.js and default_config.yaml are checked by test_runtime."""
 import copy
 import json
+import re
 import unittest
+from pathlib import Path
 
-from plugins._convo.helpers.convo_contract import DEFAULTS, ContractError, decider_endpoint, public_settings, validate_settings
+from plugins._convo.helpers.convo_contract import DEFAULTS, HOTKEY_RESERVED, ContractError, decider_endpoint, public_settings, validate_settings
 from plugins._convo.helpers import speech_providers
 
 
@@ -134,6 +136,128 @@ class NewSettings(unittest.TestCase):
         for leak in ('localhost:9931', 'localhost:1', 'localhost:2', 'SECRET_REF', 'api_base', 'decider', 'key_source', 'token_env', 'url'):
             self.assertNotIn(leak, text)
 
+
+
+class Hotkeys(unittest.TestCase):
+    """The configurable hotkeys (`hotkeys`: one combination, or nothing, per action): additive, validated as a whole, and told to the browser.
+    tests/fixtures/hotkey_cases.json is what webui/hotkeys.js is held to as well (tests/hotkeys.test.mjs)."""
+    ACTIONS = ('toggle_conversation', 'mute', 'push_to_talk', 'dictate', 'stop_reply', 'open_panel', 'open_settings', 'run_action', 'dismiss_action')
+    CASES = json.loads((Path(__file__).resolve().parent / 'fixtures' / 'hotkey_cases.json').read_text(encoding='utf-8'))
+
+    def test_the_defaults_are_few_usable_and_different_from_each_other_and_from_the_older_shortcut(self):
+        config = validate_settings({})
+        self.assertEqual(tuple(DEFAULTS['hotkeys']), self.ACTIONS)
+        self.assertEqual(config['hotkeys'], DEFAULTS['hotkeys'])
+        self.assertIsNot(config['hotkeys'], DEFAULTS['hotkeys'])
+        used = [value for value in config['hotkeys'].values() if value]
+        self.assertEqual(len(used), 5)
+        self.assertEqual(len(set(used + [config['hotkey']])), 6)
+
+    def test_an_older_configuration_gets_the_defaults_and_one_action_saved_keeps_the_others(self):
+        self.assertEqual(validate_settings({'enabled': True, 'hotkey': 'Ctrl+Alt+K'})['hotkeys'], DEFAULTS['hotkeys'])
+        config = validate_settings({'hotkeys': {'open_panel': 'Alt+O', 'mute': ''}})
+        self.assertEqual(config['hotkeys'], {**DEFAULTS['hotkeys'], 'open_panel': 'Alt+O', 'mute': ''})
+        self.assertEqual(validate_settings(config)['hotkeys'], config['hotkeys'])                      # saved and loaded unchanged
+        self.assertEqual(set(validate_settings({'hotkeys': {action: '' for action in self.ACTIONS}})['hotkeys'].values()), {''})
+
+    def test_what_a_combination_may_be_is_the_browsers_table(self):
+        for value in self.CASES['usable']:
+            with self.subTest(value):
+                self.assertEqual(validate_settings({'hotkeys': {**dict.fromkeys(self.ACTIONS, ''), 'open_panel': value}})['hotkeys']['open_panel'], value)
+        for kind, words in (('unknown', 'must be empty or a combination'), ('needs_modifier', 'needs Ctrl, Alt or Meta'), ('reserved', 'is used by the browser or by Agent Zero')):
+            for value in self.CASES[kind]:
+                with self.subTest(kind, value=value), self.assertRaises(ContractError) as caught:
+                    validate_settings({'hotkeys': {'open_panel': value}})
+                self.assertIn('The hotkey for open_panel ' + words, str(caught.exception))
+        source = (Path(__file__).resolve().parents[1] / 'webui' / 'hotkeys.js').read_text(encoding='utf-8')
+        for value in HOTKEY_RESERVED:
+            if not re.fullmatch(r'Ctrl\+\d', value):                                                    # those ten are written as one line there
+                self.assertIn("'" + value + "'", source, value)
+
+    def test_two_actions_never_share_a_combination_however_it_is_spelled(self):
+        for one, other in [('Alt+O', 'Alt+O')] + [tuple(pair) for pair in self.CASES['same']]:
+            with self.subTest(one), self.assertRaises(ContractError) as caught:
+                validate_settings({'hotkeys': {'toggle_conversation': '', 'open_panel': one, 'open_settings': other}})
+            self.assertEqual(str(caught.exception), 'The hotkeys for open_panel and open_settings are the same')
+        with self.assertRaises(ContractError):
+            validate_settings({'hotkeys': {'open_panel': DEFAULTS['hotkeys']['mute']}})
+        # The older single shortcut is not refused for being the same: a saved one must keep loading, and both start and stop.
+        self.assertEqual(validate_settings({'hotkey': 'Alt+Shift+C'})['hotkeys'], DEFAULTS['hotkeys'])
+
+    def test_a_wrong_shape_is_refused_and_the_words_repeat_nothing_of_it(self):
+        for value in ('Alt+M', None, [], 7, {'mute': None}, {'mute': 1}, {'mute': ['Alt+M']}, {'shout': 'Alt+S'}, {'mute': {'key': 'M'}}):
+            with self.subTest(value=value), self.assertRaises(ContractError) as caught:
+                validate_settings({'hotkeys': value})
+            self.assertEqual(str(caught.exception), 'hotkeys must hold one combination (or nothing) for each of: ' + ', '.join(self.ACTIONS))
+        with self.assertRaises(ContractError) as caught:
+            validate_settings({'hotkeys': {'mute': 'PRIVATE-VALUE'}})
+        self.assertNotIn('PRIVATE', str(caught.exception))
+
+    def test_the_browser_runtime_is_told_the_hotkeys(self):
+        settings = public_settings(validate_settings({'hotkeys': {'open_panel': 'F9'}}))
+        self.assertEqual(settings['hotkeys'], {**DEFAULTS['hotkeys'], 'open_panel': 'F9'})
+
+
+class VoiceTools(unittest.TestCase):
+    """What the voice agent may do (`voice_tools`: one switch per group of tools) and where its conversation and its tasks belong
+    (`conversation_scope`, `task_chat`): additive settings whose defaults keep the previous behaviour."""
+    GROUPS = ('web', 'memory', 'tasks', 'system', 'timers', 'chats', 'senses', 'interface')
+
+    def test_there_are_exactly_eight_switches_all_on_by_default(self):
+        config = validate_settings({})
+        self.assertEqual(config['voice_tools'], {group: True for group in self.GROUPS})
+        self.assertEqual(tuple(DEFAULTS['voice_tools']), self.GROUPS)
+        from plugins._convo.helpers import convo_tools
+        self.assertEqual(set(config['voice_tools']), set(convo_tools.GROUPS))                  # one switch for every group a tool belongs to
+        self.assertEqual({tool['group'] for tool in convo_tools.CATALOG.values()} - {'always'}, set(self.GROUPS))
+
+    def test_an_older_configuration_without_the_switches_gets_the_defaults(self):
+        older = {'enabled': True, 'style': 'Calm.', 'roles': {'conversation': {'url': 'http://127.0.0.1:8080/v1', 'model': 'm'}}}
+        config = validate_settings(copy.deepcopy(older))
+        self.assertEqual(config['voice_tools'], DEFAULTS['voice_tools'])
+        self.assertEqual((config['conversation_scope'], config['task_chat']), ('chat', 'new'))
+        self.assertEqual(config['style'], 'Calm.')
+        self.assertIsNot(config['voice_tools'], DEFAULTS['voice_tools'])                       # never the shared default object itself
+
+    def test_switches_saved_one_at_a_time_keep_the_others(self):
+        config = validate_settings({'voice_tools': {'web': False, 'tasks': False}})
+        self.assertEqual(config['voice_tools'], {**{group: True for group in self.GROUPS}, 'web': False, 'tasks': False})
+        everything_off = validate_settings({'voice_tools': {group: False for group in self.GROUPS}})
+        self.assertEqual(set(everything_off['voice_tools'].values()), {False})
+        self.assertEqual(validate_settings(everything_off)['voice_tools'], everything_off['voice_tools'])    # saved and loaded unchanged
+
+    def test_a_wrong_shape_is_refused_never_read_as_on_or_off(self):
+        on = {group: True for group in self.GROUPS}
+        bad = {
+            'not an object': ['all', None, True, 1, ['web'], list(self.GROUPS)],
+            'a switch that is not true or false': [{**on, 'web': 1}, {**on, 'web': 0}, {**on, 'web': 'yes'}, {**on, 'web': None}, {**on, 'web': 'false'},
+                                                    {**on, 'web': {'enabled': True}}],
+            'a switch for no group': [{**on, 'shell': True}, {**on, 'Web': True}, {**on, '': False}, {'everything': True}],
+        }
+        for name, values in bad.items():
+            for value in values:
+                with self.subTest(name, value=value), self.assertRaises(ContractError):
+                    validate_settings({'voice_tools': value})
+
+    def test_the_refusal_names_the_switches_and_nothing_of_the_value(self):
+        with self.assertRaises(ContractError) as caught:
+            validate_settings({'voice_tools': {'web': 'PRIVATE-VALUE'}})
+        self.assertEqual(str(caught.exception), 'voice_tools must hold one true/false switch for each of: ' + ', '.join(self.GROUPS))
+
+    def test_where_the_conversation_and_its_tasks_belong(self):
+        for scope in ('chat', 'global'):
+            for chat in ('new', 'selected'):
+                config = validate_settings({'conversation_scope': scope, 'task_chat': chat})
+                self.assertEqual((config['conversation_scope'], config['task_chat']), (scope, chat))
+        for key, values in (('conversation_scope', ['', 'Global', 'all', 'chats', None, 1, True, ['global']]),
+                            ('task_chat', ['', 'New', 'current', 'chat', None, 0, ['new']])):
+            for value in values:
+                with self.subTest(key, value=value), self.assertRaises(ContractError):
+                    validate_settings({key: value})
+
+    def test_the_browser_runtime_sees_where_the_conversation_belongs(self):
+        settings = public_settings(validate_settings({'conversation_scope': 'global', 'task_chat': 'selected'}))
+        self.assertEqual((settings['conversation_scope'], settings['task_chat']), ('global', 'selected'))
 
 
 class SoundAndVoice(unittest.TestCase):

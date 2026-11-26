@@ -3,11 +3,12 @@ import { callJsonApi } from '/js/api.js';
 import { createNamespacedClient } from '/js/websocket.js';
 import { getCurrentContextId, getCurrentContext, openModal } from '/js/shortcuts.js';
 import { AudioSession } from './audio.js';
-import { ACTIVE_JOB, PAGE, captureAnchor, deriveTimings, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
+import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
 import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
 import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, soundKey, soundSource } from './sound-setup.js';
 import { plainText } from './plain-text.js';
+import { bindHotkeys } from './hotkeys.js';
 
 // Non-reactive owned resources: Alpine must not proxy AudioNodes or Socket.IO.
 let client = null, audio = null, generation = 0;
@@ -17,7 +18,10 @@ let nativePromise = null, nativeBinding = null, dictationPromise = null, dictati
 let historyTarget = '', historySequence = 0, refreshTimer = null;
 let scroller = null, stick = true, settleQueued = false;   // the transcript element and whether the reader follows its end
 let capturing = false, lastActivity = 0, noticePending = false, noteTimer = null, lastOrb = null, holdTimer = null;
-let draftTurn = '', playbackFault = '';  // the turn the draft belongs to; the last playback failure shown (cleared once audio plays again)
+let draftTurn = '', replyTurn = '';      // the turn the draft belongs to; the turn whose reply was last seen (text or audio)
+let playbackFault = '';                   // the last playback failure shown (cleared once audio plays again)
+let shownError = null, endedError = '', errorTimer = null;   // the error line: what is shown ({text, kind, turn, source}); why the conversation ended
+let abandoned = null;                     // an utterance dropped by muting whose probes the server may still hold (dropUtterance)
 let pausedTaps = 0;                       // orb taps (or hotkey presses) since the output was paused
 const heardTurns = new Set();             // turns whose assistant words are in the history already: their draft gives way to it
 const timings = new Map();                // turn -> monotonic marks (measurement only; no content)
@@ -116,12 +120,31 @@ let clipCapture = null;                   // the utterance being recorded as a t
 // Test clips: labels for a decision-model bake-off (developer diagnostics). Saved only when the developer arms the recorder.
 export const CLIP_LABELS = ['request', 'statement', 'follow_up', 'acknowledgement', 'unfinished', 'dont_respond', 'noise', 'side_talk', 'over_playback'];
 export const CLIP_MAX_SECONDS = 30;
-const NO_CHAT = 'Select or create a chat first.';
+// ---- One conversation across chats ---------------------------------------------------------------------------------------------
+// The conversation whose `target` is GLOBAL_SCOPE (the setting `conversation_scope` "global", or voice started with no chat
+// selected: the server decides and says so in `session.target`). The chat selected in Agent Zero is then only the default place
+// for work: a change of selection is sent as `convo.work` and nothing is stopped, retargeted or rebuilt. `workAsked` is the
+// selection the server was last told about (null: nothing yet), so one selection is sent once, whatever the server made of it.
+// `jobChats`: the chat name each `job.queued` event gave, for the task list (bounded, not reactive).
+let workTimer = null, workSending = false, workAsked = null;
+const jobChats = new Map();
+function hostChatName(id) {
+    if (!id) return '';
+    try {
+        const selected = getCurrentContext();
+        if (selected?.id === id) return String(selected.name || selected.title || '');
+        const listed = globalThis.Alpine?.store?.('chats')?.contexts?.find?.(chat => chat?.id === id);
+        return String(listed?.name || '');
+    } catch { return ''; }
+}
 const AUDIO_PAUSED = 'Audio paused — click to resume';
 const NO_TRANSCRIPT = 'Whisper could not write down that turn, so its words are not remembered for later turns; the conversation is unaffected.';
 // The status chip words what the orb shows (orb.js orbView decides the state and its priority; the chip only names it).
+// `unavailable` (a server Convo needs does not answer) is the loading state in other words.
+const WAITING_FOR_SERVER = 'Waiting for a server';
+const MUTED_LABELS = { speaking: 'Muted · speaking', thinking: 'Muted · thinking' };   // what the assistant does meanwhile (orbView `over`)
 const LIVE_LABELS = { ready: 'Ready · microphone off', idle: 'Voice idle · development mode', connecting: 'Starting', loading: 'Waiting for a model',
-    listening: 'Listening', hearing: 'Hearing you', thinking: 'Thinking', speaking: 'Speaking', 'dictating-latched': 'Dictating', 'dictating-ptt': 'Dictating', error: 'Needs attention' };
+    listening: 'Listening', hearing: 'Hearing you', thinking: 'Thinking', speaking: 'Speaking', muted: 'Muted', 'dictating-latched': 'Dictating', 'dictating-ptt': 'Dictating', error: 'Needs attention' };
 const CHIP_STATES = { idle: 'ready', 'dictating-latched': 'dictation', 'dictating-ptt': 'dictation' };
 const ACTIVITY_STATES = new Set(['listening', 'thinking']);   // a server activity ("Searching the web…") shows while nothing more pressing does
 // Diagnostics taps: optional observers a developer panel may set or clear at any time (`echo` receives each echo-guard
@@ -208,13 +231,76 @@ async function request(event, data = {}, socket = client) {
 }
 
 function identity() { return store.session ? { session_id: store.session.id, epoch: store.session.epoch } : {}; }
-function fail(error) { store.error = error?.message || String(error); updateOrb(); }
-// A playback failure is shown like any other, and its words say the session goes on; it clears itself once a phrase plays again.
-function playbackError(error) { playbackFault = error?.message || String(error); fail(error); }
-function playbackRecovered() {
-    if (playbackFault && store.error === playbackFault) { store.error = ''; updateOrb(); }
-    playbackFault = '';
+// ---- the error line
+// An error is shown, then goes away by itself: when things demonstrably work again, else after errorShowMs. What "works again" means
+// depends on its kind: 'turn' (one turn's failure: a later turn's words or sound, or a phrase that plays), 'playback' (a phrase that
+// plays), 'page' (the same `source` working later). 'ended' (the conversation stopped, was lost or was refused) keeps its words in the
+// panel until dismissed or the next start; only the red of the chip and the orb goes after errorShowMs (`errorQuiet`). Every error also
+// goes to the log in the diagnostics panel (`problems`).
+export const ERROR_SHOW_MS = 12000;
+export const PROBLEM_LIMIT = 50;
+let problemCount = 0;
+function logProblem(message, turn = '') {
+    const text = String(message || '').slice(0, 400);
+    if (!text) return;
+    const at = Date.now(), last = store.problems.at(-1), id = String(turn || '').slice(0, 80);
+    if (last && last.message === text) { store.problems = [...store.problems.slice(0, -1), { ...last, turn: id || last.turn, at, count: last.count + 1 }]; return; }
+    store.problems = [...store.problems, { id: ++problemCount, at, message: text, turn: id, count: 1 }].slice(-PROBLEM_LIMIT);
 }
+// The order in which this page first met each turn: what makes one turn later than another (ids are random).
+const turnOrder = new Map();
+let turnCount = 0;
+function orderOf(turn) {
+    if (!turn) return 0;
+    if (!turnOrder.has(turn)) { turnOrder.set(turn, ++turnCount); while (turnOrder.size > 128) turnOrder.delete(turnOrder.keys().next().value); }
+    return turnOrder.get(turn);
+}
+function fail(error, { kind = 'page', turn = '', source = '' } = {}) {
+    const text = error?.message || String(error);
+    logProblem(text, turn);
+    shownError = { text, kind, order: orderOf(turn || replyTurn), source };
+    if (kind === 'ended') endedError = text;
+    store.error = text; store.errorQuiet = false;
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(fadeError, store.errorShowMs);
+    errorTimer?.unref?.();                                          // outside a browser a timer is an object: it keeps nothing alive
+    updateOrb();
+}
+// The time is up: the red goes; the words too, unless they say why the conversation ended.
+function fadeError() {
+    errorTimer = null;
+    if (!shownError || store.error !== shownError.text) return;
+    if (shownError.kind === 'ended') { store.errorQuiet = true; updateOrb(); } else clearError();
+}
+function clearError() {
+    clearTimeout(errorTimer); errorTimer = null; shownError = null;
+    store.error = endedError; store.errorQuiet = !!endedError;      // why the conversation ended is shown again, no longer red
+    updateOrb();
+}
+function forgetError() { endedError = ''; playbackFault = ''; clearError(); }            // dismissed, or a new start
+const showing = kind => !!shownError && store.error === shownError.text && shownError.kind === kind;
+// A later turn's reply: an error about an earlier turn is over.
+function laterTurn(turn) { const order = orderOf(turn); if (showing('turn') && order > shownError.order) clearError(); }
+// A reply's words or sound arrived: what the conversation waited for answers.
+function replyWorks(turn) {
+    if (store.loading || store.unavailable) { store.loading = ''; store.unavailable = ''; updateOrb(); }
+    laterTurn(turn);
+    if (turn) replyTurn = turn;
+}
+// What failed before under this name now worked.
+function settled(source) { if (showing('page') && shownError.source === source) clearError(); }
+const failTurn = (error, turn = '') => fail(error, { kind: 'turn', turn });
+const failEnded = error => fail(error, { kind: 'ended' });
+const failSource = (source, error) => fail(error, { source });
+// A playback failure is shown like any other, and its words say the session goes on; it clears itself once a phrase plays again.
+function playbackError(error) { playbackFault = error?.message || String(error); fail(error, { kind: 'playback' }); }
+function playbackRecovered(turn = '') {
+    if (playbackFault && store.error === playbackFault) clearError();
+    playbackFault = '';
+    laterTurn(turn);
+}
+// A playback acknowledgement that came too late (its reply was replaced meanwhile) is ordinary, not an outage.
+const acknowledgeFailed = (error, turn) => { if (error?.kind !== 'stale' && error?.kind !== 'busy') failTurn(error, turn); };
 // The output's state (audio.js watchOutput): a context the browser paused and could not resume is said once; the next click or orb
 // press resumes it.
 function playbackState({ paused } = {}) {
@@ -231,6 +317,7 @@ function microphoneIssue(issue) {
     if (kind === 'unmuted') { if (store.micIssue?.kind === 'muted') store.micIssue = null; return; }
     if (!['warning', 'ended', 'muted'].includes(kind)) return;
     store.micIssue = { kind, message: String(issue.message || '').slice(0, 300), restart: !!issue.restart };
+    if (kind !== 'warning') logProblem(store.micIssue.message);
     globalThis.justToast?.(store.micIssue.message, kind === 'warning' ? 'info' : 'warning');
 }
 // A live `held` notice in words (developer mode only).
@@ -239,7 +326,7 @@ function heldNote(event) {
     return event?.decision === 'wait' ? 'Waiting for you to finish' + (reason ? ` (${reason})` : '') : 'Stayed silent' + (reason ? `: ${reason}` : '');
 }
 // Whisper failed for a turn: the audio conversation is unaffected, so this is a note, never the error state.
-function transcriptUnavailable() { store.say(NO_TRANSCRIPT); globalThis.justToast?.(NO_TRANSCRIPT, 'info'); }
+function transcriptUnavailable() { logProblem(NO_TRANSCRIPT); store.say(NO_TRANSCRIPT); globalThis.justToast?.(NO_TRANSCRIPT, 'info'); }
 
 // The browser's own Whisper request (Agent Zero's /transcribe), used only while Convo's Whisper worker cannot run on the server:
 // one request at a time (a turn arriving meanwhile is skipped; the model's own words stay the record), and Convo stops waiting after
@@ -292,8 +379,8 @@ function beginCandidate(attempt) {
     // A test clip armed in diagnostics takes this utterance instead: no candidate, no probe, no turn.
     if (store.clipArmed) { clipCapture = { label: store.clipArmed, attempt }; store.clipArmed = ''; store.clipNote = 'Recording the test clip…'; return; }
     setHearing(true); lastActivity = Date.now();
-    candidateCapture = { turn_id: crypto.randomUUID(), sequence: 0, attempt, final: false };
-    candidates.set(candidateCapture.turn_id, candidateCapture);
+    candidateCapture = resumeAbandoned(attempt) || { turn_id: crypto.randomUUID(), sequence: 0, attempt, final: false };
+    candidates.set(candidateCapture.turn_id, candidateCapture); orderOf(candidateCapture.turn_id);
     mark(candidateCapture.turn_id, 'onset', audio?.boundary?.onsetAt || clock());
     while (candidates.size > 16) candidates.delete(candidates.keys().next().value);
     // Detection is observation only. Never cancel playback here. Talking over the assistant (its audio was heard when this utterance
@@ -318,7 +405,7 @@ async function sendCandidate(value, attempt, final, meta = null) {
     if (candidatePending?.final && candidatePending.candidate !== candidate) {
         if (final) { setHearing(false); candidateCapture = null; }
         hold(true);
-        fail(new Error('A completed turn is still awaiting policy; this newer observation was withheld.'));
+        failTurn(new Error('A completed turn is still awaiting policy; this newer observation was withheld.'), candidate.turn_id);
         return;
     }
     candidatePending = { candidate, value, sequence: candidate.sequence, final, voiced: voicedOf(meta), lead: preRollField(meta) };
@@ -329,12 +416,13 @@ async function sendCandidate(value, attempt, final, meta = null) {
     try {
         while (candidatePending) {
             const item = candidatePending; candidatePending = null;
-            if (item.candidate.attempt !== generation || !store.session) continue;
+            if (item.candidate.attempt !== generation || !store.session || item.candidate.dropped) continue;
+            item.candidate.sentAt ||= Date.now();
             try {
                 await request('candidate', { ...identity(), turn_id: item.candidate.turn_id,
                     sequence: item.sequence, final: item.final, audio: item.value, ...overlapFields(item.candidate, item.voiced, item.final), ...(item.lead || {}) });
             } catch (error) {
-                if (item.candidate.attempt !== generation || !store.session) continue;      // the session ended meanwhile
+                if (item.candidate.attempt !== generation || !store.session || item.candidate.dropped) continue;   // ended or muted meanwhile
                 if (error.kind === 'stale') continue;                                         // an older epoch: nothing to decide any more
                 hold(true);                                                                   // speech we cannot yet decide about stays ducked
                 if (error.kind === 'busy') {
@@ -346,14 +434,57 @@ async function sendCandidate(value, attempt, final, meta = null) {
                         await new Promise(resolve => setTimeout(resolve, store.busyRetryMs[tries]));
                     } else if (item.final) {
                         if (!undecided(item.candidate.turn_id)) hold(false);
-                        fail(new Error('Convo was still busy with an earlier turn, so this one was not answered. Please say it again.'));
+                        failTurn(new Error('Convo was still busy with an earlier turn, so this one was not answered. Please say it again.'), item.candidate.turn_id);
                     }
                     continue;                                                                 // a busy probe is simply replaced by the next one
                 }
-                fail(new Error("Convo couldn't check this speech (" + (error?.message || 'no answer') + '); the reply is turned down and nothing was interrupted.'));
+                failTurn(new Error("Convo couldn't check this speech (" + (error?.message || 'no answer') + '); the reply is turned down and nothing was interrupted.'), item.candidate.turn_id);
             }
         }
     } finally { candidateSending = false; }
+}
+
+// ---- mute
+// Muting drops the utterance in progress: nothing more of it is sent, and nothing said before it is ever completed as a turn. A completed
+// turn that is still waiting to be sent or decided was said before and goes on. A probe of the dropped utterance may be at the server
+// already, which then keeps it open until its capture deadline: the server is told (`candidate_cancel`), and should it not know that
+// event, the next utterance carries on under the same id (resumeAbandoned), so the user is never answered "busy" for having muted.
+export const CAPTURE_GRACE_S = 5;                  // the server's capture deadline: the longest turn and this many seconds
+export const ABANDON_ROOM_MS = 10000;              // too little of that deadline left: a new id (the server frees itself meanwhile)
+function dropUtterance() {
+    const dropped = candidateCapture;
+    candidateCapture = null;
+    if (candidatePending && !candidatePending.final) candidatePending = null;
+    if (clipCapture) { clipCapture = null; store.clipNote = 'Not saved: the microphone was muted.'; }
+    setHearing(false);
+    if (dropped) {
+        dropped.dropped = true; timings.delete(dropped.turn_id);         // kept in `candidates`: an admission on its way still moves the epoch
+        if (dropped.sentAt) {
+            const mine = abandoned = { turn_id: dropped.turn_id, sequence: dropped.sequence, until: dropped.sentAt + ((Number(store.settings?.max_audio_seconds) || 20) + CAPTURE_GRACE_S) * 1000 };
+            request('candidate_cancel', { ...identity(), turn_id: dropped.turn_id })
+                .then(result => { if (result?.cancelled && abandoned === mine) abandoned = null; }).catch(() => { /* the next utterance carries on under its id */ });
+        }
+    }
+    if (!candidatePending && ![...candidates.values()].some(candidate => candidate.final)) hold(false, true);
+}
+function resumeAbandoned(attempt) {
+    const held = abandoned; abandoned = null;
+    if (!held || held.until - Date.now() < ABANDON_ROOM_MS) return null;
+    return { turn_id: held.turn_id, sequence: held.sequence, attempt, final: false, sentAt: held.until - ((Number(store.settings?.max_audio_seconds) || 20) + CAPTURE_GRACE_S) * 1000 };
+}
+// The microphone follows `micMuted` (muted, and not held open by push-to-talk). `finish`: push-to-talk was let go of, so what was said
+// while it was held is completed as a turn instead of dropped.
+function applyMute({ finish = false } = {}) {
+    const muted = store.micMuted;
+    if (muted && !finish) dropUtterance();
+    audio?.setMuted?.(muted, { finish });
+    if (muted) {
+        if (recording) { clearTimeout(recording.timer); recording.resolve(null); recording = null; }     // nothing more is heard for it
+        if (candidateCapture) dropUtterance();               // too short to be a turn
+        setHearing(false);
+        store.inputLevel = 0; store.meter = { level: 0, withheld: false, voiced: false, state: 'muted', playback: !!store.meter.playback };
+    }
+    updateOrb();
 }
 
 // The finished test clip: 16 kHz mono PCM16 WAV (the turn's own upload format), at most CLIP_MAX_SECONDS, saved on the Agent Zero host
@@ -416,10 +547,11 @@ function releaseAfterSpeech() {
 // The orb is a pure function of store state; cues follow its transitions, so every path to a state cues the same way.
 function updateOrb() {
     const view = orbView({ enabled: store.enabled, dictating: store.dictating || !!store.dictationMode, dictationMode: store.dictationMode,
-        continuous: !!store.dictationMode && continuousMode(), holding: store.dictationHolding, pressing: store.pressing, capturing: store.capturing, error: store.error, busy: store.busy, active: store.active,
+        continuous: !!store.dictationMode && continuousMode(), holding: store.dictationHolding, pressing: store.pressing, capturing: store.capturing, error: store.errorQuiet ? '' : store.error, busy: store.busy, active: store.active,
         state: store.state, hearing: store.hearing, playing: !!(audio?.playing || audio?.pcm?.size || audio?.queue?.length || store.outputLevel > .02),
-        devIdle: !!store.settings?.ai_link_development_mode, policyHold: store.policyHold, loading: store.loading });
+        devIdle: !!store.settings?.ai_link_development_mode, policyHold: store.policyHold, loading: store.loading, unavailable: store.unavailable, muted: store.micMuted });
     const id = view?.id ?? null;
+    if (store.mutedOver !== (view?.over ?? '')) store.mutedOver = view?.over ?? '';
     if (id !== lastOrb) { const cue = cueFor(lastOrb, id); lastOrb = id; if (cue) emitCue(cue); }
     // The panel's status chip mirrors the orb (`live`); while it hears you it also shows the input level, in 5% steps so the
     // chip is not repainted at the metering rate.
@@ -497,8 +629,7 @@ export function snapshotSize(width, height, edge = SNAPSHOT_EDGE) {
     const scale = Math.min(1, edge / Math.max(1, width, height));
     return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
-function cameraFrame(edge = SNAPSHOT_EDGE, quality = SNAPSHOT_QUALITY) {
-    const video = cameraVideo;
+function videoFrame(video, edge = SNAPSHOT_EDGE, quality = SNAPSHOT_QUALITY) {
     if (!video || !video.videoWidth || !video.videoHeight) return '';
     const size = snapshotSize(video.videoWidth, video.videoHeight, Math.min(SNAPSHOT_EDGE, Number(edge) || SNAPSHOT_EDGE));
     const canvas = document.createElement('canvas');
@@ -513,12 +644,123 @@ function releaseCamera() {
 }
 async function answerCamera(event) {
     let image = '';
-    try { image = cameraFrame(event.max_edge, event.quality); } catch { image = ''; }
+    try { image = videoFrame(cameraVideo, event.max_edge, event.quality); } catch { image = ''; }
     await request('camera_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
 
+// ---- Screen (the screen tool) -------------------------------------------------------------------------------------------------
+// "Share screen" is the camera's twin: the browser's own picker (`getDisplayMedia`) chooses a screen, window or tab, the stream stays
+// in this page and the server only learns that one is shared. One frame is taken only on the server's `screen.request` (the same
+// edge and quality handling as the camera), sent once as `convo.screen_snapshot` and never stored. Sharing ends on the button, when
+// the browser's own "Stop sharing" bar ends the track, and when voice stops.
+let screenStream = null, screenVideo = null;
+function releaseScreen() {
+    screenStream?.getTracks?.().forEach(track => track.stop());
+    if (screenVideo) screenVideo.srcObject = null;
+    screenStream = null; screenVideo = null;
+}
+async function answerScreen(event) {
+    let image = '';
+    try { image = videoFrame(screenVideo, event.max_edge, event.quality); } catch { image = ''; }
+    await request('screen_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
+}
+
+// ---- Asking first (`action.pending`) ------------------------------------------------------------------------------------------
+// Convo asks before it goes ahead with something: one card in the panel (label, summary as plain text, Run and Dismiss). A new
+// question replaces the old one; the card goes when the server resolves it, after its `seconds`, and when voice stops. The timer
+// is not reactive state.
+const ACTION_SECONDS = 30, ACTION_MAX_SECONDS = 600;
+let actionTimer = null;
+function clearAction(id = '') {
+    if (id && store.pendingAction?.id !== id) return;                 // an answer about an earlier question leaves the newer card
+    clearTimeout(actionTimer); actionTimer = null; store.pendingAction = null;
+}
+function showAction(event) {
+    const id = String(event.id || '');
+    if (!id) return;
+    clearAction();
+    const seconds = Number(event.seconds);
+    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false };
+    actionTimer = setTimeout(() => clearAction(id), Math.min(ACTION_MAX_SECONDS, seconds > 0 ? seconds : ACTION_SECONDS) * 1000);
+}
+
+// ---- "Open …" (the open tool, `ui.open`) ------------------------------------------------------------------------------------
+// One thing in Agent Zero's own interface, through the host's own functions, each guarded (a host may differ): a chat is selected
+// with the chat list's `selectChat` (a scheduler task's chat with the task list's `selectTask`), Settings open as the header button
+// opens them, the file browser as the sidebar's Files entry does. A page is only a link card in the panel (a page cannot open a
+// tab without the user's tap; at most LINK_LIMIT cards): Agent Zero's own browser panel is never navigated from here, because it
+// runs with the user's saved sign-ins and is theirs to steer. The answer (`convo.ui_result`) is one fixed plain sentence: never
+// an address, a chat's name or an exception's text.
+// The server waits three seconds for the answer: a host call may take UI_WAIT_MS of them, the rest is the round trip.
+const UI_WAIT_MS = 1500, UI_START_MS = 250, LINK_LIMIT = 3, SETTINGS_MODAL = 'settings/settings.html';
+let linkCount = 0;
+const hostStore = name => { try { return globalThis.Alpine?.store?.(name) || null; } catch { return null; } };
+// A host call's outcome within `ms`: what it returned (`value`), that it threw (`error`), or that it is still going (`waiting`: a
+// host modal's promise settles only when the modal closes, so there "still going" means it opened).
+function hostCall(work, ms) {
+    let pending;
+    try { pending = Promise.resolve(work()); } catch (error) { pending = Promise.reject(error); }
+    return Promise.race([pending.then(value => ({ value }), error => ({ error })), new Promise(resolve => setTimeout(() => resolve({ waiting: true }), ms))]);
+}
+// An http(s) address as it may go into a link: no other scheme, no spaces or control characters, no user name in front of the host.
+// Parsed without `URL` (not every context has it).
+export function webAddress(value) {
+    const url = String(value ?? '').trim();
+    if (!url || url.length > 2000 || /[\s\u0000-\u001f\u007f]/.test(url)) return '';
+    const authority = /^https?:\/\/([^\/?#]+)/i.exec(url)?.[1] || '';
+    return authority && !authority.includes('@') ? url : '';
+}
+function addLink(url, title) {
+    const host = /^https?:\/\/([^\/?#]+)/i.exec(url)?.[1] || url;
+    const link = { id: 'link-' + (++linkCount), url, title: (String(title ?? '').replace(/\s+/g, ' ').trim() || host).slice(0, 80) };
+    store.links = [...store.links.filter(item => item.url !== url), link].slice(-LINK_LIMIT);
+}
+async function openChat(id, wait) {
+    if (!id) return [false, 'No chat was named.'];
+    const chats = hostStore('chats'), tasks = hostStore('tasks');
+    if (typeof chats?.selectChat !== 'function') return [false, 'The chat list of Agent Zero cannot be reached from this page.'];
+    const listed = (list, name) => { try { return typeof list?.contains === 'function' ? !!list.contains(name) : null; } catch { return null; } };
+    const chat = listed(chats, id), task = listed(tasks, id);
+    if (chat === false && !task) return [false, 'That chat is not in the chat list of Agent Zero.'];
+    const outcome = await hostCall(() => (task && !chat && typeof tasks.selectTask === 'function' ? tasks.selectTask(id) : chats.selectChat(id)), wait);
+    if (outcome.error) return [false, 'Agent Zero could not select that chat.'];
+    if (typeof chats.selected === 'string' && chats.selected !== id) return [false, 'Agent Zero did not switch to that chat.'];
+    return [true, 'The chat is selected in Agent Zero.'];
+}
+async function openHostSettings() {
+    const open = typeof globalThis.ensureModalOpen === 'function' ? globalThis.ensureModalOpen : typeof globalThis.openModal === 'function' ? globalThis.openModal : null;
+    if (!open) return [false, 'The settings of Agent Zero cannot be opened from this page.'];
+    const outcome = await hostCall(() => open(SETTINGS_MODAL), UI_START_MS);            // never awaited to its end: it resolves when the modal closes
+    return outcome.error ? [false, 'Agent Zero could not open its settings.'] : [true, 'The settings of Agent Zero are open.'];
+}
+async function openHostFiles() {
+    const input = hostStore('chatInput'), files = hostStore('fileBrowser');
+    const open = typeof input?.browseFiles === 'function' ? () => input.browseFiles() : typeof files?.open === 'function' ? () => files.open() : null;
+    if (!open) return [false, 'The file browser of Agent Zero cannot be opened from this page.'];
+    const outcome = await hostCall(open, UI_START_MS);
+    return outcome.error ? [false, 'Agent Zero could not open its file browser.'] : [true, 'The file browser of Agent Zero is open.'];
+}
+function openPage(target, title) {
+    const url = webAddress(target);
+    if (!url) return [false, 'Only http and https addresses can be opened.'];
+    addLink(url, title);
+    return [true, 'A link is shown in the Convo panel.'];
+}
+async function answerOpen(event) {
+    const what = String(event.what || ''), target = typeof event.target === 'string' ? event.target.trim() : '';
+    let ok = false, detail = 'That could not be opened.';
+    try {
+        [ok, detail] = what === 'chat' ? await openChat(target, store.uiWaitMs) : what === 'settings' ? await openHostSettings()
+            : what === 'files' ? await openHostFiles() : what === 'page' ? openPage(target, event.title)
+            : [false, 'Convo cannot open that kind of thing.'];
+    } catch { ok = false; detail = 'That could not be opened.'; }
+    await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
+}
+
 export const store = createStore('convo', {
-    settings: null, settingsRevision: '', session: null, state: 'off', error: '', loading: '', activity: '', mode: 'active', target: '', selected: '', runtime: null,
+    settings: null, settingsRevision: '', session: null, state: 'off', error: '', errorQuiet: false, errorShowMs: ERROR_SHOW_MS, problems: [], loading: '', unavailable: '', activity: '',
+    muted: false, talking: false, mutedOver: '',   // the user's mute; push-to-talk held while muted; what the assistant does while muted (the chip)
+    mode: 'active', target: '', selected: '', runtime: null,
     events: [], jobs: [], draft: '', dictating: false, panelOpen: false, busy: false,
     dictationMode: '', dictationHolding: false, pressing: false, capturing: false,   // orb gesture: '' | 'latched' | 'ptt'; the press still down; a press heading for the latch time
     moreEarlier: false, loadingEarlier: false, unseen: 0, pinned: true,
@@ -530,6 +772,10 @@ export const store = createStore('convo', {
     assistantName: '',                           // the history's assistant label (`assistant_name`), "Convo" until the server says
     clipArmed: '', clipNote: '', clips: [],      // test clips (developer diagnostics)
     cameraShared: false, cameraOffered: false, // "Share camera": a stream kept in this page; offered to the model only when it accepts images
+    screenShared: false, screenOffered: false, // "Share screen": the same for a screen, window or tab chosen in the browser's own picker
+    work: '', workName: '', workDebounceMs: 300, // the conversation across chats: the chat work goes to by default ('' = none) and its title
+    pendingAction: null,                         // what Convo asks before going ahead ({id, label, summary, busy}): one card, Run or Dismiss
+    links: [], uiWaitMs: UI_WAIT_MS,             // "Open <title>" link cards from the open tool (at most three); how long a host call may take
     busyRetryMs: [250, 500, 1000, 1500, 2000],   // how long a completed turn may wait for a free server before it is reported as not answered
     owner: null, reconnecting: false, movedTo: '', outputMessage: '',   // who runs voice (status `voice_owner`); re-attaching; taken over by; output device notes
     reattachRetryMs: REATTACH_RETRY_MS, reattachGraceMs: REATTACH_GRACE_MS,
@@ -540,21 +786,84 @@ export const store = createStore('convo', {
         if (!owner) return '';
         let since = '';
         try { since = owner.since ? new Date(owner.since * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''; } catch {}
-        const chat = owner.target && owner.target === this.selected ? 'this chat' : 'another chat';
-        return `Voice is running on ${owner.device || 'another device'}${since ? ` (since ${since}, in ${chat})` : ` (in ${chat})`}.`;
+        const chat = owner.target === GLOBAL_SCOPE ? 'across chats' : owner.target && owner.target === this.selected ? 'in this chat' : 'in another chat';
+        return `Voice is running on ${owner.device || 'another device'}${since ? ` (since ${since}, ${chat})` : ` (${chat})`}.`;
     },
     get statusLabel() {
-        if (this.live == null) return this.dictating ? 'Dictating' : this.error ? 'Needs attention' : ({off:'Ready · microphone off',connecting:'Starting',listening:'Listening',speaking:'Speaking',considering:'Thinking',thinking:'Thinking'}[this.state] || this.state);
+        if (this.live == null) return this.dictating ? 'Dictating' : this.error && !this.errorQuiet ? 'Needs attention' : ({off:'Ready · microphone off',connecting:'Starting',listening:'Listening',speaking:'Speaking',considering:'Thinking',thinking:'Thinking'}[this.state] || this.state);
+        if (this.live === 'muted') return MUTED_LABELS[this.mutedOver] || LIVE_LABELS.muted;
+        if (this.live === 'loading' && !this.loading) return WAITING_FOR_SERVER;
         return this.activity && ACTIVITY_STATES.has(this.live) ? this.activity : LIVE_LABELS[this.live] || this.live;
     },
+    // What the conversation waits for, in words: a model that loads, or a server that does not answer.
+    get waiting() { return this.loading || this.unavailable; },
+    // ---- the error line and its log (fail, clearError)
+    dismissError() { forgetError(); },
+    clearProblems() { this.problems = []; },
+    noteProblem(message, turn = '') { logProblem(message, turn); },
+    // ---- mute (applyMute): the microphone is off in this page, the conversation and its playback go on. Kept across chat switches and
+    // a re-attach, cleared when the conversation ends. Push-to-talk opens the microphone while it is held.
+    get micMuted() { return this.muted && !this.talking; },
+    setMuted(value) {
+        value = !!value;
+        if (!this.active || this.muted === value) return false;
+        this.muted = value; this.talking = false;
+        applyMute();
+        if (!this.panelOpen) announce(value ? 'Microphone muted.' : 'Microphone on.');     // the open panel's chip says it
+        return true;
+    },
+    toggleMute() { return this.setMuted(!this.muted); },
+    pushToTalk(value) {
+        value = !!value;
+        if (value ? !this.active || !this.muted || this.talking : !this.talking) return false;
+        this.talking = value;
+        if (this.active && this.muted) applyMute({ finish: !value });
+        return true;
+    },
+    // ---- hotkeys (hotkeys.js): whether the action did something now; a press that did nothing is left to the page.
+    hotkey(action) {
+        switch (action) {
+            case 'toggle_conversation': void this.toggle(); return true;
+            case 'mute': return this.toggleMute();
+            case 'push_to_talk': return this.pushToTalk(true);
+            case 'dictate': void this.toggleDictation(); return true;
+            case 'stop_reply': return this.stopReply();
+            case 'open_panel': void this.openPanel(); return true;
+            case 'open_settings': void this.openSettingsModal(); return true;
+            case 'run_action': case 'dismiss_action':
+                if (!this.pendingAction || this.pendingAction.busy) return false;
+                void this.answerAction(action === 'run_action'); return true;
+            default: return false;
+        }
+    },
+    // The reply being written or spoken ends and the conversation goes on (nothing to stop: false).
+    stopReply() {
+        if (!this.active || this.busy || reattaching) return false;
+        if (!['speaking', 'thinking', 'considering'].includes(this.state) && !audio?.playing && !audio?.pcm?.size && !audio?.queue?.length) return false;
+        void this.interrupt();
+        return true;
+    },
+    // The docked canvas where the host has one, else the panel's own modal.
+    async openPanel() {
+        const canvas = hostStore('rightCanvas');
+        try { if (typeof canvas?.open === 'function') { await canvas.open('convo'); return; } } catch { /* the modal then */ }
+        try { await this.show(); } catch (error) { failSource('panel', error); }
+    },
     get chipState() {
-        if (this.live == null) return this.dictating ? 'dictation' : this.error ? 'error' : this.state === 'off' ? 'ready' : this.state;
+        if (this.live == null) return this.dictating ? 'dictation' : this.error && !this.errorQuiet ? 'error' : this.state === 'off' ? 'ready' : this.state;
         return this.activity && ACTIVITY_STATES.has(this.live) ? 'activity' : CHIP_STATES[this.live] || this.live;
     },
-    get targetLabel() { return this.targetName || (this.target ? 'Selected chat' : 'Select a chat to begin'); },
+    // The panel's chat line. A chat's own conversation: "Chat · <name>". The conversation across chats: "Working in: <name>" (an
+    // untitled chat says so), or "No chat selected".
+    get across() { return this.target === GLOBAL_SCOPE; },
+    get targetPrefix() { return this.across ? (this.work ? 'Working in: ' : '') : this.target ? 'Chat · ' : ''; },
+    get targetLabel() {
+        if (this.across) return this.work ? (this.workName || 'an untitled chat') : 'No chat selected';
+        return this.targetName || (this.target ? 'Selected chat' : 'No chat selected');
+    },
     // The live draft as the history will read once it is heard: no Markdown (plain-text.js, the browser copy of the server's cleaner).
     get draftText() { return plainText(this.draft); },
-    get canRetarget() { return !!this.selected && this.selected !== this.target; },
+    get canRetarget() { return !this.across && !!this.selected && this.selected !== this.target; },
     get activeJobs() { return this.jobs.filter(job => ACTIVE_JOB.has(job.status)); },
     // One "You" and one "Convo" entry per turn (view-helpers.js foldTurns); developer mode adds a secondary line and the bookkeeping.
     get visibleEvents() {
@@ -630,7 +939,38 @@ export const store = createStore('convo', {
     eventLabel(event) { return describeEvent(event, this.jobs).label; },
     eventDetail(event) { return this.settings?.developer_mode ? String(event?.detail || '') : ''; },
     syncTargetName() { const selected = getCurrentContext(); if (selected?.id === this.target) this.targetName = selected.name || selected.title || ''; },
-    async mountPanel() { this.panelOpen = true; if (!this.active) this.target = getCurrentContextId() || ''; this.syncTargetName(); await this.refresh(); await this.history(); },
+    // The conversation the panel shows while voice is off: the one across chats when the setting says so, else the selected chat's own.
+    idleTarget() { return this.settings?.conversation_scope === 'global' ? GLOBAL_SCOPE : (getCurrentContextId() || ''); },
+    // Where work goes by default in the conversation across chats. Voice off: the selected chat. Voice on: a changed selection is
+    // told to the server (`convo.work`), lightly debounced and never while the conversation starts or re-attaches.
+    noteWork() {
+        if (!this.across) return;
+        if (!this.session) { if (!this.busy) { this.work = getCurrentContextId() || ''; this.workName = hostChatName(this.work); } return; }
+        if (this.busy || reattaching || this.selected === workAsked) return;
+        clearTimeout(workTimer);
+        workTimer = setTimeout(() => { void this.sendWork(); }, this.workDebounceMs);
+    },
+    async sendWork() {
+        const chat = getCurrentContextId() || '', session = this.session;
+        if (workSending || !session || this.busy || reattaching || !this.across || chat === workAsked) return false;
+        workSending = true;
+        try {
+            const result = await request('work', { ...identity(), chat });
+            if (this.session?.id !== session.id) return false;
+            workAsked = chat;
+            this.work = typeof result.work === 'string' ? result.work : chat; this.workName = String(result.name || '').slice(0, 120);
+            settled('work');
+            return true;
+        } catch (error) {
+            // `stale`/`busy` are ordinary and tried again at the next look; any other refusal is said once for this selection.
+            if (error?.kind !== 'stale' && error?.kind !== 'busy' && this.session?.id === session.id) { workAsked = chat; failSource('work', error); }
+            return false;
+        } finally { workSending = false; }
+    },
+    // Which chat a task went to, for the list in the conversation across chats: the name the server gave when it was queued, else
+    // the host chat list's; '' when neither knows (the name is then left out). A chat's own conversation never shows it.
+    jobChat(job) { return this.across && job ? (jobChats.get(job.id) || hostChatName(job.target)) : ''; },
+    async mountPanel() { this.panelOpen = true; if (!this.active) this.target = this.idleTarget(); this.syncTargetName(); await this.refresh(); await this.history(); },
     unmountPanel() { this.panelOpen = false; },
     get enabled() { return !!this.settings?.enabled; },
     get active() { return !!this.session; },
@@ -648,9 +988,10 @@ export const store = createStore('convo', {
             this.runtime = data.runtime || {mode: 'external'};
             this.owner = data.voice_owner && typeof data.voice_owner === 'object' ? { ...data.voice_owner } : null;
             this.selected = getCurrentContextId() || '';
-            if (this.selected && this.error === NO_CHAT) this.error = '';          // a chat was chosen since: that complaint is no longer true
-            if (!this.active && !this.busy) { this.target = getCurrentContextId() || ''; this.targetName = ''; }
+            if (!this.active && !this.busy) { this.target = this.idleTarget(); this.targetName = ''; }
             this.syncTargetName();
+            this.noteWork();
+            settled('status');
             updateOrb();
             if (!this.enabled && (this.active || this.busy)) await this.stop();
             if (!this.enabled && orbDrafting) void this.endDictation({ cancel: true, reason: 'off', continuous: true });
@@ -662,10 +1003,11 @@ export const store = createStore('convo', {
             // Disabled plugins can disappear from the host API registry. Losing
             // status must release capture/playback, not leave an ambient mic open.
             this.settings = null;
-            if (this.active || this.busy) await this.stop();
+            const ended = this.active || this.busy;
+            if (ended) await this.stop();
             if (orbDrafting) void this.endDictation({ cancel: true, reason: 'off', continuous: true });
             if (hostDrafting) stopHostDrafting(host, mic => mic.discardConvoDictation());
-            fail(error);
+            if (ended) failEnded(error); else failSource('status', error);
         }
     },
     // The page remembers the first build it saw; a later poll reporting another one shows a non-blocking banner (never a reload).
@@ -677,7 +1019,7 @@ export const store = createStore('convo', {
     reloadPage() { globalThis.location?.reload?.(); },
     async show() {
         await this.refresh(); this.panelOpen = true;
-        if (!this.active) this.target = getCurrentContextId() || '';
+        if (!this.active) this.target = this.idleTarget();
         await openModal('/plugins/_convo/webui/main.html');
         await this.history();
     },
@@ -690,8 +1032,9 @@ export const store = createStore('convo', {
         try {
             await import('/plugins/_convo/webui/setup-store.js');
             const { ensureModalOpen } = await import('/js/modals.js');
+            settled('settings');
             await ensureModalOpen('/plugins/_convo/webui/settings-modal.html', () => this.settingsMayClose());
-        } catch (error) { fail(error); }
+        } catch (error) { failSource('settings', error); }
     },
     async settingsMayClose() {
         const { store: setup } = await import('/plugins/_convo/webui/setup-store.js');
@@ -712,10 +1055,10 @@ export const store = createStore('convo', {
     async migrateSettings() {
         try {
             const preview = await callJsonApi(endpoint, { action: 'migration_preview' });
-            if (!preview.changed) { this.error = 'No legacy settings need migration.'; return; }
+            if (!preview.changed) { this.say('No legacy settings need migration.'); return; }
             if (!window.confirm('Merge legacy Enhanced Speech settings into Convo? Existing Convo values win; rollback state will be retained.')) return;
             await callJsonApi(endpoint, { action: 'migrate' });
-            await this.refresh(); this.error = 'Migration saved. Close and reopen plugin settings before editing them.';
+            await this.refresh(); this.say('Migration saved. Close and reopen plugin settings before editing them.');
         } catch (error) { fail(error); }
     },
     // A short, honest message instead of a failed start: development mode keeps browser voice idle on purpose.
@@ -732,8 +1075,8 @@ export const store = createStore('convo', {
     // usual per-connection shutdown and starts this one. Two pages taking over at once: one wins, the other is told who has it.
     async start({ takeover = '' } = {}) {
         if (this.busy || this.active) return;
-        const attempt = ++generation; this.busy = true; this.error = ''; this.state = 'connecting'; this.movedTo = '';
-        updateOrb();
+        const attempt = ++generation; this.busy = true; this.state = 'connecting'; this.movedTo = '';
+        forgetError();
         let ownedClient = null, ownedAudio = null;
         try {
             await this.refresh();
@@ -746,9 +1089,12 @@ export const store = createStore('convo', {
                 if (typeof mic.dispose !== 'function') throw new Error('Native microphone cannot be safely released on this host. Reload with the Convo compatibility adapter.');
                 mic.dispose(); binding.store.microphoneInput = null;
             }
-            this.target = getCurrentContextId() || '';
+            // The selected chat, or none: the server decides which conversation this is (`session.target`). With no chat selected,
+            // or the setting "global", it is the one across chats and the selected chat is only where work goes.
+            const chat = getCurrentContextId() || '';
+            this.target = chat ? this.idleTarget() : GLOBAL_SCOPE;
             this.syncTargetName();
-            if (!this.target) throw new Error(NO_CHAT);
+            if (this.across) { this.work = chat; this.workName = hostChatName(chat); }
             ownedClient = createNamespacedClient('/ws'); client = ownedClient;
             ownedClient.addHandlers(['plugins/_convo/realtime']);
             await ownedClient.on('convo.disabled', () => { if (client === ownedClient) void this.stop(); });
@@ -778,7 +1124,13 @@ export const store = createStore('convo', {
                 if (client === ownedClient && event?.type === 'notice' && (!this.session || event.session_id === this.session.id)) {
                     // `held` (the assistant chose to stay silent, or waits for more): developer mode only, never shown otherwise.
                     if (event.kind === 'held') { if (this.settings?.developer_mode) this.say(heldNote(event)); return; }
-                    if (event.kind === 'loading') this.loading = String(event.message || '').slice(0, 200);
+                    if (event.kind === 'loading') { this.loading = String(event.message || '').slice(0, 200); this.unavailable = ''; }
+                    // A server Convo needs does not answer: shown as waiting, never as an error, until it answers again (`ready`, or a
+                    // reply's words or sound) or the conversation stops.
+                    else if (event.kind === 'unavailable') {
+                        this.unavailable = String(event.message || 'A server Convo needs does not answer.').slice(0, 200); this.loading = '';
+                        logProblem(this.unavailable, event.turn_id);
+                    } else if (event.kind === 'ready') { this.loading = ''; this.unavailable = ''; }
                     else if (event.kind === 'activity') this.activity = String(event.message || '').slice(0, 200);
                     else globalThis.justToast?.(String(event.message || ''), 'info');
                     updateOrb();
@@ -795,27 +1147,40 @@ export const store = createStore('convo', {
                     if (this.settings.transcription_enabled && this.mode === 'active' && typeof event.audio === 'string') void wantedTranscript(event, ids, this);
                     return;
                 }
+                // Asking first and "open …" belong to the conversation, not to one reply: a barge-in since then moved the epoch on.
+                if (client === ownedClient && this.session && event?.session_id === this.session.id) {
+                    if (event.type === 'action.pending') { showAction(event); return; }
+                    if (event.type === 'action.resolved') { if (event.id) clearAction(String(event.id)); return; }
+                    if (event.type === 'ui.open') { void answerOpen(event); return; }
+                    // The spoken notice of a finished task could not be spoken: it is offered again (the server bounds how often).
+                    if (event.type === 'notice_retry') { if (event.job_id) noticeSeen.delete(String(event.job_id)); return; }
+                }
                 if (client !== ownedClient || !this.session || event?.session_id !== this.session.id || event.epoch !== this.session.epoch) return;
                 if (event.type === 'candidate.state') {
                     const candidate = candidates.get(event.turn_id);
                     if (!candidate || event.sequence < candidate.sequence) return;
+                    if (candidate.dropped) return;                                          // muted meanwhile: nothing is decided about it any more
                     // A completed turn's decision is final: a withheld or degraded one is simply not answered, so the
                     // assistant is no longer ducked for it (unless a newer utterance is already open). `listen` is still
                     // pending: the reply stays ducked and the hold is renewed (the safety timer still ends it).
                     const terminal = event.final && !['considering', 'listen'].includes(event.state);
                     if (event.state === 'continue') releaseAfterSpeech();   // a backchannel or side remark: the reply plays on
+                    // `listen` for a finished utterance: whether it goes on with the conversation is being read; nothing is turned down for it.
+                    else if (event.final && event.state === 'listen') { if (!undecided(event.turn_id)) hold(false); }
                     else hold(['considering', 'withhold', 'degraded', 'listen'].includes(event.state) && !(terminal && !undecided(event.turn_id)));
                     if (event.state === 'ignore' && event.reason) noteNotAnswered(event.turn_id, event.reason);
-                    if (event.state === 'degraded') fail(new Error((event.reason || "Convo's classifier didn't answer") + (terminal ? ', so this turn was not answered.' : '; the reply is turned down until it does.')));
+                    if (event.state === 'degraded') failTurn(new Error((event.reason || "Convo's classifier didn't answer") + (terminal ? ', so this turn was not answered.' : '; the reply is turned down until it does.')), event.turn_id);
                     // Whisper is not asked here: the server asks for a turn's words once its reply has been heard, and never for a turn
                     // the model declined (background noise); see `transcript.wanted` above.
                     if (terminal) candidates.delete(event.turn_id);
                     return;
                 }
                 if (event.type === 'camera.request') { void answerCamera(event); return; }     // the model called the camera tool
+                if (event.type === 'screen.request') { void answerScreen(event); return; }     // the model called the screen tool
                 if (event.type === 'state' || event.type === 'text.delta' || event.type === 'error') { this.loading = ''; this.activity = ''; }
                 if (event.type === 'state') { this.state = event.state; lastActivity = Date.now(); updateOrb(); }
-                if (event.type === 'error') { if (audio?.pcm?.size) audio.interrupt(); fail(new Error(event.message)); }
+                if (event.type === 'error') { if (audio?.pcm?.size) audio.interrupt(); failTurn(new Error(event.message), event.turn_id); }
+                if (event.type === 'text.delta' || event.type === 'audio.begin' || event.type === 'audio.phrase') replyWorks(typeof event.turn_id === 'string' ? event.turn_id : '');
                 if (event.type === 'text.delta') {
                     // The draft follows one turn; once that turn's words are in the history, the history shows them instead.
                     const turn = typeof event.turn_id === 'string' ? event.turn_id : '';
@@ -829,9 +1194,9 @@ export const store = createStore('convo', {
                     if (this.policyHold && !undecided('')) hold(false, true);   // a new reply is never born ducked by a decision that already ended
                     this.state = 'speaking'; updateOrb(); mark(event.turn_id, 'audio_event');
                     const acknowledge = status => {
-                        if (status === 'started') { mark(event.turn_id, 'source_start'); playbackRecovered(); }
+                        if (status === 'started') { mark(event.turn_id, 'source_start'); playbackRecovered(event.turn_id); }
                         if (client === ownedClient && event.session_id === this.session?.id && event.epoch === this.session?.epoch)
-                            void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status }).catch(fail);
+                            void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status }).catch(error => acknowledgeFailed(error, event.turn_id));
                     };
                     audio?.pcmBegin(event, () => acknowledge('completed'), () => acknowledge('started'));
                 }
@@ -842,25 +1207,40 @@ export const store = createStore('convo', {
                     if (this.policyHold && !undecided('')) hold(false, true);
                     this.state = 'speaking'; updateOrb(); mark(event.turn_id, 'audio_event');
                     audio?.enqueue(event.audio, () => {
-                        if (event.epoch === this.session?.epoch) void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status: 'completed' }).catch(fail);
+                        if (event.epoch === this.session?.epoch) void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status: 'completed' }).catch(error => acknowledgeFailed(error, event.turn_id));
                     }, () => {
-                        mark(event.turn_id, 'source_start'); playbackRecovered();
-                        if (event.epoch === this.session?.epoch) void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status: 'started' }).catch(fail);
+                        mark(event.turn_id, 'source_start'); playbackRecovered(event.turn_id);
+                        if (event.epoch === this.session?.epoch) void request('playback', { ...identity(), turn_id: event.turn_id, phrase_id: event.phrase_id, status: 'started' }).catch(error => acknowledgeFailed(error, event.turn_id));
                     }, event.phrase_id);
+                }
+                if (event.type === 'job.queued' && event.job_id && typeof event.chat === 'string' && event.chat) {   // which chat the task went to
+                    jobChats.set(String(event.job_id), event.chat.slice(0, 80));
+                    while (jobChats.size > 64) jobChats.delete(jobChats.keys().next().value);
                 }
                 if (event.type === 'job.queued' || (event.type === 'state' && event.state === 'listening')) void this.history();
             });
-            const response = await request('start', { target: this.target, mode: this.mode, page: pageId(), device: deviceName(),
+            const response = await request('start', { target: chat, mode: this.mode, page: pageId(), device: deviceName(),
                 ...(takeover ? { takeover: String(takeover) } : {}) }, ownedClient);
             if (attempt !== generation) { await request('stop', { session_id: response.session.id }, ownedClient).catch(() => {}); return; }
-            this.session = response.session; this.owner = null;
+            this.session = response.session; this.owner = null; this.muted = false; this.talking = false;
+            // The server says which conversation it is; a session without a target (an older server) is the chat's own, as before.
+            if (typeof response.session?.target === 'string' && response.session.target && response.session.target !== this.target) {
+                this.target = response.session.target; this.targetName = ''; this.syncTargetName();
+            }
+            // The server says which chat work goes to (it drops a selected chat that no longer exists).
+            if (this.across) {
+                this.work = typeof response.work === 'string' ? response.work : chat;
+                this.workName = response.work ? String(response.work_name || '').slice(0, 120) || hostChatName(this.work) : hostChatName(this.work);
+                workAsked = chat;
+            }
             if (this.cameraShared) void this.syncCamera();
+            if (this.screenShared) void this.syncScreen();
             // The phone audio mode is fixed now, for the whole conversation (changing it means reopening the microphone, which itself
             // moves the phone between its call and media streams). Device names only: nothing is opened to find them.
             const choices = readChoices(this.soundInput());
             audioMode = phoneAudioMode({ phone: isPhone(), devices: await listDevices(), override: choices.phone_mode });
             const sound = this.soundValues(), key = this.soundKey();
-            ownedAudio = new AudioSession({ maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            ownedAudio = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 echoState: echoByMode.get(audioMode.mode) ?? null, page: pageAudio(), processing: captureProcessing(audioMode.mode, choices), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },
@@ -877,15 +1257,17 @@ export const store = createStore('convo', {
             if (chosen) void this.chooseOutput(chosen);
             refreshDrawer();
             this.state = 'listening'; updateOrb(); await this.history();
-        } catch (error) { if (attempt === generation) { fail(error); await this.stop(); } }
+        } catch (error) { if (attempt === generation) { failEnded(error); await this.stop(); } }
         finally {
             if (attempt !== generation) { ownedAudio?.close(); ownedClient?.disconnect(); }
             else { this.busy = false; updateOrb(); }
         }
     },
     async stop() {
-        this.stopCamera(false);
-        generation++; clipCapture = null; this.clipArmed = ''; this.meter = { level: 0, withheld: false, voiced: false, state: '' }; this.busy = false; this.state = 'off'; this.loading = ''; this.activity = ''; this.audioPaused = false; this.micIssue = null; draftTurn = ''; playbackFault = '';
+        this.stopCamera(false); this.stopScreen(false); clearAction(); this.links = [];
+        clearTimeout(workTimer); workTimer = null; workAsked = null;
+        generation++; clipCapture = null; this.clipArmed = ''; this.meter = { level: 0, withheld: false, voiced: false, state: '' }; this.busy = false; this.state = 'off'; this.loading = ''; this.unavailable = ''; this.activity = ''; this.audioPaused = false; this.micIssue = null; draftTurn = ''; replyTurn = ''; playbackFault = '';
+        this.muted = false; this.talking = false; abandoned = null;
         setHearing(false); this.policyHold = false; clearTimeout(holdTimer); holdTimer = null;
         candidateCapture = null; candidatePending = null; candidates.clear(); reattaching = null; this.reconnecting = false;
         if (recording) { clearTimeout(recording.timer); recording.resolve(null); recording = null; }
@@ -905,7 +1287,7 @@ export const store = createStore('convo', {
         const attempt = generation, session = this.session;
         reattaching = { deadline: Date.now() + this.reattachGraceMs };
         this.reconnecting = true; audio?.interrupt?.(); hold(false, true); setHearing(false);
-        candidateCapture = null; candidatePending = null; this.draft = '';
+        candidateCapture = null; candidatePending = null; abandoned = null; this.draft = '';
         this.say('Connection lost — reconnecting to the conversation…'); updateOrb();
         while (attempt === generation && client === socket && reattaching && Date.now() < reattaching.deadline) {
             try {
@@ -917,14 +1299,14 @@ export const store = createStore('convo', {
             } catch (error) {
                 if (attempt !== generation || client !== socket) return false;
                 if (error?.kind) {                                   // the server answered: it no longer has this conversation
-                    reattaching = null; fail(new Error('The conversation ended while the connection was down (' + error.message + ').'));
+                    reattaching = null; failEnded(new Error('The conversation ended while the connection was down (' + error.message + ').'));
                     await this.stop(); return false;
                 }
             }
             await new Promise(resolve => setTimeout(resolve, this.reattachRetryMs));
         }
         if (attempt === generation && client === socket) {
-            reattaching = null; fail(new Error('Voice disconnected and could not reconnect in time. Jobs continue in their target chats.'));
+            reattaching = null; failEnded(new Error('Voice disconnected and could not reconnect in time. Jobs continue in their target chats.'));
             await this.stop();
         }
         return false;
@@ -981,10 +1363,10 @@ export const store = createStore('convo', {
             const video = document.createElement('video');
             video.muted = true; video.playsInline = true; video.srcObject = stream;
             await video.play?.().catch(() => {});
-            cameraStream = stream; cameraVideo = video; this.cameraShared = true;
+            cameraStream = stream; cameraVideo = video; this.cameraShared = true; settled('camera');
             stream.getVideoTracks?.()[0]?.addEventListener?.('ended', () => this.stopCamera());
             await this.syncCamera();
-        } catch (error) { releaseCamera(); this.cameraShared = false; fail(error); }
+        } catch (error) { releaseCamera(); this.cameraShared = false; failSource('camera', error); }
     },
     stopCamera(tell = true) {
         const was = this.cameraShared;
@@ -994,21 +1376,83 @@ export const store = createStore('convo', {
     async toggleCamera() { if (this.cameraShared) this.stopCamera(); else await this.shareCamera(); },
     async syncCamera() {
         if (!this.session) return;
-        try { this.cameraOffered = !!(await request('camera', { ...identity(), shared: this.cameraShared }))?.offered; }
-        catch (error) { fail(error); }
+        try { this.cameraOffered = !!(await request('camera', { ...identity(), shared: this.cameraShared }))?.offered; settled('camera'); }
+        catch (error) { failSource('camera', error); }
     },
     get cameraLabel() {
         if (!this.cameraShared) return 'Share camera';
         return this.cameraOffered || !this.session ? 'Stop camera' : 'Stop camera · model does not take images';
     },
+    // "Share screen": the browser's own picker (it needs the press that called this), the stream kept here, the session told. The
+    // button is hidden where the browser has no `getDisplayMedia` (phones). Closing the picker is a choice, not an error.
+    get canShareScreen() { return typeof globalThis.navigator?.mediaDevices?.getDisplayMedia === 'function'; },
+    async shareScreen() {
+        if (this.screenShared) return;
+        try {
+            const media = globalThis.navigator?.mediaDevices;
+            if (typeof media?.getDisplayMedia !== 'function') throw new Error('This browser cannot share a screen here.');
+            const stream = await media.getDisplayMedia({ video: true, audio: false });
+            const video = document.createElement('video');
+            video.muted = true; video.playsInline = true; video.srcObject = stream;
+            await video.play?.().catch(() => {});
+            screenStream = stream; screenVideo = video; this.screenShared = true; settled('screen');
+            // The browser's own "Stop sharing" bar ends the track: the page follows.
+            stream.getVideoTracks?.()[0]?.addEventListener?.('ended', () => { if (screenStream === stream) this.stopScreen(); });
+            await this.syncScreen();
+        } catch (error) {
+            releaseScreen(); this.screenShared = false;
+            if (error?.name === 'NotAllowedError' || error?.name === 'AbortError') this.say('Nothing is shared: screen sharing was not started.');
+            else failSource('screen', error);
+        }
+    },
+    stopScreen(tell = true) {
+        const was = this.screenShared;
+        releaseScreen(); this.screenShared = false; this.screenOffered = false;
+        if (was && tell && this.session) void request('screen', { ...identity(), shared: false }).catch(() => {});
+    },
+    async toggleScreen() { if (this.screenShared) this.stopScreen(); else await this.shareScreen(); },
+    async syncScreen() {
+        if (!this.session) return;
+        try { this.screenOffered = !!(await request('screen', { ...identity(), shared: this.screenShared }))?.offered; settled('screen'); }
+        catch (error) { failSource('screen', error); }
+    },
+    get screenLabel() {
+        if (!this.screenShared) return 'Share screen';
+        return this.screenOffered || !this.session ? 'Stop screen' : 'Stop screen · model does not take images';
+    },
+    // The pending-action card's buttons: Run (`run: true`) or Dismiss. The card goes once the server took the answer, and also
+    // when the server says the question is no longer open (`stale`: answered by voice, replaced or expired meanwhile); any other
+    // failed send leaves it for another press (it still expires by itself).
+    async answerAction(run) {
+        const action = this.pendingAction;
+        if (!action || action.busy) return false;
+        this.pendingAction = { ...action, busy: true };
+        try {
+            await request('action', { ...identity(), id: action.id, run: !!run });
+            clearAction(action.id); settled('action');
+            return true;
+        } catch (error) {
+            if (error?.kind === 'stale') { clearAction(action.id); return false; }
+            if (this.pendingAction?.id === action.id) this.pendingAction = { ...action, busy: false };
+            failSource('action', error);
+            return false;
+        }
+    },
+    // A link card goes once it was tapped (after the browser followed the link, hence the timer) or dismissed.
+    linkTapped(id) { setTimeout(() => this.closeLink(id), 0); },
+    closeLink(id) { this.links = this.links.filter(link => link.id !== id); },
     async interrupt() {
-        audio?.interrupt(); this.draft = '';
+        audio?.interrupt(); this.draft = ''; abandoned = null;
+        if (this.policyHold && !undecided('')) hold(false, true);
         if (!this.session) return;
         const before = this.session.id;
         try {
             const result = await request('interrupt', identity());
             if (this.session?.id === before) { this.session = result.session; this.state = 'listening'; updateOrb(); }
-        } catch (error) { fail(error); await this.stop(); }
+        } catch (error) {
+            if (error?.kind === 'stale' && this.session?.id === before) return;     // the reply was over by itself: nothing left to stop
+            failEnded(error); await this.stop();
+        }
     },
     async turn(value, attempt, meta = null) {
         if (clipCapture) { await saveClip(value, attempt); return; }
@@ -1033,14 +1477,18 @@ export const store = createStore('convo', {
             if (!candidate) return;
             candidate.sequence++; candidate.final = true;
             await request('candidate', { ...ids, turn_id, sequence: candidate.sequence, final: true, transcript, ...overlapFields(candidate, voicedOf(meta), true) });
-        } catch (error) { fail(error); }
+        } catch (error) { failTurn(error, turn_id); }
     },
     // Advanced synthesis controls (synthesis-setup.js): a profile and overrides for this voice session, from its next reply; nothing
     // is saved. Resolves to the server's answer ({ok, effective}); a refusal throws with the server's words.
     // `{ read: true }` only reports what the conversation speaks with; `pending` in the answer means "applies when ready" (retry).
     async tune(profile_id, overrides, { read = false } = {}) {
         if (!this.session) throw new Error('Start a conversation first: these values apply to a running voice session.');
-        return request('tune', { ...identity(), profile_id: String(profile_id || ''), overrides: { ...(overrides || {}) }, ...(read ? { read: true } : {}) });
+        try {
+            const result = await request('tune', { ...identity(), profile_id: String(profile_id || ''), overrides: { ...(overrides || {}) }, ...(read ? { read: true } : {}) });
+            if (!read) settled('tune');
+            return result;
+        } catch (error) { if (!read) logProblem(error?.message || String(error)); throw error; }     // the voice row shows it; the log keeps it
     },
     // The output could not be resumed by itself (the notice says "Audio paused — click to resume"); the button asks again.
     async resumeAudio() { return !!(await audio?.ensureRunning?.()); },
@@ -1055,11 +1503,12 @@ export const store = createStore('convo', {
         } catch (error) { return { ok: false, message: 'The test sound could not be played: ' + (error?.message || String(error)) }; }
     },
     async retarget() {
+        if (this.across) { if (this.session) await this.sendWork(); return; }   // across chats a selection is only where work goes
         const target = getCurrentContextId();
         if (!target || target === this.target) return;
         if (!this.session) { this.target = target; this.targetName = ''; this.syncTargetName(); await this.history(); return; }
         const attempt = ++generation;
-        setHearing(false);
+        setHearing(false); abandoned = null;
         this.busy = true; updateOrb();
         // The page's output keeps running across the switch (no suspend between the old capture and the new one).
         let keep = null; try { keep = pageAudio()?.keep?.() || null; } catch {}
@@ -1072,7 +1521,7 @@ export const store = createStore('convo', {
             if (attempt !== generation) return;
             const sound = this.soundValues();
             // The same page output and the same phone audio mode as the conversation it continues (the mode is fixed per conversation).
-            const replacement = new AudioSession({ maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            const replacement = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 page: pageAudio(), processing: captureProcessing(audioMode.mode, readChoices(this.soundInput())), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },
@@ -1080,7 +1529,7 @@ export const store = createStore('convo', {
                 onPlaybackState: playbackState, onEchoMetric: m => { try { taps.echo?.(m) } catch {} } });
             audio = replacement; await replacement.start();
             if (attempt !== generation) replacement.close();
-        } catch (error) { fail(error); await this.stop(); }
+        } catch (error) { failEnded(error); await this.stop(); }
         finally { keep?.(); if (attempt === generation) { this.busy = false; updateOrb(); } }
         await this.history();
     },
@@ -1109,8 +1558,9 @@ export const store = createStore('convo', {
                 if (stick) this.queueSettle();
                 else this.unseen += this.visibleEvents.filter(entry => !shown.has(entryKey(entry))).length;   // new entries, not new journal rows
             }
+            settled('history');
             if (this.active) void this.deliverNotice();
-        } catch (error) { fail(error); }
+        } catch (error) { failSource('history', error); }
     },
     // Older messages are fetched on request and added above without moving what the reader is looking at.
     async loadEarlier() {
@@ -1122,8 +1572,9 @@ export const store = createStore('convo', {
             if (this.target !== target) return;
             this.events = mergeEvents(this.events, result.events);
             this.moreEarlier = !!result.more;
+            settled('history');
             afterRender(() => restoreAnchor(element, anchor));
-        } catch (error) { fail(error); }
+        } catch (error) { failSource('history', error); }
         finally { this.loadingEarlier = false; }
     },
     bindTranscript(element) { scroller = element; stick = true; this.pinned = true; this.unseen = 0; this.queueSettle(); },
@@ -1148,19 +1599,21 @@ export const store = createStore('convo', {
     },
     async deliverNotice() {
         if (!this.session || noticePending || capturing || this.busy || this.state !== 'listening' || audio?.playing || audio?.decoding || audio?.pcm?.size || audio?.queue?.length || Date.now() - lastActivity < 4000) return;
-        const job = this.jobs.find(job => job.session === this.session.id && job.target === this.target && ['completed','failed','uncertain'].includes(job.status) && !noticeSeen.has(job.id));
+        // The jobs this conversation's history returned: a chat's own conversation has only that chat's; the one across chats has
+        // each job under its real chat (`job.target`), whichever chat it ran in.
+        const job = this.jobs.find(job => job.session === this.session.id && (this.across || job.target === this.target) && ['completed','failed','uncertain'].includes(job.status) && !noticeSeen.has(job.id));
         if (!job) return;
-        noticePending = true;
+        noticePending = true; noticeSeen.add(job.id);               // before the request: a `notice_retry` may follow its answer at once
         try {
             const result = await request('notice', { ...identity(), job_id: job.id });
-            if (!result.busy) noticeSeen.add(job.id);
-        } catch (error) { fail(error); noticeSeen.add(job.id); }
+            if (result.busy) noticeSeen.delete(job.id);
+        } catch (error) { failTurn(error); }
         finally { noticePending = false; }
     },
-    async cancelJob(job) { try { await callJsonApi(endpoint, { action: 'cancel_job', target: job.target, job_id: job.id }); await this.history(); } catch (error) { fail(error); } },
+    async cancelJob(job) { try { await callJsonApi(endpoint, { action: 'cancel_job', target: job.target, job_id: job.id }); settled('job'); await this.history(); } catch (error) { failSource('job', error); } },
     async steerJob(job) {
         const text = window.prompt('Explicitly steer this running job:');
-        if (text?.trim()) try { await callJsonApi(endpoint, { action: 'steer_job', target: job.target, job_id: job.id, text }); } catch (error) { fail(error); }
+        if (text?.trim()) try { await callJsonApi(endpoint, { action: 'steer_job', target: job.target, job_id: job.id, text }); settled('job'); } catch (error) { failSource('job', error); }
     },
     // Dictation. One owned capture: a live Convo voice session is closed cleanly first (and not resumed), and a second start while one
     // runs is a no-op. `held` is a press still down (orb hold): the host recorder records unconditionally until the press is released
@@ -1253,11 +1706,11 @@ export const store = createStore('convo', {
                     if (this.dictationHolding && typeof mic.startManual === 'function') await mic.startManual(); else await mic.toggle();
                 } catch (error) { mic.dispose?.(); binding.store.microphoneInput = null; throw error; }
             }
-            this.dictating = true; updateOrb();
+            this.dictating = true; settled('dictation'); updateOrb();
             watchHostEnd(mic);
             mic.setManual?.(this.dictationHolding);      // the press may have been released while the recorder opened
             if (dictationWasVoice) store.say('Convo voice was paused for dictation. Click the orb to start it again.');   // said once, never queued behind the announcement
-        })().catch(error => { this.dictationMode = ''; this.dictationHolding = false; dictationHeld = false; fail(error); }).finally(() => { dictationPromise = null; });
+        })().catch(error => { this.dictationMode = ''; this.dictationHolding = false; dictationHeld = false; failSource('dictation', error); }).finally(() => { dictationPromise = null; });
         return dictationPromise;
     },
     // `reason` 'sent' (the user sent the message) or 'off' (Convo was turned off) changes only what is said at the end; `continuous`
@@ -1280,7 +1733,7 @@ export const store = createStore('convo', {
             } else if (typeof mic?.finishConvoDictation === 'function') { outcome = await mic.finishConvoDictation(); binding.store.microphoneInput = null; }
             else { await mic?.toggle(); }
             return dictationReport(outcome, { continuous: wasDrafting, phrases: mic?.phrasesAdded || 0, reason: reason === 'sent' || reason === 'off' ? reason : 'finish' });
-        })().catch(fail).finally(() => { dictationEnding = null; });
+        })().catch(error => failSource('dictation', error)).finally(() => { dictationEnding = null; });
         return dictationEnding;
     },
     async toggleDictation() { if (this.dictating || dictationHeld) await this.endDictation(); else await this.beginDictation(); },
@@ -1333,12 +1786,8 @@ export function install() {
         event.preventDefault(); event.stopImmediatePropagation();
         void stopHostDrafting(host, recorder => recorder.discardConvoDictation());
     }, true);
-    document.addEventListener('keydown', event => {
-        if (!store.enabled || event.repeat || event.isComposing) return;
-        const parts = (store.settings.hotkey || '').split('+'); const key = parts.pop();
-        if (event.ctrlKey !== parts.includes('Ctrl') || event.shiftKey !== parts.includes('Shift') || event.altKey !== parts.includes('Alt') || event.metaKey !== parts.includes('Meta')) return;
-        if ((key === 'Space' && event.code === 'Space') || (key && event.key.toLowerCase() === key.toLowerCase())) { event.preventDefault(); void store.toggle(); }
-    });
+    // The configurable hotkeys (and the older `hotkey`): hotkeys.js decides what a press means, the store acts (store.hotkey).
+    bindHotkeys({ store, document, window });
     window.addEventListener('pagehide', () => { audio?.close(); client?.disconnect(); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) void store.refresh(); });   // a returning tab checks for changes made elsewhere
     refreshTimer = setInterval(() => {

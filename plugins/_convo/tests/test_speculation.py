@@ -18,7 +18,7 @@ SPEC = {'speculative_reply': True}
 SPEC_NO_TOOLS = {**SPEC, 'roles': {'conversation': {'capabilities': {'tool_calls': False}}}}
 # A model without native tools is still offered them, described in writing (convo_tools.tool_mode); a conversation that offers no
 # tools at all is the case where a turn may not use one.
-OFFERS_NOTHING = patch.object(importlib.import_module('plugins._convo.helpers.convo_tools'), 'BASE', ())
+OFFERS_NOTHING = patch.object(importlib.import_module('plugins._convo.helpers.convo_tools'), 'offered', lambda **_: [])
 REPLY = [('The first sentence of this reply is deliberately long enough to be spoken. ', .3),
          ('The second sentence follows right after it for a short while. ', .3)]
 
@@ -113,12 +113,14 @@ class HeldReply(Scenario):
             await h.until(1.0)                                  # the model has proposed a job; the classifier is still deciding
             before = {'jobs': h.jobs(), 'wake': list(h.dispatches) == woken, 'directs': list(h.host.directs)}
             await h.settle()
-            return before, [(j['turn'], j['prompt'], j['status']) for j in h.jobs()], len(h.answers), marks('t')
+            return before, [(j['turn'], j['prompt'], j['status']) for j in h.jobs()], [a.get('tool_turn', {}).get('name') for a in h.answers], marks('t')
         (before, jobs, answers, seen), _ = self.play(scenario, config=SPEC, proposal=DELEGATE_TASK, model_deltas=[('Okay.', .2)],
                                                      classifier={'ask': script(DELEGATE, 1.4)})
         self.assertEqual(before, {'jobs': [], 'wake': True, 'directs': []})
         self.assertEqual(jobs, [('t', 'Write the weekly report', 'queued')])
-        self.assertEqual((answers, seen), (1, ['spec.start', 'spec.promote']))
+        # The held reply is the turn's one first pass (never asked again); the only other request is the model's answer to
+        # Convo's word that the task is queued, made after admission like any tool's follow-up.
+        self.assertEqual((answers, seen), ([None, 'delegate_task'], ['spec.start', 'spec.promote']))
 
     @OFFERS_NOTHING
     def test_a_proposal_the_classifier_did_not_authorise_discards_the_held_reply_and_changes_nothing(self):

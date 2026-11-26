@@ -17,11 +17,16 @@ test('The orb is a pure function of state, and Convo owns it only when enabled',
         [{ active: true, state: 'listening', hearing: true }, 'hearing'],
         [{ active: true, state: 'considering' }, 'thinking'], [{ active: true, state: 'thinking', hearing: true }, 'thinking'],
         [{ active: true, state: 'speaking' }, 'speaking'], [{ active: true, state: 'speaking', hearing: true }, 'speaking'],
+        [{ active: true, muted: true, state: 'listening' }, 'muted'], [{ active: true, muted: true, state: 'speaking', playing: true }, 'muted'],
+        [{ active: true, muted: true, state: 'listening', loading: 'Loading…' }, 'muted'],          // that the microphone is off outranks a wait
+        [{ active: true, muted: true, busy: true }, 'connecting'], [{ active: false, muted: true }, 'ready'],
+        [{ active: true, muted: true, error: 'Boom' }, 'error'], [{ dictating: true, muted: true, active: true }, 'dictating-latched'],
         [{ dictating: true, active: true, state: 'speaking' }, 'dictating-latched'],
         [{ dictating: true, dictationMode: 'latched' }, 'dictating-latched'],
         [{ dictating: true, dictationMode: 'ptt' }, 'dictating-ptt'],
         [{ error: 'Boom', active: true, state: 'listening' }, 'error'],
         [{ loading: 'Loading Gemma on desktop…', active: true, state: 'listening' }, 'loading'],   // a model a router is loading
+        [{ unavailable: 'The classifier does not answer.', active: true, state: 'listening' }, 'loading'],
         [{ error: 'Boom', dictating: true }, 'dictating-latched'],    // an active dictation outranks a stale error
     ];
     for (const [snapshot, expected] of table) assert.equal(view(snapshot).id, expected, JSON.stringify(snapshot));
@@ -33,12 +38,18 @@ test('Every state has a spoken label; only a live session reads as pressed; a ho
         const snapshot = { ready: { active: false }, idle: { active: false, devIdle: true }, connecting: { busy: true }, listening: { active: true, state: 'listening' },
             hearing: { active: true, state: 'listening', hearing: true }, thinking: { active: true, state: 'considering' }, speaking: { active: true, state: 'speaking' },
             'dictating-latched': { dictating: true }, 'dictating-ptt': { dictating: true, dictationMode: 'ptt' }, error: { error: 'Provider down' },
-            loading: { active: true, state: 'listening', loading: 'Loading Gemma on desktop…' } }[id];
+            loading: { active: true, state: 'listening', loading: 'Loading Gemma on desktop…' }, muted: { active: true, state: 'listening', muted: true } }[id];
         const v = view(snapshot);
         assert.match(v.label, /^[A-Z][^.]+\. [A-Z][^.]+\.$/, id);        // "Name. Hint."
         assert.ok(v.title.includes(' · '), id);
         assert.equal(v.pressed, !['ready', 'idle', 'error'].includes(id), id);
     }
+    const down = view({ active: true, state: 'listening', unavailable: 'The speech server does not answer.' });
+    assert.equal(down.label, 'Convo waiting for a server. Click to stop.');
+    assert.match(down.title, /The speech server does not answer\.$/);
+    assert.deepEqual([{ state: 'listening' }, { state: 'speaking' }, { state: 'listening', playing: true }, { state: 'considering' }].map(s => view({ active: true, muted: true, ...s }).over),
+        ['', 'speaking', 'speaking', 'thinking']);                          // what the assistant does while the microphone is off
+    assert.equal(view({ active: true, state: 'speaking' }).over, '');
     assert.match(view({ active: false, devIdle: true }).label, /development mode/);
     assert.match(view({ error: 'x'.repeat(500) }).title, /x{140}$/);       // bounded error detail in the tooltip only
     assert.doesNotMatch(view({ error: 'secret detail' }).label, /secret detail/);
@@ -69,6 +80,9 @@ test('Cues follow state transitions, never call sites', () => {
     expect('listening', 'error', 'error');
     expect('ready', 'error', 'error');
     expect('error', 'ready', null);
+    expect('error', 'listening', null); expect('error', 'speaking', null); expect('error', 'muted', null);   // it cleared while the conversation went on
+    expect('error', 'loading', 'activate');
+    expect('listening', 'muted', null); expect('muted', 'listening', null); expect('muted', 'speaking', null); expect('muted', 'ready', 'deactivate');
     expect('listening', null, null);                               // Convo turned off: the native orb returns silently
     expect(null, 'listening', null);
 });
@@ -91,7 +105,7 @@ test('The orb is layered onto the host button once, and attributes are written o
     const mic = fakeMic({ 'aria-label': 'Microphone standby', 'aria-pressed': 'false' });
     syncOrb(mic, view({ active: false }), 0);
     assert.equal(mic.children.length, 1);
-    assert.match(mic.children[0].innerHTML, /co-glow.*co-ring.*co-ring2.*co-core.*g-mic.*g-bars.*g-dots.*g-voice.*g-pen.*g-ptt.*g-err/s);
+    assert.match(mic.children[0].innerHTML, /co-glow.*co-ring.*co-ring2.*co-core.*g-mic.*g-bars.*g-dots.*g-voice.*g-pen.*g-ptt.*g-muted.*g-err/s);
     const written = mic.writes.length;
     for (let i = 0; i < 20; i++) syncOrb(mic, view({ active: false }), 0);       // the metering rate must not rewrite anything
     assert.equal(mic.children.length, 1);
@@ -265,8 +279,9 @@ test('The orb stylesheet has a glyph and animation for every state, honours redu
     const css = (await readFile(new URL('../extensions/webui/page-head/zz-convo-orb.html', import.meta.url), 'utf8'));
     assert.match(css, /touch-action:none/);                                         // a touch hold is dictation, not a scroll
     assert.match(css, /@media\(prefers-reduced-motion:reduce\)/);
-    const glyphFor = { ready: 'g-mic', idle: 'g-idle', connecting: 'g-spin', loading: 'g-spin', listening: 'g-bars', hearing: 'g-bars', thinking: 'g-dots', speaking: 'g-voice', 'dictating-latched': 'g-pen', 'dictating-ptt': 'g-ptt', error: 'g-err' };
+    const glyphFor = { ready: 'g-mic', idle: 'g-idle', connecting: 'g-spin', loading: 'g-spin', listening: 'g-bars', hearing: 'g-bars', thinking: 'g-dots', speaking: 'g-voice', muted: 'g-muted', 'dictating-latched': 'g-pen', 'dictating-ptt': 'g-ptt', error: 'g-err' };
     for (const id of ORB_STATES) assert.match(css, new RegExp(`\\[data-convo=${id}\\] \\.${glyphFor[id]}`), id);
+    assert.doesNotMatch(css, /\[data-convo=muted\][^{]*\{[^}]*animation/);              // muted is still: nothing looks like it listens
     const hover = css.match(/#microphone-button\[data-convo\]:hover\{[^}]*\}/)[0];
     assert.doesNotMatch(hover, /--co|data-convo=|opacity/);                         // hover brightens only: it is not microphone-on proof
     for (const [, name] of css.matchAll(/animation:(co-[a-z-]+)/g)) assert.match(css, new RegExp(`@keyframes ${name}\\{`), name);

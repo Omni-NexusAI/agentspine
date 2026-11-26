@@ -47,6 +47,7 @@ async function fixture({ startBarrier = null, captureBarrier = null } = {}) {
         './view-helpers.js': await import('../webui/view-helpers.js'),   // pure and import-free: the real modules
         './orb.js': await import('../webui/orb.js'),
         './dictation.js': await import('../webui/dictation.js'),
+        './hotkeys.js': await import('../webui/hotkeys.js'),
         './sound-setup.js': await import('../webui/sound-setup.js'),
         './plain-text.js': await import('../webui/plain-text.js'),
         '/plugins/_whisper_stt/webui/whisper-stt-store.js': {store:nativeStore},

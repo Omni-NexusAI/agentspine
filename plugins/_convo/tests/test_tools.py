@@ -206,6 +206,108 @@ class DirectTools(unittest.IsolatedAsyncioTestCase):
             await Host().direct('nowhere', 'web_search', {'query': 'x'})
 
 
+class HostSurface(unittest.IsolatedAsyncioTestCase):
+    """What the voice tools ask of the host adapter besides a search: the search engines' last known state, the user's chats by
+    name, the local clock and a notification."""
+    REFUSING = {'results': [], 'unresponsive_engines': [['google', 'CAPTCHA'], ['brave', 'too many requests']]}
+    ANSWERING = {'results': [{'title': 'Forecast', 'url': 'https://weather.example/', 'content': 'Sunny.', 'engine': 'bing'}]}
+
+    def patch(self, **modules):
+        base, self.calls = host_modules()
+        patcher = patch.dict(sys.modules, {**base, **modules}); patcher.start(); self.addCleanup(patcher.stop)
+
+    def host(self, *responses):
+        """A host whose search service gives these responses in turn (the last one repeats)."""
+        host, asked = Host(), []
+
+        async def ask(params):
+            asked.append(params)
+            return responses[min(len(asked), len(responses)) - 1]
+
+        async def config():
+            return None
+        host._search_ask, host._search_config = ask, config
+        return host, asked
+
+    async def test_the_search_state_is_unknown_until_a_search_ran_and_reading_it_sends_nothing(self):
+        self.patch()
+        host, asked = self.host(self.ANSWERING)
+        self.assertEqual(host.search_state(), {'state': 'unknown', 'checked_at': '', 'answered': 0, 'refused': 0})
+        self.assertEqual(asked, [])
+
+    async def test_engines_that_answer_are_ok_and_the_time_of_the_last_search_is_kept(self):
+        self.patch()
+        host, asked = self.host(self.ANSWERING)
+        await host.direct('a', 'web_search', {'query': 'weather'})
+        state = host.search_state()
+        self.assertEqual((state['state'], state['answered'], state['refused']), ('ok', 1, 0))
+        self.assertRegex(state['checked_at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$')
+        before = len(asked)
+        self.assertEqual(host.search_state(), state)                                # from memory: asking again sends nothing
+        self.assertEqual(len(asked), before)
+
+    async def test_every_engine_refusing_is_blocked_and_some_refusing_is_limited(self):
+        self.patch()
+        host, _ = self.host(self.REFUSING)
+        with self.assertRaises(ValueError):
+            await host.direct('a', 'web_search', {'query': 'weather'})
+        state = host.search_state()
+        self.assertEqual((state['state'], state['answered'], state['refused']), ('blocked', 0, 2))
+        self.assertTrue(state['checked_at'])
+        mixed, _ = self.host({**self.ANSWERING, 'unresponsive_engines': [['google', 'CAPTCHA']]})
+        await mixed.direct('a', 'web_search', {'query': 'weather'})
+        state = mixed.search_state()
+        self.assertEqual((state['state'], state['answered'], state['refused']), ('limited', 1, 1))
+
+    async def test_check_search_sends_one_small_search_now_and_answers_with_the_state_either_way(self):
+        self.patch()
+        host, asked = self.host(self.ANSWERING)
+        state = await host.search_check()
+        self.assertEqual((state['state'], state['answered'], state['refused']), ('ok', 1, 0))
+        self.assertTrue(state['checked_at'])
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked[0], {'q': 'weather forecast'})                        # one fixed, harmless question; never the user's words
+        await host.search_check()
+        self.assertEqual(len(asked), 2)                                              # a check is never answered from the 90-second memory
+        blocked, _ = self.host(self.REFUSING)
+        state = await blocked.search_check()                                         # refusing engines are a state, not an error
+        self.assertEqual((state['state'], state['answered'], state['refused']), ('blocked', 0, 2))
+
+    async def test_a_chat_is_found_by_its_exact_name_or_id_else_by_a_unique_part_whatever_the_case(self):
+        host = Host()
+        chats = [types.SimpleNamespace(id='c1', name='Budget'), types.SimpleNamespace(id='c2', name='Budget 2026'),
+                 types.SimpleNamespace(id='c3', name='Holiday plans'), types.SimpleNamespace(id='c4', name=None)]
+        host.chat_contexts = lambda: chats
+        for wanted, found in (('Budget', 'c1'), ('  budget  ', 'c1'), ('BUDGET 2026', 'c2'), ('2026', 'c2'), ('holiday', 'c3'), ('C3', 'c3'), ('c4', 'c4')):
+            self.assertEqual((await host.find_chat(wanted))['id'], found, wanted)
+        self.assertEqual(await host.find_chat('holiday'), {'id': 'c3', 'name': 'Holiday plans'})
+        self.assertEqual(await host.find_chat('c4'), {'id': 'c4', 'name': 'c4'})     # a chat without a title is called by its id
+        for wanted, why in (('bud', 'more than one chat matches that name'), ('recipes', 'no chat matches that name'), ('', 'no chat matches that name'),
+                            (None, 'no chat matches that name'), ('   ', 'no chat matches that name')):
+            with self.assertRaisesRegex(ValueError, '^' + why + '$'):
+                await host.find_chat(wanted)
+
+    async def test_the_local_clock_is_hours_and_minutes_in_the_users_timezone_and_utc_when_that_cannot_be_read(self):
+        host = Host()
+        self.assertEqual(host.local_clock(1795400000), '02:13')                      # no Agent Zero here: UTC (2026-11-23 02:13:20)
+        localization = types.SimpleNamespace(Localization=types.SimpleNamespace(get=lambda: types.SimpleNamespace(
+            get_timezone=lambda: 'Somewhere/Unknown', get_offset_minutes=lambda: 330)))
+        with patch.dict(sys.modules, {'helpers.localization': localization, 'pytz': None}):
+            self.assertEqual(host.local_clock(1795400000), '07:43')                  # the user's own offset, five and a half hours
+            self.assertEqual(host.local_clock('1795400000.9'), '07:43')
+
+    async def test_a_notification_is_sent_bounded_through_agent_zeros_own_notifications(self):
+        sent = []
+        manager = types.SimpleNamespace(send_notification=lambda *args, **kwargs: sent.append((args, kwargs)))
+        notification = types.SimpleNamespace(NotificationManager=manager, NotificationPriority=types.SimpleNamespace(HIGH='high'),
+                                             NotificationType=types.SimpleNamespace(INFO='info'))
+        with patch.dict(sys.modules, {'helpers.notification': notification}):
+            Host().notify('Timer', 'tea is due.')
+            Host().notify('T' * 200, 'm' * 900)
+        self.assertEqual(sent[0], (('info', 'high', 'tea is due.', 'Timer'), {'display_time': 12, 'group': 'convo-timers'}))
+        self.assertEqual((len(sent[1][0][2]), len(sent[1][0][3])), (300, 80))
+
+
 class RecentChat(unittest.TestCase):
     def test_is_read_only_bounded_and_tolerant(self):
         history = [{'ai': i % 2 == 1, 'content': {'user_message': 'message %d' % i} if i % 2 == 0 else ['assistant says', {'text': 'hello %d' % i}]} for i in range(40)]

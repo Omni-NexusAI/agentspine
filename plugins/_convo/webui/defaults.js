@@ -18,6 +18,7 @@ export const defaults = {
   "spoken_updates": "completion",
   "activation_names": [],
   "hotkey": "Ctrl+Shift+Space",
+  "hotkeys": {"toggle_conversation": "Alt+Shift+C", "mute": "Alt+Shift+M", "push_to_talk": "Alt+Shift+Space", "dictate": "Alt+Shift+D", "stop_reply": "Alt+Shift+S", "open_panel": "", "open_settings": "", "run_action": "", "dismiss_action": ""},
   "sidecar": {
     "managed": true,
     "url": "http://convo-runtime:8090",
@@ -99,6 +100,9 @@ export const defaults = {
   "voice_profile": "",
   "show_diagnostic_events": false,
   "show_rejected_responses": false,
+  "conversation_scope": "chat",
+  "task_chat": "new",
+  "voice_tools": {"web": true, "memory": true, "tasks": true, "system": true, "timers": true, "chats": true, "senses": true, "interface": true},
   "policy_gate": {
     "respond_min": 0.3,
     "ambient_respond_min": 0.9,

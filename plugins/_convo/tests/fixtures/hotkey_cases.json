@@ -1,0 +1,11 @@
+{
+  "usable": ["Alt+Shift+C", "Alt+M", "Ctrl+Alt+K", "Meta+Shift+K", "Ctrl+Shift+Space", "Ctrl+Alt+Shift+Meta+9", "Alt+Comma", "Alt+ArrowUp", "Ctrl+Numpad0",
+    "Alt+NumpadAdd", "F1", "F8", "Shift+F8", "F13", "F24", "MediaPlayPause", "Pause", "ScrollLock", "Alt+Backquote", "Ctrl+IntlBackslash"],
+  "unknown": ["Alt+", "Alt+Escape", "Ctrl+Enter", "Alt+Tab", "Ctrl+Backspace", "Alt+Delete", "F0", "F25", "alt+M", "Alt+m", "Alt+KeyM", "Control+M", "Alt+Alt+M",
+    "Alt+M+Shift", "M+", "+", "Alt M", "Alt+Ä", "AltGraph+M", "Alt+AudioVolumeUp", "Alt+Numpad10", "Alt+MM", "Ctrl+Alt+Shift+Meta+MediaTrackPrevious+M"],
+  "needs_modifier": ["M", "Shift+M", "1", "Space", "Shift+Space", "ArrowUp", "Shift+Comma", "Numpad5"],
+  "reserved": ["Ctrl+W", "Ctrl+T", "Ctrl+N", "Ctrl+R", "Ctrl+L", "Meta+W", "Meta+C", "Ctrl+Shift+T", "Shift+Ctrl+N", "Meta+Shift+R", "Ctrl+A", "Ctrl+C", "Ctrl+V",
+    "Ctrl+X", "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Y", "Ctrl+F", "Ctrl+1", "Ctrl+0", "Meta+9", "F5", "Ctrl+F5", "F11", "F12", "Alt+F4", "Ctrl+F4", "Alt+ArrowLeft",
+    "Alt+ArrowRight", "Alt+Space"],
+  "same": [["Shift+Alt+C", "Alt+Shift+C"], ["Meta+Ctrl+K", "Ctrl+Meta+K"]]
+}

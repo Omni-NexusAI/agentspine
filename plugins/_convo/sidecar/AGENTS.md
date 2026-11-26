@@ -5,15 +5,21 @@
   appear, every assistant message follows the user's words or the turn's in-memory audio (a model that takes audio), an exchange with
   neither is left out on both sides (never a placeholder), consecutive user messages (the current one included) are joined so roles
   alternate, and an interrupted reply says so; `max_tokens`
-  comes from `answer_tokens` (64-8192, default 1024); local servers are asked not to think (`chat_template_kwargs`), never a cloud
-  provider; reasoning is counted, never yielded, and `answer.done` reports the finish reason, reasoning length and tool calls.
+  comes from `answer_tokens` (64-8192, default 1024); local servers are asked not to think (`chat_template_kwargs`); a provider outside the user's machines only through `thinking_off`,
+  the request fields Test connection measured that it accepts (one of `convo_tools.THINKING_OFF`, anything else is refused); reasoning is counted, never yielded, and `answer.done` reports the finish reason, reasoning length and tool calls.
 - `/answer` tools (`offered_tools`): the request names the conversation's offered set (`tools`) and `tool_mode`; an explicit 'native'
   (Convo sets it from the measured record or the declared `tool_calls` override; a request without a mode still needs the
   declaration) sends `helpers/convo_tools.schemas` and `tool_choice: "auto"` on every request, follow-ups included (the
-  start never changes); 'text' sends none (the system text describes them in writing). An older request without `tools` keeps
-  `allow_tools`/`recall`. A follow-up's `tool_turn` is appended after the latest message (`tool_turn_messages`: an assistant
-  `tool_calls` message and a `tool` message natively, else the written call and a trailing results block; a camera picture as one
-  validated `image_url` user part, never stored). History tool uses are call + `tool` messages only when tools are sent natively,
+  start never changes); 'text' sends none (the system text describes them in writing). `no_tools` closes them for a reply's last passes:
+  'none' keeps the list with `tool_choice: "none"`, 'text' sends no tool at all and the calls and results as text. At most
+  `MAX_PROPOSALS` calls are read from one pass; the rest are left out, never the reply failed. An error that may pass carries
+  `reason: "transient"` (`TRANSIENT` statuses, a cut connection); the host decides whether to ask again. `earlier_audio` (at most
+  `MAX_EARLIER_PARTS` clips): what the user said before this turn's audio in the same request, labelled as one thing said in parts. An older request without `tools` keeps
+  `allow_tools`/`recall`. A follow-up's tool turns (`tool_turns`: every call of the reply so far, at most `MAX_TOOL_TURNS`; or the single `tool_turn`) are
+  appended after the latest message (`tool_turn_messages`: an assistant `tool_calls` message and a `tool` message natively, else
+  the written call and a trailing results block; a camera or screen picture as one validated `image_url` user part with its
+  label, and replayed recordings (`audio`, at most `MAX_CONTEXT_CLIPS`, only for a role with `audio_input`) as user audio parts;
+  neither is ever stored). A speech request's `speed` (0.5 to 2) is passed on as `speed`. History tool uses are call + `tool` messages only when tools are sent natively,
   else a dated note. A `"tool_calls": null` delta or null fields add nothing; unparseable streamed arguments become `{}`.
 - `/answer` slot and warm-up (`pin_slot`): a request's `slot` (0-255) becomes `id_slot` and `warm: true` becomes one generated token,
   only for a server on this machine or the user's network (`local_server`); never for a cloud provider. The host sends `slot` only
@@ -62,8 +68,14 @@
   generation already finished) or a complete answer Convo cannot use
   (`LOCAL_TERMINAL`). A refusal is reported (`provider_state` in the error and
   in `/health` last_operation). Timeout, transport failure, incomplete or
-  unrecognised 5xx responses and worker shutdown remain blocked across OFF/restart. No automatic reset or provider lifecycle action:
-  reconciliation requires explicit independent evidence of provider idleness.
+  unrecognised 5xx responses and worker shutdown have no confirmed end and are settled, never left blocking for good (the user's
+  decision of 2026-11-24, after a record refused every later conversation): the provider is asked how the request ended where it
+  named it (`X-TTS-Request-Id`, `/audio/outcomes/<id>`; the id and key stay in memory), else the record is released after `GRACE`
+  (3 s when the provider ended the connection or answered an error, 20 s when Convo stopped waiting). A record of a process that is
+  gone, or one that cannot be read, is released once older than `RECORD_STALE` (`expire`, at the next request or `/health`). A
+  running operation is never expired, nothing is sent to the provider again, and no provider lifecycle action is taken. Until then
+  the answer is 409 `uncertain` with `clears_in_ms`, which callers wait out like a busy server (`speech_status`); a starting
+  conversation waits too (`Realtime._speech_settled`). `generation-limit` (the speech server's own audio limit) is a definite end.
 - Buffered `/speech`, `/preview` and experimental `/speech-stream` share durable
   admission. PCM has an independent producer and an eight-frame delivery queue;
   consumer detach discards/wakes that queue while the producer drains to terminal

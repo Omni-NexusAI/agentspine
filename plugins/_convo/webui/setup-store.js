@@ -6,6 +6,8 @@ import { classifierSetup } from '/plugins/_convo/webui/classifier-setup.js';
 import { speechSetup } from '/plugins/_convo/webui/speech-setup.js';
 import { dictationSetup } from '/plugins/_convo/webui/dictation-setup.js';
 import { synthesisSetup } from '/plugins/_convo/webui/synthesis-setup.js';
+import { voiceToolsSetup } from '/plugins/_convo/webui/voice-tools-setup.js';
+import { hotkeysSetup } from '/plugins/_convo/webui/hotkeys-setup.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const endpoint = '/plugins/_convo/conversation';
@@ -39,7 +41,7 @@ export const store = createStore('convoSetup', compose({
     roles: ['conversation', 'classifier', 'tts'], choices: {}, searches: {}, error: '', message: '',
     importDocument: null, importPreview: null, importPaths: [],
     network: {}, certificates: {}, keyBound: {},       // where Agent Zero runs, remembered certificates, the address each saved key is for
-    ui: { conversation: {}, classifier: {}, speech: {}, dictation: {}, synthesis: {} },  // each card's transient view state; its mixin holds methods only
+    ui: { conversation: {}, classifier: {}, speech: {}, dictation: {}, synthesis: {}, voiceTools: {}, hotkeys: {} },  // each card's transient view state; its mixin holds methods only
     get dirty() { return !!this.config && (JSON.stringify(this.config) !== this.baseline || Object.keys(this.keys).length > 0); },
     // System One's own decider as the server describes it (decider_reference), with its verdict `audio`.
     get decider() { return this.deciderReference || { installed: false, enabled: false, consumer_enabled: false, registered: [], reasons: [] }; },
@@ -101,7 +103,11 @@ export const store = createStore('convoSetup', compose({
         loading = this.api('setup_read').then(result => this.accept(result)).catch(error => this.fail(error)).finally(() => { loading = null; });
         return loading;
     },
-    fail(error) { this.error = error?.message || String(error); globalThis.justToast?.(this.error, 'error'); },
+    // Shown here until the next write that works; the panel's log of recent problems keeps it.
+    fail(error) {
+        this.error = error?.message || String(error); globalThis.justToast?.(this.error, 'error');
+        try { globalThis.Alpine?.store?.('convo')?.noteProblem?.('Settings: ' + this.error); } catch { /* the log is a convenience */ }
+    },
     // The status poll, opening the editor and the tab returning to view all report the saved revision. A clean draft just
     // refreshes; an edited one is never overwritten or lost: it is flagged so the user can merge or discard. A write of this
     // editor's own (save or patch) is not "elsewhere".
@@ -150,7 +156,7 @@ export const store = createStore('convoSetup', compose({
             this.accept(result);
             if (newer) this.config = newer;
             this.keys = newerKeys;
-            this.message = 'Saved. Model changes apply next session; voice changes apply next response.';
+            this.message = 'Saved. Model changes apply next session; voice changes apply next response.'; this.error = '';
             globalThis.justToast?.('Convo settings saved.', 'success');
             void globalThis.Alpine?.store?.('convo')?.refresh?.();        // the panel and the orb see the new settings at once
             return true;
@@ -256,7 +262,7 @@ export const store = createStore('convoSetup', compose({
         return filtered;
     },
     async runtime(action) {
-        try { await this.api(action); this.message = action === 'runtime_start' ? 'Runtime start requested. Check readiness before talking.' : 'Owned runtime stop requested.';
+        try { await this.api(action); this.error = ''; this.message = action === 'runtime_start' ? 'Runtime start requested. Check readiness before talking.' : 'Owned runtime stop requested.';
             const result = await this.api('setup_read'); this.readiness = result.readiness || [];
         } catch (error) { this.fail(error); }
     },
@@ -299,4 +305,4 @@ export const store = createStore('convoSetup', compose({
             reset(this.config, defaults); this.keys = {};
         };
     },
-}, conversationSetup, classifierSetup, speechSetup, dictationSetup, synthesisSetup));
+}, conversationSetup, classifierSetup, speechSetup, dictationSetup, synthesisSetup, voiceToolsSetup, hotkeysSetup));

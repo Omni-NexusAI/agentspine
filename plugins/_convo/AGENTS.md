@@ -76,13 +76,30 @@
   text (`<tool_call>`, Gemma 4's `<|tool_call>`, `<function=...>`, `[TOOL_CALLS]`...) has the markup dropped and kept (bounded,
   `captured`); `helpers/convo_tools.parse_text_call` reads the known formats (Gemma 4, Qwen/Hermes, `<function=…>`, bare JSON)
   back into a structured proposal that meets exactly the checks a structured one meets. An unreadable or disallowed one is
-  reported and nothing runs. An empty answer is asked once more from the same model (`EMPTY_NUDGE`), then reported with its reason
-  (thinking used the answer budget, only a tool call, nothing). The guard is a text filter only.
+  reported and nothing runs. An empty answer is asked again from the same model (`EMPTY_NUDGE`, then without tools), then reported with
+  its reason (thinking used the answer budget, only a tool call, nothing). The guard is a text filter only.
+- Waiting for the model (`_noticing`): after `SLOW_REPLY` seconds without anything of an answer the panel says which model is waited
+  for, after a look-up also for what, and for how long (every `SLOW_AGAIN` seconds; a server on another machine is called slow after
+  `VERY_SLOW`); a model its own server reports as loading, or a server that does not answer, is said instead (`_stalled`, marks
+  `stall.*`). Mark `answer.waited` {seconds}. A conversation model on another machine that sent nothing for `HUNG_REPLY` seconds is
+  asked once more, the first request ended first (`_patient`, mark `answer.asked_again`); a local one may be loading and is not.
 - Conversation rule (active listening, `convo_policy.conversation_verdict`): Convo has no turn-taking model fine-tuned for this,
   so a finished turn in a conversation the user started is presumed meant for the assistant and answered, unless the classifier
   is confident it was not: a short acknowledgement (at most 1.2 s of speech, judged by a second reading WITHOUT the assistant's
   last words, P(addressed)+P(unclear) under .25), or talk to someone else (P(side) .9 or more) that no check during the speech
-  contradicted (peak respond evidence under .5). The panel is told why (`candidate.state` `reason`). Measured 2026-11-08 on the
+  contradicted (peak respond evidence under .5). Talk to someone else is compared with the conversation before it is left
+  unanswered (`_weigh`, `convo_voice_tools.belongs`): one request to the conversation model with the summary, the last turns (the
+  newest request's audio while its words are not known) and the utterance, one word back, no tool, bounded by `BELONGS_SECONDS`. It
+  runs beside the candidate loop (`weigh_task`), so nothing waits for it; the page is sent a final `listen` (no duck, the utterance
+  stays open) and the utterance is then decided again with the same classifier reading. `YES`: answered (`reason` `belongs`),
+  taking over an answer nothing was heard of, after one already being heard; when the user has gone on speaking it is held to be
+  joined (`cont.hold`). Anything else: ignored as before. Never for an acknowledgement, outside active listening, before anything was
+  said, or, for a conversation model on another machine, when `speculative_reply` is off (its audio then would not have gone there).
+  Only the newest fragment is compared (joined to the request before it, it would always belong to it).
+  It grants no action. The decision model cannot do this: measured 2026-11-24 on 48 labelled remarks in two synthetic voices
+  (`.runtime/convo-live-test/context_sweep_20261124.py`, d1-omni-600M), told the conversation it read side talk and television as
+  part of it as surely as the user's additions (AUC .39-.68 with the conversation in six wordings, .64-.76 from the exact words as text).
+  The panel is told why (`candidate.state` `reason`). Measured 2026-11-08 on the
   corpus (`.runtime/convo-live-test/conversation_rule_20261108.py`): told what the assistant had just said, d1-omni-600M reads
   nearly anything after it as an acknowledgement, so the reading with that line only nominates and the plain one decides; the rule
   answered 96-100% of requests, short questions and statements and 8% of acknowledgements, where the old gate under the same
@@ -104,10 +121,16 @@
   the user started, never in a tool's follow-up): a reply that begins `[SILENT]` (asked not to respond, no words meant for it: noise,
   someone else, media, its own voice) or `[WAIT]` (a plainly unfinished thought), optionally with a short reason, is neither shown,
   spoken nor stored as a reply; a reply that is only one bracketed or parenthesised meta statement counts as silent; a leading
-  square-bracketed stage direction is dropped. The turn keeps the user's words for the panel, leaves the model's history
-  (`content.held`, journal `turn.held {decision, reason}`, live `notice kind: held` for the developer view), and a `[WAIT]` turn
+  square-bracketed stage direction is dropped. The turn keeps the user's words; a silent one leaves the model's history,
+  a `[WAIT]` one stays in it (the user's words, no reply; `convo_history.hidden`), so a thought finished after the continuation window
+  still reads as one (measured live 2026-11-24: a question said in two halves, the second 7 s later, was lost and the model denied
+  having heard it) (`content.held`, journal `turn.held {decision, reason}`, live `notice kind: held` for the developer view), and a `[WAIT]` turn
   stays open: what the user says next within `continuation_seconds` joins it through the continuation merge and is answered as one;
-  with nothing more, nothing is said. No classifier override applies here (D1 reads "do not respond" as a confident command).
+  with nothing more for `WAIT_AGAIN` seconds (3.5) the
+  model is asked once more, told that the user went quiet: it answers what makes sense as it is (it had waited on complete questions),
+  or writes `[WAIT]` again and nothing is said. A turn that took over earlier fragments but whose own words were not captured shows theirs
+  (`_history`). A reply to words that are, almost to the word (five or more), a phrase the assistant spoke within
+  `OWN_VOICE_SECONDS` is dropped as silent (`_own_voice`, mark `turn.own_voice`): its own voice from a loudspeaker. No classifier override applies here (D1 reads "do not respond" as a confident command).
 - Speech over the assistant's reply (`convo_policy.overlap_disposition`; the browser sends `overlap`, `voiced_s` and, at the onset,
   `heard {phrase_id, played_s}`): read without the assistant's last words; a request, question or stop yields (`candidate.admitted`
   with `fade_ms` 100), a confident acknowledgement or side talk lets it go on (`continue`), anything else keeps it ducked
@@ -152,6 +175,9 @@
     stopped while notes are written never loses the chapter. Notes come from the user's own words only (never replies or tool
     results), as data, not instructions; NONE, nothing or a failure keeps the notes (never cleared by the summariser). A stale chapter
     whose turns exceed `verbatim_high` keeps its text (`Store.settle_chapter`); condensing carries a pending correction (`stale`).
+  - On a cloud provider (`remote`) nothing stops upkeep: the writing goes on beside speech and replies (`_stop_upkeep`, `_cancel` and
+    `_compact` leave it alone), and a written chapter is kept until no reply is being prepared (`_quiet`, `_swap`), so a reply keeps
+    the request it was prepared with. The rest of this rule is for the user's own model server, where both would compete.
   - Speech stops upkeep: any candidate (the user speaking), a turn or a spoken notice cancels a summary being written and a warm-up
     (`_stop_upkeep`); `_compact` never starts while the user speaks (`_speaking`; the candidate loop itself asking is not speaking). It is
     restarted at every quiet moment: a reply's end, an utterance that was ignored, a spoken notice's end, and voice start. A warm-up of
@@ -164,7 +190,8 @@
     while the reply is spoken. Two or more slots (llama.cpp): warmed in the spare slot from the preview, swapped in only once warm, and
     the conversation moves to that slot (`_compaction`); after `WARM_FAILURES` (3) failed spare-slot warm-ups in a row (not counting ones
     stopped by speech) the chapter is swapped in on the conversation's slot anyway (developer `fallback` `warm_failed_swapped`). A cloud
-    provider (`remote`) is never warmed or pinned; its chapters are swapped in at once, as before the server held anything.
+    provider (`remote`) is never warmed or pinned; its chapter is swapped in when a reply's text is complete or in the next quiet
+    moment.
   - Slots (`_discover_slots` at voice start, gateway `/slots`): llama.cpp's `/props` `total_slots` or `/slots`, with each slot's own
     context (`n_ctx`, per slot when the server reports it); anything else (an older gateway, no answer, another server) is one slot and
     unpinned. Only a llama.cpp server of the user's own gets `slot` on every conversation, summary, warm-up and spoken-notice request
@@ -200,7 +227,9 @@
   control-word rule forbids bringing up audio quality unprompted only: a model told nothing concluded "I only receive your words
   as text" (2026-11-18). History goes through one rule shared by the gateway and the
   developer view (`helpers/convo_history.py`): declined and superseded turns never appear; every assistant message follows the user's
-  words, else the turn's audio while it is still in memory (`RECENT_AUDIO` turns, never stored); an exchange with neither is left out
+  words, else the turn's audio while it is still in memory (`RECENT_AUDIO` turns, never stored); an exchange with neither in
+  which a tool was used and its answer heard shows the dated tool use in the user's place (2026-11-25: such an answer was left out and
+  the model then denied having given it); any other exchange with neither is left out
   on both sides (no placeholder: "[their words were not captured]" primed replies about audio quality that then filled the history);
   consecutive user messages are joined; an interrupted reply says so. Markdown is never heard or remembered
   (`helpers/convo_plaintext.spoken`, by the syntax's form, never by words): each piece of a reply is cleaned as it is cut from it
@@ -213,56 +242,151 @@
   computed once per turn so a held parallel reply still matches). Voice answers ask local servers not to think
   (`chat_template_kwargs.enable_thinking=false`, never sent to a cloud provider), reasoning is never spoken, and `answer_tokens`
   (default 1024) bounds an answer.
-- Tools (`helpers/convo_tools.py`). One list per conversation, in a fixed order (`offered`: web_search, memory_read, delegate_task,
-  then recall_conversation once anything is summarised, then camera_context while a camera is shared AND the model is measured to
-  accept images), sent on EVERY request of the conversation, a tool's follow-up included, so the request's start never changes; Convo,
-  not the list, decides what runs. Each tool's description says what it is for and when to use it, model-agnostic (`SPECS`); the
-  stable system text names the offered tools and adds the standalone fork's hint (acknowledge briefly, call in the same reply, never
-  invent a result; reply format: header, then the answer or an acknowledgement and one call). `tool_mode` (`convo_tools.tool_mode`): the measured record
-  (`data/model_capabilities.json` `tool_mode`, Test connection's probe) decides, and the declared `tool_calls` checkbox is an override
-  that turns native tools on whatever was measured; native means `tools` + `tool_choice: "auto"` (the gateway follows an explicit
-  `tool_mode`); otherwise they are described in the system text with the written
-  `<tool_call>{...}</tool_call>` format `parse_text_call` reads (also Gemma, Hermes, `<function=…>`, Mistral `[TOOL_CALLS]`, bare
-  JSON). A request never carries both. In a conversation the user started, any offered tool may be chosen by the model (read-only
-  ones run directly, `delegate_task` is queued after `ACTION_HOLD`); ambient and name listening keep the classifier's explicit-request
-  rule, and a reply that may not run one is told so after the history (the list itself stays). Two or more calls in one reply: the
-  first permitted runs, the rest are reported (`tool.not_run`), never run; a call this turn may not make is reported, not a failed
-  turn. `search_engine` (Agent Zero's name) is `web_search`; `camera_snapshot` (the fork's) is `camera_context`. Tool markup is
-  recognised before the control-word filter. One read-only call per reply (`MAX_TOOL_ROUNDS`): the follow-up is the first request
-  unchanged plus, at its end, the assistant's call and the tool's answer (`tool_turn`: natively an assistant `tool_calls` message and a
-  `tool` message; otherwise the written call and a trailing results block), which says the tool finished or failed and why
-  (`finished`/`failed`, reasons in Convo's words) and that no other tool will run this turn (`ONLY_ROUND`; when an audio turn's first
-  pass was only a call and wrote no USER line, `ONLY_ROUND_HEADER` asks the follow-up to begin with the header, whose words are then
-  recorded); a further call is marked
-  `tool.round_limit`, never run; an empty answer is asked once more. Web search uses Agent Zero's own SearXNG through a ladder
-  (`helpers/convo_search.py`, pure; `Host._search_ask` sends): the ordinary request through Agent Zero's helper, as before; when it
-  has no results and no direct answer (its default engines often refuse a home address), the news category and, in one request,
-  up to four full web engines the service has loaded but does not ask by default and that follow the search's language (named from
-  SearXNG's `/config` by its own `categories` and `language_support`, never from a list of Convo's; an engine that refused is
-  skipped for 15 minutes, `Host.search_health`, memory only). The sources are woven (`weave`: one result from each in turn, web
-  before news, news first once a search asks for recent results), news dated over a year ago goes after fresher news
-  (`fresh_first`), and a result that shares fewer than two of the search's longer words goes to the end of the list
-  (`relevant_first`), so the five results shown are not one source's and not an engine's unrelated latest items. At most three
-  requests and 8 seconds per search; an identical search within 90 seconds is answered from memory. No engine answering is a FAILED search
-  ("The search engines refused the request", said in Convo's words, journal `tool.failed`), never an empty one; a search that worked
-  and found nothing stays empty. Mark `tool.search` {steps, asked, answered, refused, cached, seconds} (counts, no engine names).
-  Outside Docker only Agent Zero's helper reaches SearXNG, so the category and engines go into the query as `!name`. The result has
-  a dated header ("Web search results, <date> (Agent Zero's search engine):"), SearXNG's direct answers and info boxes first, then
-  the top five (title, address, snippet; a dated result says its date), at most 2,400 characters. Memory loads on first use in a
-  background thread (`Memory.get`). The tool runs
-  in its own task: each use is kept in the turn's `tools` (`Store.tool_used`: dated call + short result, at most 4 per turn, kept
-  even when the user interrupted) and journaled `tool.requested` / `tool.done` / `tool.failed` (name and argument); the history shows
-  it as the call and the tool's answer natively, else a dated note after the user's words (`convo_history.messages`), its result
-  labelled as untrusted data, not instructions (`convo_tools.UNTRUSTED`, both forms). While the request's history holds a tool result
-  (`convo_tools.results_in`), `delegate_task` runs only when the user's own audio carries a request (`convo_policy.verified`: a
-  typed classifier's explicit-request probability on its own, 0.9 or more, never the lower of it and the attention reading, which
-  refused a request scored 0.99 that was read as side talk; an untyped classifier explicit and confident; an unjudged turn never),
-  also in a conversation the user started. Otherwise nothing is started and the refusal is never silent: journal `tool.refused`
-  {name, reason}, mark `tool.refused` {tool, reason}, one panel line (`NOT_STARTED_NOTE`), and the model is told so as the call's
-  result (`convo_tools.not_started`, no further tool) and its answer to that is heard (`answer_result`, the same path as a tool's
-  result). A task dropped because the user spoke again within `ACTION_HOLD` is marked `tool.superseded`; a task queued while the
-  chat is busy says it waits behind the chat's current work. Read-only tools are unchanged. Every speech request marks what it
-  carried (`speech.sent` {chars, language, profile, seed, path}; `speech.language` {language, why}): names and numbers, never words.
+- Tools: the catalog (`helpers/convo_tools.py` `CATALOG`). Every tool has its arguments (several, typed, checked by `validate` before
+  anything runs: unknown fields dropped, a choice matched whatever its case, text over its limit refused, never cut), a description
+  that says what it is for and when to use it in model-agnostic words, a permission group, and a kind that decides what it takes to
+  run it:
+  - `read` (web_search, web_read, memory_read, task_status, system_status, world_time, chats, listen_back, recall_conversation,
+    camera_context, screen_context): runs directly, also in a tool's follow-up.
+  - `quick` (set_timer, open, voice_speed): a small change the user sees and can undo; runs directly in a conversation the user
+    started, never in a follow-up.
+  - `work` (delegate_task, cancel_task, remember): starts or stops work, or saves something lasting.
+  One list per conversation, in a fixed order (`offered`), sent on EVERY request of the conversation, a tool's follow-up included, so
+  the request's start never changes; Convo, not the list, decides what runs. The list depends only on: the user's permission
+  switches (settings `voice_tools`, one per group: web, memory, tasks, system, timers, chats, senses, interface; a group switched off
+  is not offered at all), a chapter swap (`recall_conversation`), a shared camera or screen with a model measured to accept images
+  (`camera_context`, `screen_context`), whether the model hears audio (`listen_back`), and how it takes tools: a model that takes them
+  in writing (`tool_mode` 'text') is offered the small set only (`small`: eight tools; few, flat tools, never one tool with many
+  actions). `tool_mode` (`convo_tools.tool_mode`): the measured record (`data/model_capabilities.json`, Test connection's probe)
+  decides, and the declared `tool_calls` checkbox is an override; native means `tools` + `tool_choice: "auto"`, otherwise they are
+  described in the system text with the written `<tool_call>{...}</tool_call>` format `parse_text_call` reads (also Gemma, Hermes,
+  `<function=…>`, Mistral `[TOOL_CALLS]`, bare JSON; the same `validate`). A request never carries both. `search_engine` (Agent
+  Zero's name) is `web_search`; `camera_snapshot` (the fork's) is `camera_context`. Tool markup is recognised before the control-word
+  filter. Adding a tool: one catalog entry, its executor in `convo_voice_tools` (`read` or `act`), a word in `webui/view-helpers.js`.
+- What it takes to run a call (`convo_policy.authorize(tool, kind, decision, conversing, followup, untrusted, always_ask)` ->
+  `run` | `confirm` | `refuse`; the ONE place this is decided, and the join for a permission system: `set_authorizer(function)`
+  may return a verdict or None, after the read-only and follow-up rules):
+  - read-only tools run. Nothing else runs in a tool's follow-up (the pass that has just read someone else's text): the model is
+    told (`not_now`), journal `tool.refused` {reason: followup}.
+  - `work` runs when the user's own audio carries the request (`verified`: a typed classifier's explicit-request probability on its
+    own, 0.9 or more; never the lower of it and the attention reading). A request the user plainly made is never refused and
+    never asked about twice. Without that evidence, in a conversation the user started, Convo ASKS instead of refusing
+    (`confirm`): always for `remember`, when a tool's result is in the request's history (`convo_tools.results_in`), and when the
+    classifier heard no request at all (explicit under 0.5: the model acting on its own initiative); a turn no typed classifier
+    judged runs as before unless a tool's result is present. Outside a conversation the user started the classifier's own routing
+    (`route_tool`) still applies and there is nobody to ask: unverified work is refused, and said (`not_started`).
+  - Asking (`convo_voice_tools.ask`): nothing starts; one pending question per conversation (a newer one replaces it; a second one in
+    the same pass is told to wait, `one_question`). It is ASKED ALOUD: the model asks the user in one short sentence in their
+    language (`ask_first`; when it says nothing, Convo says the question itself), and the panel's card with Run and Dismiss
+    (`action.pending` {id, name, label, summary, seconds}, mark `action.shown`, its time starts) comes when the first audio of the
+    question is sent (`heard`), or at the reply's end when it could not be spoken, never before. A question nobody heard because
+    the reply was stopped or taken over is withdrawn without a word (`asked_aloud`, journal `action.replaced` {by: unheard}; what
+    took over holds the request and asks again if needed). Only an utterance that BEGAN once the question could be heard
+    (`answerable`) is read as its answer, on its own (never joined to an earlier fragment, no held parallel reply) by ONE isolated
+    request to the conversation model (`reading`: `READER` as the whole instruction, the utterance's audio or recognized text, an
+    empty history, no tools: nothing in the conversation can answer for the user). Yes: the action runs exactly once (`perform`),
+    the reply is told what was done, and a call for the same tool in that reply is answered, not run again. CHANGE (they agree, but
+    differently): nothing runs as asked; the model makes that one call again with the change and is not asked twice
+    (`granted_names`, that tool in that reply only). No, or anything else said: dropped, nothing started. Unreadable: the question
+    stays open and the reply points to the Run button. Unanswered for `PENDING_SECONDS`: dropped. A yes or no is always answered
+    (never taken for an acknowledgement). The decision model is NOT used for this: measured on held-out speech it recognised 0 of
+    40 spoken "yes" across eight wordings (and short commands no better), so no action is decided by it. Journal `action.asked`,
+    `action.confirmed` {by: voice|panel}, `action.declined` {by}, `action.expired`, `action.replaced`; never silent.
+- The tool loop (`api/realtime.py` `_turn`). The calls of one model pass are carried out together (`convo_tools.pick`, at most
+  `MAX_CALLS`): look-ups side by side, anything that acts one by one before them (asked for before any of their results was read, so
+  no result can have asked for it), one follow-up with every result. A reply may do this `MAX_TOOL_ROUNDS` (4) times within
+  `TOOL_BUDGET` seconds; an identical call is not run twice (`repeated`); a call whose arguments do not fit is not run and the model
+  is told why; anything that is not read-only ends it. A look-up that can take a while has an optional `say` (`SAYS`): what the user
+  is told aloud while it runs, said only when the model said nothing before the call, and not again within `SAY_AGAIN` seconds;
+  never part of the call or kept. NEVER SILENT (live 2026-11-24: three look-ups, then one more call instead of an answer): an answer
+  to results that says nothing, or only calls again when nothing more runs, is asked for again with the list closed (`no_tools`
+  'none': same tools, `tool_choice` none), then with no tool in the request ('text': calls and results as text), then `NO_ANSWER`
+  is said; an empty first answer is asked again twice, then `NO_REPLY` is said when it was plainly said to Convo; a model that fails
+  before anything came is asked once more when the failure may pass (gateway `reason` 'transient': 408, 429, 5xx, a cut connection),
+  else `NO_MODEL` is said beside the panel's error. The same model is asked each time, never another. Each follow-up is the first request unchanged plus, at its end, every call of the
+  reply so far and its answer (`tool_turn`, and `tool_turns` from the second on: natively assistant `tool_calls` and `tool`
+  messages; otherwise the written call and a results block), which says the tool finished or failed and why, in Convo's words, and
+  whether more read-only calls may follow (`ONE_MORE`) or nothing more runs (`NO_MORE`); when an audio turn's first pass was only
+  a call, the follow-up is asked to begin with the hidden header (`header_wanted`). An action's result is told the same way
+  (`done`): the model says, in its own words and the user's language, what is now true; after a queued task only a follow-up that
+  says nothing is completed with Convo's fixed "Queued that…" sentence. A task is queued after `ACTION_HOLD` (a correction within it
+  supersedes the task, mark `tool.superseded`); "queued", never "done". Each use is kept in the turn's `tools` (`Store.tool_used`:
+  dated call, its arguments, a short result; at most 4 per turn; kept even when the user interrupted) and journaled
+  `tool.requested` / `tool.done` / `tool.failed`; the history shows it as the call and the tool's answer natively, else a dated
+  note, its result labelled as untrusted data, not instructions (`convo_tools.UNTRUSTED`).
+- Web search uses Agent Zero's own SearXNG through a ladder (`helpers/convo_search.py`, pure; `Host._search_ask` sends): the
+  ordinary request through Agent Zero's helper; when it has no results and no direct answer (its default engines often refuse a
+  home address), the news category and, in one request, up to four full web engines the service has loaded but does not ask by
+  default and that follow the search's language (named from SearXNG's `/config`, never from a list of Convo's; an engine that
+  refused is skipped for 15 minutes, memory only). `recency` (day, week, month, year) is the model's own word that the answer must
+  be fresh: it brings the news engines in and bounds the dates; Convo never guesses it from the search's words. The sources are
+  woven (`weave`), news dated over a year ago goes after fresher news (`fresh_first`), and a result that shares too little with
+  the search goes last (`relevant_first`). At most three requests and 8 seconds per search; an identical search within 90 seconds
+  is answered from memory (this is a cache of search results, nothing to do with the conversation's memory). No engine answering
+  is a FAILED search, never an empty one. No paid search key is used. When the reply's FIRST call is a search that got nothing
+  (every engine refused, or none returned a result), in a conversation the user started with tasks allowed, the question is handed
+  to the chat's agent, which searches with its own browser (`SEARCH_HANDOVER`, idempotency key `<turn>:search`, mark
+  `tool.search_handover`): the user asked for the lookup, so this is done, not asked; the model says so, and the answer is spoken
+  when the task's result comes back. Mark `tool.search` {steps, asked, answered, refused, cached, seconds} (counts, no engine
+  names). Settings shows the engines' last known state from memory (`search_health`; opening Settings never searches) and "Check
+  search" sends one small search (`search_check`). The result has a dated header, SearXNG's direct answers and info boxes first,
+  then the top five (title, address, snippet), at most 2,400 characters.
+- The other executors (`helpers/convo_voice_tools.py` joins them to a conversation; none decides whether it may run):
+  `web_read` (`convo_webread`: Convo's own bounded fetch in a thread; http/https only, hosts that resolve ONLY to public addresses,
+  each redirect checked, the checked address is the one connected to, no cookies or credentials, 1.5 MB, 8 s; Agent Zero's Browser
+  plugin is never used from a voice turn: it would take over the user's browser panel and read pages with their sign-ins);
+  `system_status` (`convo_actions`: a fixed set of read-only readings the model can only choose between, never a free-form
+  command; no addresses, user names, paths or command lines); `world_time` (the system's time-zone data); `chats` (Agent Zero's own
+  registry and the chat log the window shows; chat text is untrusted data); `task_status` and `cancel_task` (this conversation's
+  jobs and timers); `set_timer` (`convo_timers`: its own table `voice_timers` in the journal database, 1 s to 24 h; due timers
+  become Agent Zero notifications on the job coordinator's thread, voice running or not, and are said aloud once by a running
+  conversation in a quiet moment, also when they went off up to two hours before voice started); `open` (the page opens a chat,
+  Settings or the file browser, or shows a link the user taps; the page answers whether it worked); `voice_speed` (this
+  conversation only; sent with each speech request, Kokoro takes it as its own speed, a server that knows no speed ignores it);
+  `listen_back` (`Ring`: the audio the model was already sent, at most 8 clips / 30 s / 5 minutes, memory only, cleared on Stop);
+  `screen_context` (like the camera: one frame of a screen shared with a button, never stored); `remember` (Agent Zero's own
+  memory save, always after the user's yes). Memory loads on first use in a background thread.
+- Thinking before a voice answer: a local server is asked not to through its chat template; a provider outside the user's
+  machines only in the one way Test connection measured that it accepts AND that stops the reasoning (`probe_thinking`,
+  `convo_tools.THINKING_OFF`, record `thinking_off`); never a guessed field, since a refused request would fail the turn.
+- Every speech request marks what it carried (`speech.sent` {chars, language, profile, seed, path}; `speech.language`
+  {language, why}): names and numbers, never words.
+- One conversation across chats (settings `conversation_scope` "global", or voice started with no chat selected): the journal,
+  history, memory and jobs are keyed `convo_contract.GLOBAL_SCOPE` in the existing `target` columns (a key that can never be a chat
+  id; no schema change). The chat selected in the interface is only the default place for work (`state['work']`, event
+  `convo.work`): selecting another chat changes nothing else (no new epoch, nothing cancelled or rebuilt). Its agent is a hidden
+  Agent Zero background context (`Host._voice_context`: persona, utility model, default memory), taken out of Agent Zero's
+  registry so it is never listed, saved or picked for a typed message; no task is dispatched to it. A handed-over task goes
+  (`convo_voice_tools.place`) to the chat the user names (`delegate_task` `chat`: a name, or "new"; none or several matching is
+  told to the model, which asks), else per `task_chat`: a new chat (made as Agent Zero's own "new chat" does; the same one for the
+  later tasks of that voice session) or the selected chat. A job keeps its real chat as `target` and the conversation that asked
+  for it in table `job_scope` (older code ignores the table and still dispatches the job): its events, its place in the list and
+  its completion notice stay with that conversation, also in a later voice session. A chat's own conversation is unchanged, and
+  may hand a task to a named chat the same way.
+- A finished task's result (`_notice`): recorded in the notice's turn as a `task_status` use before anything is spoken, so the model
+  knows it whether or not it could be said; asked for in at most two sentences, spoken through the reply's own speech queue (`_say`:
+  requests of at most `MERGE_LIMIT` characters, never one long one; measured live 2026-11-24: 1100 characters in one request met the
+  speech server's audio limit and cut the reply off). When nothing of it was heard, `Store.release_notice` gives the claim back and
+  the page is told (`notice_retry {job_id}`), `NOTICE_TRIES` times in all; then it is said in the panel. Every reply is also told the
+  present state of this session's tasks (`_tasks_note`, per-pass part, held parallel reply included): an earlier "still running" is
+  never what the model goes by. `Host.log` writes no line into the chat for a task that completed: after the agent's answer it would
+  open a processing group that never ends, and any line takes `update_progress="none"` so the chat is never left marked busy.
+- Mute and push-to-talk while muted are the page's alone (`webui/AGENTS.md`): the server only sees that no audio arrives.
+  `convo.candidate_cancel {session_id, epoch, turn_id}` drops an utterance cut off by a mute (not a completed one), so the next is not
+  answered `busy`. `notice_retry` is matched to the conversation, not the epoch. `turn.superseded {by, joined: false}` (false only in
+  journals from before 2026-11-24, when a short command replaced the earlier turn instead of being joined to it) decides which history
+  rows the panel hides: what was said in several parts is one "You" entry (developer mode: "said in N parts"; a part without words is
+  no row), and "Reply interrupted" is a row only when some of that reply was heard.
+- Setting `hotkeys` (one key combination or '' per action, `_validate_hotkeys`, public to the browser, ignored by older versions);
+  `hotkey` stays as the second start/stop shortcut.
+- Where `authorize` would ask about starting or cancelling work, the user's own utterance is first read alone
+  (`convo_voice_tools.asked`: no history, no tool result and not what the model proposed reach that request); a YES runs it, so work
+  the user plainly asked for is not asked about (measured live: the decision model read "Hand this to the main chat: ..." as .23).
+  Saving to long-term memory is still always asked about, and a permission system (`set_authorizer`) decides alone.
+- An utterance that stopped a reply is always put to the conversation model, whatever the classifier makes of it once it is complete
+  (reason `interruption`): a reply is never stopped for nothing.
+- A phrase whose speech request failed before any audio went out is asked once more (`_speak`, mark `speech.retry`); one that began,
+  was refused (4xx) or found the server busy past the wait is not.
 - Camera ("Share camera" in the panel, `webui/convo-store.js`): the stream stays in the page and is released on Stop; the session only
   learns `convo.camera {shared}`. Images are offered only when `data/model_capabilities.json` (`convo_tools.measured`: the measured
   record for this url and model, `image_input: true`; written by the capability probe, never in settings `capabilities`) says so;
@@ -278,6 +402,9 @@
   image_input, measured_at, ...}]}`, newest first, 50 kept; fields not measured keep their value), never into settings `capabilities`.
   No model text is echoed. The card shows it under Test connection (`conversationMeasured`: the fresh answer, else the readiness row
   `conversation_measured`). The session reads the record once (`Realtime._tool_offer`), and again when the camera is shared.
+- A request to do something is never answered with a control word (`convo_control.INSTRUCTION` says so: the model acts, with a
+  tool when it needs one, and answers; live 2026-11-22 a model answered "set a timer" and "speak slower" with [SILENT] and an
+  invented result after it).
 - A bare acknowledgement of an answer with nothing new ("okay", "got it", "thanks") is left to the model (`convo_control.INSTRUCTION`:
   usually `[SILENT]`, at most one brief reply, never a reply to a repeated one); there is no word-list gate.
 - The decision model is told one plain sentence (the audio is the latest thing the user said, and
@@ -340,8 +467,6 @@
   language is voiced in that language.
   A tool's follow-up shares its reply's language; a spoken task notice uses the language of the reply that queued it. The stable
   rules (`LANGUAGE_RULE`) say: any language or accent, follow the user, keep a language they asked for. Convo never selects or creates a profile on the server.
-- Conversations spanning chats or a project are designed, not built: `GLOBAL_CONVERSATION.md` lists every place that assumes one
-  chat today and how a scope would change it.
 - Who the assistant is: `voice_name` (the panel's label; '' = the profile's title) and `voice_profile` (speak as this Agent Zero
   profile; '' = the chat's own). A pinned profile's persona is built from that profile's prompt in a background thread
   (`Host._profile_prompt`, as `call_subordinate` builds another profile's agent), read once per style and reused; delegated work
@@ -414,14 +539,24 @@
   explicit request (explicit and 0.9 or more) is asked again once without the option instead of being silenced. `continuation_seconds`: memory only,
   active listening only (`helpers/convo_continuation.py`, adapted from the standalone fork's reopen tracker): an `unfinished` completed utterance is held,
   and an admitted one whose reply has not started to be heard is remembered, until the first audio of its reply is sent, the turn ends without a reply,
-  Stop/retarget/disable, or the horizon plus one turn has passed; a fragment starting within the horizon is joined (real gap as at most 1.5 s of silence,
-  at most 8 joins, at most `min(max_audio_seconds, 30)` seconds) and classified as one utterance; on admission the earlier turn is journaled
+  Stop/retarget/disable, or the horizon plus one turn has passed with no answer to it being prepared; a fragment starting within the horizon is joined
+  (real gap as at most 1.5 s of silence, at most `MAX_REVISIONS` joins) and classified as one utterance; on admission the earlier turn is journaled
   `turn.superseded`, leaves model history and its still-queued jobs are cancelled (running work is never touched). The audio is never journaled.
+  ONE REQUEST UNTIL AN ANSWER IS HEARD (live 2026-11-24: a pause of over 7 s before a slow answer, a thought of over 20 s and a short confident fragment
+  each cost the user what they had said before): (1) speech that begins while the answer to the earlier part is still being prepared (`_unanswered`,
+  kept with the candidate as `joins`) joins it however long the pause was; (2) what no longer fits one clip (`min(max_audio_seconds, 30)` seconds) stays
+  clips of its own (`Merge.parts`, at most `MAX_PARTS` and `TOTAL_SECONDS` in all), sent to the conversation model before the newest (`earlier_audio`,
+  labelled by the gateway as one thing said in several parts; the USER line covers all of them) and to Whisper as one; the classifier hears the newest
+  clip; (3) after the horizon, or as a clip of its own after a pause over `SAME_BREATH`, only a request (or speech whose first checks already ended that
+  answer) joins (`Merge.late`, judged on its own): a remark waits for the answer (`_after_reply`; several
+  that wait for the same answer are answered as one) and, if a request ends that answer first, every one is told to it in order
+  (`left_over`); (4) a turn that started or changed something (`_acted`) is never joined to beyond the horizon; (5) talk to someone else in between
+  leaves the request joinable; (6) speech that ended an answer being prepared is never then left unanswered (reason `interruption`).
   The browser's pre-roll (`pre_roll_s`, 0-2, the sound kept from before the speech began, `webui/audio.js` `PRE_ROLL_SECONDS`) is not speech:
   `Continuation.plan` measures the gap and the fragment's length without it and adds only the rest of the gap as silence.
-  Short commands are not joined: while something is pending, a fragment of at most 2.5 s is classified on its own first, and one that is confidently an
-  explicit request (speak, explicit, 0.9 or more, addressed) is answered on its own, with the pending unheard reply still superseded (an explicit "stop" or
-  "make it three" must not be folded into the request it countered); any other short fragment is then classified joined, one extra classifier call.
+  Short commands are DECIDED on their own: while something is pending, a fragment of at most 2.5 s is classified on its own first, and one that is
+  confidently an explicit request (speak, explicit, 0.9 or more, addressed) is decided by that reading; the conversation model still hears it joined to
+  what came before ("stop" or "make it three" makes sense only after it). Any other short fragment is then classified joined, one extra classifier call.
   `first_clause_speech` (`helpers/convo_firstclause.py`, the fork's pacing, default on): the first phrase is the first full sentences of at least `FIRST_WORDS` (6) words (a short "Good evening, sir." alone was voiced higher and brighter, measured 2026-11-09; never a comma or a
   length cut: "Could you please clarify what you would" was heard as a pause mid-thought), then whatever waits is merged into one request of at most
   `MERGE_LIMIT` (420) characters cut after a full sentence; off, the whole reply once it has ended (one generation for a reply up to
@@ -489,14 +624,25 @@
   - **Default and placement:** it is Convo's own by default (`sidecar.managed` true). It is set on its own Connections card (`webui/runtime-field.html`), never behind another choice.
   - **How it runs:** it runs on Convo's environment when the one-time Studio setup made one (`data/runtime-env`), else on Agent Zero's own Python. The gateway needs only Starlette, uvicorn and httpx: `sidecar/web.py` is the small part of FastAPI it uses, rebuilt on Starlette. So it starts with Agent Zero whenever Convo is on, with nothing to install, and `require_ready` brings it up when a voice start finds it stopped (waiting up to 30 s).
   - **Hidden external fields:** with it on, `setup_store.normalize` resets the external gateway's remote consent and any public address, so those hidden fields never block a save.
-- Models on a router that loads on demand (`helpers/convo_models.py`):
-  - **At session start,** each role model a router reports as not loaded (`GET /models` `status.value`) is loaded with the router's `POST /models/load` and waited for (up to 180 s). The page shows a `notice` event (`kind: loading`), and the orb's `loading` state says what it is waiting for. A server that reports no status is not waited for. Nothing is unloaded.
+- The model servers a conversation needs (`Realtime._servers`: conversation model, Convo's own classifier, an external speech server; `helpers/convo_models.py`):
+  - **Told apart:** `state()` reads loaded, loading, not loaded, not answering or unknown from whatever the server offers: a router's `GET /models` `status.value`, a Voice Studio speech server's `/backend/models`, Ollama's `/api/ps`, LM Studio's `/api/v0/models`, a 503 from a llama.cpp server still loading. Only servers on this machine or the user's network are asked; a cloud provider is left alone. `load()` sends each kind's own load signal. Nothing is ever unloaded or stopped.
+  - **At session start** all of them are checked side by side. A model that is not loaded is asked to load and waited for (up to 180 s), a server that does not answer is tried for `ANSWER_WAIT` seconds and then named in the refusal. The page shows `notice` events (`kind: loading`, then `ready`). A server that reports no state is not waited for.
+  - **During a conversation** the step that gives nothing is looked at (`_stalled`: the conversation model after `SLOW_REPLY`, the voice after `SLOW_VOICE` or a failed phrase, the classifier when a call failed) and the user is told which server it is and whether its model is loading (asked to load when it was not) or it is not answering (`notice` `loading` / `unavailable`; `ready` when that step answers again). It never ends a turn and never switches to another server.
   - **Two models, one server:** when the conversation model and the classifier share one server, the user is told they may swap on every turn.
-  - **Slow replies:** a reply with no text after 4 s says it is waiting for the model. The gateway allows 180 s for the first token.
+  - **Slow replies:** a reply with no text after 4 s says it is waiting for the model (above). The gateway allows 180 s for the first token.
   - **Failures:** the gateway says why a model call failed in Convo's words (refused key, 404, unreachable), and that text is shown as said (`ProviderError`).
 - When Agent Zero's utility model fails to summarise the persona, the session still starts with the user's own persona text, and a `notice` says so. A voice start checks only the credential references of the connections in effect.
 - Ownership seams: `helpers/convo_model_catalog.py` (conversation providers, base URLs, `conversation_key_copy`/`audio_probe`), `helpers/convo_classifier_catalog.py` (classifier catalog, normalizer, `classifier_check`), `helpers/speech_providers.py` (`PROVIDERS` catalog, `backend_for`, `effective_provider`, `validate_provider_saved`), `helpers/speech_discovery.py` (speech discovery), `convo_system_one.decider_rows`/`decider_check`. `api/conversation.py` delegates those actions (a refusal is typed data with no side effect) and readiness appends each catalog's rows (a failing hook is one `unavailable` row, never a failed read). Every timing mark has a log-wide `seq`; `metrics` with `cursor` returns only newer marks (at most 1000, `more`, `reset` when the log restarted).
 - Classifier (`roles.classifier`, `decider.*`; user-facing name "Classifier", System One's own is "System One's decider"): `helpers/convo_classifier_catalog.py` is the only catalog (setup_read `classifier_catalog`; the browser keeps no copy): local decision servers (llama.cpp verified; LM Studio, Unsloth Studio, Ollama, vLLM, oMLX not verified until Check server), TypeSafe Jev (decision, text only), OpenAI/OpenRouter/Google (chat), Other; the conversation catalog's disabled providers; an unknown id the browser offered as OpenAI-compatible is a chat classifier with its API base. `kind` auto = the provider's first kind. The normalizer derives the runtime: toggle "Use System One's decider" on (`decider.source` `system_one`) = `system_one` d1_llama_cpp; off with a decision model = `decider.source` `convo`, `decider.model`, `decider.url` (rollback-safe form only) and `system_one` d1_llama_cpp, the decision plugin (`plugins/convo_d1_decider`, see its `AGENTS.md`) resolving `decision_root` for every call; off with a chat model = `system_one` off and `roles.classifier.url`; a provider/kind Convo cannot use = off with no address; provider '' = nothing derived. `migration_view` is read-time only. Locality (one rule in `convo_contract.classifier_url`, `convo_system_one.url_refusal` and the plugin's `allowed_url`, held to one table): this machine and your network (`local_host`: LAN, Tailscale) as they are; a public address only with `roles.classifier.remote` and HTTPS; readiness then reports `remote`, so ambient also needs `remote_ambient_consent`. Readiness refuses start for an unusable System One decider (today's kinds decide from text), a decision classifier without an allowed address, and a text-only provider in an audio conversation. `decider_rows`/`readiness_rows` never contact anything. `classifier_check` (`decider_check` = the previous `{url}` request, same check) is explicit and bounded: GET `<base>/models`, for a decision model `<root>/health`, `<root>/v1/models` and ONE tiny text decision POST `<root>/v1/systemone` (no audio), no redirects, the key attached server-side and never returned, no server text echoed; a public address without consent is refused before anything is sent.
+
+## The chat voice is used in
+
+Agent Zero writes a chat to disk only when its own agent has worked in it (`message_loop_end`), so a chat used by voice alone was gone
+after the next restart (live 2026-11-25). `Host.keep`, called in the background for every accepted turn and when voice ends
+(`_keep_chat`), saves it with Agent Zero's own writer, names an unnamed chat after the first answered words
+(`Store.first_words`, unless Agent Zero's automatic naming is off; its "Chat #N" number changes at a restart) and records when it was last
+used. It never saves the hidden context of a conversation across chats, never a chat whose agent is working (Agent Zero saves that one),
+never writes back a chat the user removed, and a failure never reaches a reply.
 
 ## Saved turn (replay format)
 

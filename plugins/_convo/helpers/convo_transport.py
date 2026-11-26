@@ -118,15 +118,16 @@ async def framed_pcm(response):
 async def speech_status(response):
     """raise_for_status, except that a provider still finishing a request it tracks is SpeechBusy (wait), not a failure.
 
-    Only the sidecar's own `running`/`draining` admission states mean that. `uncertain` needs the operator's recovery
-    and a rejection is final, so both stay ordinary errors."""
+    The sidecar's own `running`/`draining` admission states mean that, and so does an `uncertain` one that says when it is
+    released (`clears_in_ms`): it settles by itself. A rejection is final and stays an ordinary error."""
     if response.status_code == 409:
         await response.aread()
         try:
             detail = response.json().get('detail')
         except (ValueError, AttributeError):
             detail = None
-        if isinstance(detail, dict) and detail.get('state') in {'running', 'draining'}:
+        if isinstance(detail, dict) and (detail.get('state') in {'running', 'draining'}
+                                         or (detail.get('state') == 'uncertain' and type(detail.get('clears_in_ms')) is int)):
             raise SpeechBusy(detail['state'])
     response.raise_for_status()
 

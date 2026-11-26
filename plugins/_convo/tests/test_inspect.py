@@ -178,7 +178,7 @@ class Live(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.store = Store(Path(self.tmp.name) / 'db')
         host = types.SimpleNamespace(context=lambda target: None, freeze_speech=lambda role: role, local_time=lambda: '',
                                      persona=AsyncMock(return_value='Calm'), summarize=AsyncMock(return_value=''),
-                                     direct=AsyncMock(return_value='Search result'))
+                                     direct=AsyncMock(return_value='Search result'), chat_name=lambda target: '')
         self.service = types.SimpleNamespace(store=self.store, host=host, persona_cache={}, dispatcher=types.SimpleNamespace(start=lambda: None),
                                              compactor=Compactor(self.store, host))
         self.config = validate_settings({'enabled': True, 'developer_mode': True, 'sidecar': {'managed': False},

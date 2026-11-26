@@ -58,7 +58,10 @@ sufficient; every section also needs a live check with real models, a real brows
 - [ ] Playback starts and completions are recorded separately from generated text.
 - [ ] A lost output device, a paused audio context or a failed phrase is reported and does not silence the conversation unnoticed.
 - [ ] Incremental PCM playback, where enabled, is accepted only with complete, validated audio, and holds up under sustained use.
-- [ ] An uncertain speech or Studio operation stays recorded across off and restart until it is reconciled; nothing resets it silently.
+- [ ] A speech request with no confirmed end is waited for and released by itself within a minute; it never refuses a later conversation for good.
+- [ ] An uncertain Studio operation stays recorded across off and restart until it is reconciled; nothing resets it silently.
+- [ ] A finished background task is spoken to its end in short requests, is offered again when nothing of it was heard, and is known to the assistant either way; its chat shows no open processing entry.
+- [ ] With a model not loaded or a server down, starting and speaking name the server and say whether it is loading or not answering.
 
 ## Memory and history
 
@@ -72,13 +75,25 @@ sufficient; every section also needs a live check with real models, a real brows
 ## Tools and delegation
 
 - [ ] No tool runs silently: every use and every refusal is journaled, shown in the panel and known to the model.
-- [ ] Work is started only on the user's own request. Text from a tool result, a search page, a transcript or a summary never
-      authorises a task, and a task that cannot be tied to the user's words is not started and says so.
-- [ ] A search whose engines refused is reported as blocked; a search that worked and found nothing is reported as empty.
-- [ ] At most one read-only tool call runs per reply. Further calls are reported, not run, and a result is never invented.
+- [ ] Work is started only on the user's own request or their yes. Text from a tool result, a web page, a chat, a transcript
+      or a summary never authorises a task and never answers Convo's question for the user.
+- [ ] A request the user plainly made is never refused and never asked about twice. When Convo cannot tell, it asks once, in
+      the user's language; a spoken yes runs the action exactly once, a no or anything else starts nothing, and an unanswered
+      question lapses.
+- [ ] Nothing that starts or changes anything runs right after the model has read a tool's result.
+- [ ] A search whose engines refused is reported as blocked, never as empty. A search that gets nothing is handed to the chat's
+      agent, the user is told so, and the answer is spoken when it comes back. No paid search service is needed.
+- [ ] A reply makes at most three read-only tool calls, never the same one twice, and a result is never invented.
+- [ ] Reading a web page reaches public addresses only, also after redirects, and sends no cookies or sign-ins.
+- [ ] A timer is said aloud exactly once, never over the user or over a reply, and still shows as a notification when voice
+      is not running.
+- [ ] A tool group switched off in Settings is not offered to the model, and none of its tools runs.
+- [ ] In a conversation across chats, selecting another chat interrupts nothing; a task goes to the chat the user named, and
+      its result is reported in that one conversation.
 - [ ] A delegated task is confirmed as queued, not done. It keeps the chat it was submitted for, survives the end of the voice
       session, and is not dispatched twice after a timeout, a busy chat or a crash.
-- [ ] The camera is used only while shared, only when the model asks, and only with a model measured to accept images.
+- [ ] The camera and the screen are used only while shared, only when the model asks, and only with a model measured to accept
+      images. No picture and no replayed recording is stored.
 
 ## Languages
 

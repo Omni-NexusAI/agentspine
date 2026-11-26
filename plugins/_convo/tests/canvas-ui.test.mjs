@@ -98,7 +98,7 @@ test('The panel: collapsible sections, words beside every graphic, no live regio
     const html = await read('../webui/diagnostics.html');
     const markup = html.slice(0, html.indexOf('<style>')), css = html.slice(html.indexOf('<style>'));
     const toggles = [...markup.matchAll(/class="convo-diag-toggle" :aria-expanded="String\(!!\$store\.convoDiagnostics\.sections\.(\w+)\)" :aria-controls="uid \+ '-(\w+)'"/g)];
-    assert.deepEqual(toggles.map(match => match[1]), ['live', 'turns', 'gate', 'speculation', 'rolling', 'context', 'saw', 'memory', 'clips', 'tune']);
+    assert.deepEqual(toggles.map(match => match[1]), ['live', 'problems', 'turns', 'gate', 'speculation', 'rolling', 'context', 'saw', 'memory', 'clips', 'tune']);
     for (const [, , id] of toggles) assert.match(markup, new RegExp(`:id="uid \\+ '-${id}'"`));
     assert.doesNotMatch(markup, /aria-live|role="log"/);                                      // meters and numbers are never announced
     assert.doesNotMatch(markup, /\stitle=|:title=|x-bind:title/);                             // nothing writes a title the host tooltip observer would chase

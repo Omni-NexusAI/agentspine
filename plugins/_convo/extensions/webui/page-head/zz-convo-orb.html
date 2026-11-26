@@ -21,6 +21,7 @@
 #microphone-button[data-convo=connecting],#microphone-button[data-convo=loading],#microphone-button[data-convo=thinking]{--co:#c8aa72}
 #microphone-button[data-convo=listening],#microphone-button[data-convo=hearing]{--co:#69bdca}
 #microphone-button[data-convo=speaking]{--co:#aaa0d3}
+#microphone-button[data-convo=muted]{--co:#b9a58f}
 #microphone-button[data-convo=dictating-latched],#microphone-button[data-convo=dictation]{--co:#5fc4b0}
 #microphone-button[data-convo=dictating-ptt]{--co:#e0a458}
 #microphone-button[data-convo=error]{--co:#dc7777}
@@ -31,6 +32,7 @@ body.light-mode #microphone-button[data-convo=idle]{--co:#5b6575}
 body.light-mode #microphone-button[data-convo=connecting],body.light-mode #microphone-button[data-convo=loading],body.light-mode #microphone-button[data-convo=thinking]{--co:#8a6a1f}
 body.light-mode #microphone-button[data-convo=listening],body.light-mode #microphone-button[data-convo=hearing]{--co:#1f7f90}
 body.light-mode #microphone-button[data-convo=speaking]{--co:#5d4fa8}
+body.light-mode #microphone-button[data-convo=muted]{--co:#6d5a45}
 body.light-mode #microphone-button[data-convo=dictating-latched],body.light-mode #microphone-button[data-convo=dictation]{--co:#2c7d6c}
 body.light-mode #microphone-button[data-convo=dictating-ptt]{--co:#94590f}
 body.light-mode #microphone-button[data-convo=error]{--co:#b3342f}
@@ -38,7 +40,7 @@ body.light-mode #microphone-button[data-convo=error]{--co:#b3342f}
 /* one glyph per state: the shape differs, so state survives without colour */
 #microphone-button[data-convo=ready] .g-mic,#microphone-button[data-convo=idle] .g-idle,#microphone-button[data-convo=connecting] .g-spin,#microphone-button[data-convo=loading] .g-spin,
 #microphone-button[data-convo=listening] .g-bars,#microphone-button[data-convo=hearing] .g-bars,#microphone-button[data-convo=thinking] .g-dots,
-#microphone-button[data-convo=speaking] .g-voice,#microphone-button[data-convo=dictating-latched] .g-pen,#microphone-button[data-convo=dictation] .g-pen,
+#microphone-button[data-convo=speaking] .g-voice,#microphone-button[data-convo=muted] .g-muted,#microphone-button[data-convo=dictating-latched] .g-pen,#microphone-button[data-convo=dictation] .g-pen,
 #microphone-button[data-convo=dictating-ptt] .g-ptt,#microphone-button[data-convo=error] .g-err{opacity:1}
 
 /* idle states are calm; development mode is dimmer still */
@@ -66,6 +68,10 @@ body.light-mode #microphone-button[data-convo=error]{--co:#b3342f}
 /* playback is ducked while Convo decides whether you are interrupting */
 #microphone-button[data-convo][data-convo-hold] .co-ring{border-style:dashed;opacity:.8}
 #microphone-button[data-convo][data-convo-hold] .co-core{opacity:.65}
+
+/* muted: the struck-through microphone in a still, double ring (nothing moves, so nothing looks like it listens) */
+#microphone-button[data-convo=muted] .co-ring{border-width:3px;border-style:double;opacity:.85}
+#microphone-button[data-convo=muted] .co-glow{opacity:.15}
 
 /* dictation. Latched: a slow pulse inside a closed second ring ("locked on, hands free"). Push-to-talk: no pulse; a heavier ring and a
    core pressed in, because it only listens while the press is held. The shapes differ, so neither depends on colour or motion. */

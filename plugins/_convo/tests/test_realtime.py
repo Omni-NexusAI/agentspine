@@ -26,6 +26,8 @@ class HostStub:
     async def summarize(self, target, source): return 'Older context'
     def freeze_speech(self, role): return role
     async def direct(self, target, name, args): return 'Search result'
+    def chat_name(self, target): return ''          # the stand-in chats have no title
+    def recent_chats(self, limit=8): return []
 
 
 class SidecarStub:

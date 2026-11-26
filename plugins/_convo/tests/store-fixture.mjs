@@ -23,8 +23,11 @@ export function fakeMic(attributes = {}) {
 
 // `hostConfig`: the host Whisper store's config (its message_mode decides, with settings.voice_message_draft, continuous drafting).
 // `globals`: more page globals for the store's realm (for example a `justToast` spy). `api(url, payload)`: an answer for a host API
-// call, or undefined for the default one (status, then an empty history).
-export async function storeFixture({ settings = {}, startFails = false, performance = undefined, hostConfig = undefined, globals: extra = {}, api = null } = {}) {
+// call, or undefined for the default one (status, then an empty history). `bindings`: more host modules (for example `/js/surfaces.js`);
+// a host module that is not given cannot be imported, as on a host that lacks it. `answer(event, data)`: the socket's reply data for
+// one request (merged over the default), or an Error to refuse it.
+export async function storeFixture({ settings = {}, startFails = false, performance = undefined, hostConfig = undefined, globals: extra = {}, api = null,
+                                     bindings: more = {}, answer = null } = {}) {
     const mic = fakeMic({ 'aria-label': 'Microphone standby', 'aria-pressed': 'false' }), cueNames = [], calls = [], requests = [], audios = [];
     const handlers = {};
     const nativeMic = { async toggle() {}, dispose() {}, async finishConvoDictation() {} };
@@ -36,7 +39,9 @@ export async function storeFixture({ settings = {}, startFails = false, performa
             async request(event, data) {
                 calls.push(event); requests.push({ event, data });
                 if (startFails && event === 'convo.start') return { results: [{ handlerId: 'plugin.Realtime', ok: false, error: { error: 'Provider unreachable' } }] };
-                return { results: [{ handlerId: 'plugin.Realtime', ok: true, data: { ok: true, session: { id: 's', epoch: 0 } } }] };
+                const reply = await answer?.(event, data);
+                if (reply instanceof Error) return { results: [{ handlerId: 'plugin.Realtime', ok: false, error: { error: reply.message } }] };
+                return { results: [{ handlerId: 'plugin.Realtime', ok: true, data: { ok: true, session: { id: 's', epoch: 0 }, ...(reply || {}) } }] };
             } }) },
         '/js/shortcuts.js': { getCurrentContextId: () => 'a', getCurrentContext: () => ({ id: 'a', name: 'Chat a' }), openModal: async () => {} },
         './audio.js': { AudioSession: class {
@@ -45,6 +50,7 @@ export async function storeFixture({ settings = {}, startFails = false, performa
             pcmBegin(_event, done, started) { this.done = done; this.started = started; return true; } pcmChunk() {} pcmEnd() {} pcmAbort() {}
             enqueue(_audio, done, started) { this.done = done; this.started = started; } } },
         '/plugins/_whisper_stt/webui/whisper-stt-store.js': { store: nativeStore },
+        ...more,
     });
     const globals = {
         document: { hidden: false, addEventListener() {}, getElementById: id => id === 'microphone-button' ? mic : null }, window: { addEventListener() {}, confirm: () => true },

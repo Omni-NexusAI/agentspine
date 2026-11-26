@@ -52,14 +52,14 @@ test('A held decision: the live notice is developer-only; the history keeps the 
                     ev(3, 't2', 'turn.held', { decision: 'wait', reason: 'unfinished', transcript: 'and then' }), ev(4, 't3', 'turn.held', { decision: 'silent', reason: 'noise' })];
     assert.deepEqual(foldTurns(events).map(entry => [entry.key, entry.text, entry.detail]), [[1, 'what about Bob', ''], [3, 'and then', '']]);
     assert.deepEqual(foldTurns(events, { developer: true }).map(entry => [entry.key, entry.detail]),
-        [[1, '· stayed silent: side talk'], [3, '· waiting for you to finish'], [4, '· stayed silent: noise']]);
+        [[1, '· stayed silent: side talk'], [3, '· waiting for you to finish'], [4, 'No words captured · stayed silent: noise']]);
     assert.equal(heldText({ decision: 'silent' }), '· stayed silent');
 });
 
 test('The history names the assistant from assistant_name; generated and diagnostic rows need their developer settings', async () => {
     const ev = (seq, turn, kind, payload) => ({ seq, session: 's', turn, kind, payload });
-    const events = [ev(1, 't', 'user.accepted', {}), ev(2, 't', 'assistant.playback_started', {}), ev(3, 't', 'assistant.delivered', { text: 'Hi.' }),
-                    ev(4, 'u', 'user.accepted', {}), ev(5, 'u', 'assistant.generated', { text: 'Never spoken.' }), { seq: 6, kind: 'context.compacted', payload: {} }];
+    const events = [ev(1, 't', 'user.accepted', { transcript: 'hello' }), ev(2, 't', 'assistant.playback_started', {}), ev(3, 't', 'assistant.delivered', { text: 'Hi.' }),
+                    ev(4, 'u', 'user.accepted', { transcript: 'and' }), ev(5, 'u', 'assistant.generated', { text: 'Never spoken.' }), { seq: 6, kind: 'context.compacted', payload: {} }];
     const f = await storeFixture({ settings: { developer_mode: true }, api: (_url, payload) => (payload.action === 'history' ? { events, jobs: [], more: false, assistant_name: 'J.A.R.V.I.S' } : undefined) });
     await f.store.mountPanel();
     assert.deepEqual(plain(f.store.visibleEvents.map(entry => [entry.key ?? entry.seq, entry.label ?? entry.kind])), [[1, 'You'], [3, 'J.A.R.V.I.S'], [4, 'You']]);

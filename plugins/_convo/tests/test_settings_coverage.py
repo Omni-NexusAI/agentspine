@@ -87,6 +87,8 @@ def covered(path, expressions):
     parts = path.split('.')
     if parts[0] == 'roles' and len(parts) > 2:
         candidates.add('roles[role].' + '.'.join(parts[2:]))              # a loop that renders every model role
+    if parts[0] == 'hotkeys' and len(parts) == 2:
+        candidates.add('hotkeys[row.id]')                                 # the loop over every hotkey row (hotkeys-field.html)
     pattern = re.compile(r'config\.(?:' + '|'.join(re.escape(candidate) for candidate in candidates) + r')(?!\w)')
     return any(pattern.search(expression) for expression in expressions)
 
