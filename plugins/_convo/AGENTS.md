@@ -137,8 +137,21 @@
   with nothing more for `WAIT_AGAIN` seconds (3.5) the
   model is asked once more, told that the user went quiet: it answers what makes sense as it is (it had waited on complete questions),
   or writes `[WAIT]` again and nothing is said. A turn that took over earlier fragments but whose own words were not captured shows theirs
-  (`_history`). A reply to words that are, almost to the word (five or more), a phrase the assistant spoke within
-  `OWN_VOICE_SECONDS` is dropped as silent (`_own_voice`, mark `turn.own_voice`): its own voice from a loudspeaker. No classifier override applies here (D1 reads "do not respond" as a confident command).
+  (`_history`). A reply to words that are, almost to the word, a phrase the assistant spoke within `OWN_VOICE_SECONDS`, or a run
+  of four or more words from inside one, is dropped as silent (`_own_voice`, mark `turn.own_voice`): its own voice from a
+  loudspeaker or a loud headset (live 2026-11-25). A `[SILENT]` on a turn whose words the model itself reported is asked about once
+  more when the classifier is sure of the address (respond evidence >= .9) or sure a request was made in the user's own audio
+  (`policy.verified`, the explicit reading on its own; mark `model.silent_confirm` with `why`); the second answer stands, so a
+  request not to respond stays silent. The same reading ends an ambiguity episode (a typed decision's `confidence` is capped by
+  "was it said to me", so it must not be used for either). `INSTRUCTION` says the user's talk about the assistant, or aloud to
+  themself, is still said to it.
+- The assistant's last heard words stand last in the late part of every request (`_last_said`, the same text in `_compose` and
+  `_turn`, no clock in it): a short reply is read against them (live 2026-11-25: "Do it." after an offer was answered about a
+  running task, whose status stood nearer the audio).
+- Each piece of speech carries the browser echo guard's latest verdict (`guard`: state names and numbers, never audio), kept as
+  `guard_*` fields of `candidate.received`. Observational: nothing is decided from it.
+- A task handed to a chat's agent carries the voice conversation's lines only, never that chat's own messages (`_relevant`
+  `chat_messages=False`).
 - Speech over the assistant's reply (`convo_policy.overlap_disposition`; the browser sends `overlap`, `voiced_s` and, at the onset,
   `heard {phrase_id, played_s}`): read without the assistant's last words; a request, question or stop yields (`candidate.admitted`
   with `fade_ms` 100), a confident acknowledgement or side talk lets it go on (`continue`), anything else keeps it ducked

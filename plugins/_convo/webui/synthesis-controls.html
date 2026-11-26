@@ -38,7 +38,7 @@
     <label><span class="convo-voice-name">First block (80 ms frames)<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('first_block_frames')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('first_block_frames')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('first_block_frames')[0]" :max="$store.convoSetup.synthesisBounds('first_block_frames')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('first_block_frames')" x-model.number="$store.convoSetup.synthesisWork().overrides.first_block_frames" @input="$store.convoSetup.synthesisChanged()"></label>
     <label><span class="convo-voice-name">Steady block (80 ms frames)<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('steady_block_frames')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('steady_block_frames')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('steady_block_frames')[0]" :max="$store.convoSetup.synthesisBounds('steady_block_frames')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('steady_block_frames')" x-model.number="$store.convoSetup.synthesisWork().overrides.steady_block_frames" @input="$store.convoSetup.synthesisChanged()"></label>
     </div>
-    <label class="convo-check"><input type="checkbox" :checked="$store.convoSetup.synthesisUnlocked()" @change="$event.target.checked = $store.convoSetup.synthesisUnlock($event.target.checked)">Unlock the decoder context</label>
+    <label class="convo-toggle-line"><span>Unlock the decoder context</span><span class="toggle"><input type="checkbox" :checked="$store.convoSetup.synthesisUnlocked()" @change="$event.target.checked = $store.convoSetup.synthesisUnlock($event.target.checked)"><span class="toggler"></span></span></label>
     <label x-show="$store.convoSetup.synthesisUnlocked()">Decoder context (80 ms frames)<input type="number" step="1" min="1" max="300" placeholder="25" x-model.number="$store.convoSetup.synthesisWork().overrides.left_context_frames" @input="$store.convoSetup.synthesisChanged()"></label>
     <p class="convo-hint">Native PCM playback only: the first block sets how soon a reply starts, the steady block how big each later piece is. The decoder context stays at 25 frames unless unlocked; less context is faster and may sound rougher. The steady block must be at least the first, and context plus steady block at most 300 frames.</p>
   </div></template>
@@ -69,6 +69,7 @@
 </fieldset>
 </template>
 <style>
+.convo-toggle-line{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:.75rem;min-height:40px}.convo-toggle-line .toggle{flex:none}.convo-toggle-line input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}
 .convo-synthesis .convo-synthesis-problems,.convo-synthesis-effective ul{margin:0;padding-left:1.1rem;font-size:.82rem;line-height:1.5}
 .convo-synthesis .convo-synthesis-problems{color:var(--color-error,currentColor)}
 .convo-synthesis-effective h4{margin:0;font-size:.82rem}

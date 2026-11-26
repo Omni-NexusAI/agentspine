@@ -5,7 +5,7 @@ import { NETWORK_HINT, credentialReferenceProblem } from '/plugins/_convo/webui/
 const STATUS = { ready: 'Verified', unverified: 'Not verified', unavailable: 'Unavailable', error: 'Error', checking: 'Checking…' };
 const MANAGED_OFF = 'Convo’s own runtime is off. Turn on “Run Convo’s own runtime” under Convo runtime below and save to use it; switching it on never downloads or loads a model.';
 
-// The speech output card (speech-output-field.html in Connections, speech-voice-field.html in Voice & Audio): a provider editor
+// The speech output card (speech-output-field.html in Connections, speech-voice-field.html in Audio & Video): a provider editor
 // in the style of Agent Zero's model settings. Methods only (see compose in setup-store.js); `this` is the shared settings store,
 // transient view state goes in this.ui.speech. Provider switching, normalization and the catalog live in speech-catalog.js; every
 // change to roles.tts made here goes through them, so the draft holds what the server would store.
@@ -126,7 +126,7 @@ export const speechSetup = {
     speechUrlPlaceholder() { return this.speechSpec().default_url || 'http://host.docker.internal:8000/v1'; },
     speechUrlHint() {
         const [provider] = this.speechChoice();
-        const text = { audiocpp: 'Your own audio.cpp server (the default is your container on port 8890).',
+        const text = { audiocpp: 'Your own audio.cpp server.',
                  llamacpp: 'llama.cpp’s usual address; edit it if your server listens elsewhere.',
                  unsloth_studio: 'Unsloth Studio has no documented default address: enter your server’s URL.' }[provider]
             || 'Any server that speaks the OpenAI speech protocol (POST /audio/speech).';

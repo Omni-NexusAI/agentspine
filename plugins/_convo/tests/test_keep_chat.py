@@ -141,7 +141,7 @@ class Voice(Scenario):
             async def done():
                 await asyncio.gather(*h.handler._keeping) if getattr(h.handler, '_keeping', None) else None
             await done()
-            return kept, extra
+            return list(kept), extra                 # a snapshot: closing the session keeps the chat once more
         return self.play(body, **fields)[0]
 
     def test_every_answered_turn_keeps_its_chat_and_the_first_words_name_it(self):

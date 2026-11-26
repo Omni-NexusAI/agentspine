@@ -32,6 +32,8 @@ EXCLUDED = {
     'decider.kind': 'The decision plugin backend id (one value today); the classifier normalizer selects it, nobody chooses it.',
     'decider.url': 'Derived by the classifier normalizer from roles.classifier.provider/api_base; a saved one is shown through the Classifier card.',
     'decider.model': 'Derived by the classifier normalizer from roles.classifier.model; a saved one is shown through the Classifier card.',
+    'noise_gate_db': 'The saved default of a per-device value: the Sound panel sets it for this microphone and its "Use as default" saves it.',
+    'end_of_turn_seconds': 'The saved default of a per-device value: the Sound panel sets it for this microphone and its "Use as default" saves it.',
     'roles.tts.capabilities.audio_output': 'Always true for a speech output.',
     'roles.tts.capabilities.cloning': 'Declared by the managed audio adapter; clones are created in Voice Studio.',
 }
@@ -156,7 +158,7 @@ class Coverage(unittest.TestCase):
         markup = re.sub(r'\s+', '', '\n'.join((WEBUI / name).read_text(encoding='utf-8') for name in settings_files()))
         for role in DEFAULTS['roles']:
             self.assertIn(role, re.sub(r'\s+', '', (WEBUI / 'setup-store.js').read_text(encoding='utf-8')), role)
-        for section in ('Connections', 'Conversation', 'Voice&Audio'):
+        for section in ('Connections', 'Conversation', 'Audio&Video'):
             self.assertIn("section==='" + section + "'", markup)
 
 

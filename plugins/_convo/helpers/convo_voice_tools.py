@@ -408,7 +408,8 @@ def prepare_task(rt, state, session, turn, task):
     task = str(task or '').strip()
     if not task or len(task) > 16000:
         raise ValueError("Invalid delegated task")
-    text = (rt._relevant(state, session["target"], task, turn) or rt._helper('convo_context').BoundedContext(())).with_task(task)
+    # The chat's agent already has its own messages: only the voice conversation's lines go with the task.
+    text = (rt._relevant(state, session["target"], task, turn, chat_messages=False) or rt._helper('convo_context').BoundedContext(())).with_task(task)
     if len(text) > 16000:
         raise ValueError("Invalid delegated task")
     return text

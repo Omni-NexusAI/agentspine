@@ -51,7 +51,7 @@ try {
     await page.waitFor(`!!document.querySelector('.convo-tabs')`, 60000);
     await sleep(1500);
     const tabs = await page.eval(`[...document.querySelectorAll('.convo-tabs button')].map(b => b.textContent.trim())`);
-    check('the settings modal offers the three sections', JSON.stringify(tabs) === JSON.stringify(['Connections', 'Conversation', 'Voice & Audio']), tabs.join(', '));
+    check('the settings modal offers the four sections', JSON.stringify(tabs) === JSON.stringify(['Connections', 'Conversation', 'Audio & Video', 'Advanced']), tabs.join(', '));
     for (const name of tabs) {
         await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === ${JSON.stringify(name)}).click()`);
         await sleep(500);

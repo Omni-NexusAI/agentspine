@@ -37,7 +37,7 @@ export const store = createStore('convoSetup', compose({
     providers: [], native: {}, deciderReference: null, classifierCatalog: null, inConfigModal: false,
     profiles: [],                                       // agent profiles for "Speak as profile" (setup_read `profiles`: [{id, title}])
     stale: false, conflicts: [], theirs: null, revisionSeen: '',
-    section: 'Connections', sections: ['Connections', 'Conversation', 'Voice & Audio'],   // tuning lives in the developer diagnostics panel
+    section: 'Connections', sections: ['Connections', 'Conversation', 'Audio & Video', 'Advanced'],   // tuning lives in the developer diagnostics panel
     roles: ['conversation', 'classifier', 'tts'], choices: {}, searches: {}, error: '', message: '',
     importDocument: null, importPreview: null, importPaths: [],
     network: {}, certificates: {}, keyBound: {},       // where Agent Zero runs, remembered certificates, the address each saved key is for

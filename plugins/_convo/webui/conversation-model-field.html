@@ -108,7 +108,7 @@
       <div class="field-label"><div class="field-title" :id="$id('convo-audio', 'title')">Accepts audio input</div><div class="field-description">On: your speech goes to the model as audio. Off: Convo sends Agent Zero’s speech-to-text transcript instead. A model list does not prove audio support; Test audio input does.</div></div>
       <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="audio" :aria-labelledby="$id('convo-audio', 'title')" x-model="$store.convoSetup.config.roles.conversation.capabilities.audio_input" @change="$store.convoSetup.conversationEdited('roles.conversation.capabilities.audio_input', autosave)"><span class="toggler"></span></label></div>
     </div>
-    <div class="field" x-id="['convo-remote']">
+    <div class="field" x-id="['convo-remote']" x-show="$store.convoSetup.conversationRemoteShown()">
       <div class="field-label"><div class="field-title" :id="$id('convo-remote', 'title')">Allow remote processing</div><div class="field-description" x-text="$store.convoSetup.conversationRemoteText()"></div></div>
       <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="remote" :aria-labelledby="$id('convo-remote', 'title')" x-model="$store.convoSetup.config.roles.conversation.remote" @change="$store.convoSetup.conversationEdited('roles.conversation.remote', autosave)"><span class="toggler"></span></label></div>
     </div>
@@ -123,7 +123,7 @@
       <div class="field-label"><div class="field-title" :id="$id('convo-summary-consent', 'title')">Allow a utility model outside your network</div><div class="field-description">Off: a utility model in the cloud never receives the conversation, and no summaries are written. On: it receives the older part of the conversation to summarise it.</div></div>
       <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="summary-consent" :aria-labelledby="$id('convo-summary-consent', 'title')" x-model="$store.convoSetup.config.utility_summary_consent" @change="$store.convoSetup.conversationEdited('utility_summary_consent', autosave)"><span class="toggler"></span></label></div>
     </div>
-    <template x-for="row in $store.convoSetup.conversationRows()" :key="row.id"><p class="field-description convo-model-row" :data-state="row.state"><x-icon :name="row.state === 'ready' ? 'check_circle' : (row.state === 'warning' ? 'warning' : 'error')" aria-hidden="true"></x-icon><strong x-text="row.label + ': '"></strong><span x-text="row.detail"></span></p></template>
+    <template x-for="row in $store.convoSetup.conversationRows().filter(row => row.state !== 'ready' || $store.convoSetup.config.developer_mode === true)" :key="row.id"><p class="field-description convo-model-row" :data-state="row.state"><x-icon :name="row.state === 'ready' ? 'check_circle' : (row.state === 'warning' ? 'warning' : 'error')" aria-hidden="true"></x-icon><strong x-text="row.label + ': '"></strong><span x-text="row.detail"></span></p></template>
 
     <div class="advanced-section convo-model-advanced" x-data="{ advOpen: false }" x-id="['convo-advanced']">
       <button type="button" class="advanced-toggle" :aria-expanded="advOpen ? 'true' : 'false'" :aria-controls="$id('convo-advanced', 'body')" @click="advOpen = !advOpen"><x-icon class="advanced-toggle-icon" name="chevron_right" aria-hidden="true" :class="{ 'is-open': advOpen }"></x-icon><span>Advanced Settings</span></button>

@@ -193,7 +193,7 @@ test('A text-only conversation model\'s turn asks Convo\'s Whisper worker on the
 
 test('The setting says what it does now, and the unreachable direct-turn path is gone', async () => {
     const settings = await read('settings-controls.html');
-    assert.match(settings, /<input type="checkbox" x-model="\$store\.convoSetup\.config\.transcription_enabled">Remember what you said \(Whisper transcripts\)<\/label>\s*<p class="convo-hint">[^<]*the conversation model sees your words in later turns/);
+    assert.match(settings, /<div class="field-title">Remember what you said \(Whisper transcripts\)<\/div>.*?x-model="\$store\.convoSetup\.config\.transcription_enabled"[^>]*><span class="toggler"><\/span><\/label><\/div><\/div>\s*<p class="convo-hint">[^<]*the conversation model sees your words in later turns/);
     assert.doesNotMatch(settings, /Show parallel Whisper transcripts/);
     const store = await read('convo-store.js');
     assert.doesNotMatch(store, /request\('turn'/);                                  // a direct-audio turn always goes through the candidate path

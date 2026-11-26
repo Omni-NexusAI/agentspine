@@ -489,3 +489,15 @@ class CloudUpkeep(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    async def test_the_start_of_a_longer_phrase_heard_back_is_recognised_too(self):
+        """Live 2026-11-25, a loud headset: the first words of the reply came back through the microphone and cut it, twice."""
+        now = asyncio.get_running_loop().time()
+        said = 'yes sir your first question was which persona profile this is you asked which character i am running as'.split()
+        state = {'voiced': [(now - 2, said, 'earlier')]}
+        check = realtime.Realtime._own_voice
+        self.assertTrue(check(state, 'now', 'Yes, sir. Your first question was...?'))
+        self.assertTrue(check(state, 'now', 'which persona profile this is'))                       # a run from the middle
+        self.assertFalse(check(state, 'now', 'Yes sir.'))                                           # too short to tell
+        self.assertFalse(check(state, 'now', 'What was my first question about the persona profile?'))
+        self.assertFalse(check(state, 'now', 'No, my first question was about the weather in Lisbon.'))

@@ -628,7 +628,7 @@ def decider_reference(config):
 
 
 def _provisioner_row():
-    label = 'Decision plugin (' + DECIDER_PLUGIN + ')'
+    label = 'Decision plugin'
     try:
         from helpers import plugins
         installed = bool(plugins.get_plugin_meta(DECIDER_PLUGIN))
@@ -648,7 +648,7 @@ def _provisioner_row():
 
 def _backend_row(kind):
     registered = any(item['id'] == kind for item in registered_backends())
-    return {'id': 'decider_backend', 'label': 'Decision backend ' + kind, 'state': 'ready' if registered else 'missing',
+    return {'id': 'decider_backend', 'label': 'Decision backend', 'state': 'ready' if registered else 'missing',
             'detail': 'Registered with Convo. Registration is not inference: Check server and each turn show whether the server answers.'
                       if registered else 'Not registered yet. The decision plugin registers it when an agent starts, or through its provision API; Convo loads no model.'}
 

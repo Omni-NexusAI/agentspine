@@ -246,7 +246,7 @@ test('Per-device keys: each phone mode keeps its own calibration; choices per mi
     assert.equal(soundKey('mic', 'out'), 'convo.sound.v1:mic|out');
     assert.equal(soundKey('mic', 'out', 'media'), 'convo.sound.v1:mic|out#media');
     assert.equal(soundKey('mic', 'out', 'nonsense'), 'convo.sound.v1:mic|out');
-    assert.deepEqual(normalizeChoices({ output: 5, noise_suppression: false, phone_mode: 'loud' }), { output: '', noise_suppression: false, auto_gain: true, phone_mode: 'auto' });
+    assert.deepEqual(normalizeChoices({ output: 5, noise_suppression: false, phone_mode: 'loud' }), { output: '', output_label: '', noise_suppression: false, auto_gain: true, phone_mode: 'auto' });
     assert.equal(writeChoices('mic', { output: 'hdmi' }, storage), true);
     assert.equal(readChoices('mic', storage).output, 'hdmi');
     assert.deepEqual(readChoices('mic', blocked), normalizeChoices({}));

@@ -59,14 +59,15 @@ test('The defaults turn every voice tool group on, and a saved configuration fro
 test('The Conversation section has one labelled checkbox per group, with its hint, in the group "What the voice agent may do"', async () => {
     const { shell, start, html } = await group();
     const section = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Conversation'" class="convo-stack">`);
-    assert.ok(section > 0 && start > section && start < shell.indexOf(`section === 'Voice & Audio'`));
+    assert.ok(section > 0 && start > section && start < shell.indexOf(`section === 'Audio & Video'`));
     assert.match(html, /<legend>What the voice agent may do<\/legend>/);
-    const boxes = [...html.matchAll(/<label class="convo-check"><input type="checkbox" x-model="\$store\.convoSetup\.config\.voice_tools\.(\w+)"><span>([^<]+)<small>([^<]+)<\/small><\/span><\/label>/g)];
-    assert.deepEqual(boxes.map(match => match[1]), Object.keys(GROUPS));               // every key, once, in the catalogue's order
-    for (const [, key, label, hint] of boxes) assert.deepEqual([label, hint], GROUPS[key], key);
+    // Agent Zero's switch in its row layout: the title and hint on the left, the toggle on the right.
+    const boxes = [...html.matchAll(/<div class="field convo-switch"><div class="field-label"><div class="field-title">([^<]+)<\/div><div class="field-description">([^<]+)<\/div><\/div><div class="field-control"><label class="toggle"><input type="checkbox" x-model="\$store\.convoSetup\.config\.voice_tools\.(\w+)" aria-label="[^"]+"><span class="toggler"><\/span><\/label><\/div><\/div>/g)];
+    assert.deepEqual(boxes.map(match => match[3]), Object.keys(GROUPS));               // every key, once, in the catalogue's order
+    for (const [, label, hint, key] of boxes) assert.deepEqual([label, hint], GROUPS[key], key);
     assert.equal((html.match(/type="checkbox"/g) || []).length, 8);
-    // The same classes as the neighbouring checkboxes of that section, and the one shared draft (no store or save path of its own).
-    assert.match(shell.slice(section, start), /<label class="convo-check"><input type="checkbox" x-model="\$store\.convoSetup\.config\.enabled">/);
+    // The same switch as the neighbouring ones of that section, and the one shared draft (no store or save path of its own).
+    assert.match(shell.slice(section, start), /<label class="toggle"><input type="checkbox" x-model="\$store\.convoSetup\.config\.enabled" aria-label="Enable Convo composer control">/);
     assert.doesNotMatch(html, /@change|setup_patch|\.patch\(|localStorage/);
     // Both settings entry points (the plugin Config and the canvas settings modal) embed this one shell.
     for (const key of Object.keys(GROUPS)) assert.equal((await settingsMarkup()).split(`config.voice_tools.${key}"`).length - 1, 1, key);
@@ -137,7 +138,7 @@ test('Showing the Conversation section reads the last known state and never send
     await tick();
     assert.deepEqual(f.actions(), ['search_health']);
     assert.match(f.store.searchHealthText(), /^Some search engines are refusing; others answer\. Checked at \S/);
-    f.store.section = 'Voice & Audio'; watchers[0][1]('Voice & Audio');
+    f.store.section = 'Audio & Video'; watchers[0][1]('Audio & Video');
     f.store.section = 'Conversation'; watchers[0][1]('Conversation');
     await tick();
     assert.deepEqual(f.actions(), ['search_health', 'search_health']);                 // shown again: read again, still from memory

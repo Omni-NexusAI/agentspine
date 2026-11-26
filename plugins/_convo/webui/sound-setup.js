@@ -72,13 +72,15 @@ export function soundSource(key, storage) {
 // microphone, so the per-device sound key is the microphone and that output), the browser's noise suppression and auto gain (Call
 // mode and desktops; Media mode turns them off), and the phone audio mode ('auto' | 'media' | 'call').
 export const DEVICE_PREFIX = 'convo.device.v1:';
-export const DEVICE_DEFAULTS = Object.freeze({ output: '', noise_suppression: true, auto_gain: true, phone_mode: 'auto' });
+export const DEVICE_DEFAULTS = Object.freeze({ output: '', output_label: '', noise_suppression: true, auto_gain: true, phone_mode: 'auto' });
 export const PHONE_MODES = ['auto', 'media', 'call'];
 export const deviceKey = input => `${DEVICE_PREFIX}${String(input || 'default').slice(0, 200)}`;
 export function normalizeChoices(values = {}) {
     const source = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
     return {
         output: typeof source.output === 'string' ? source.output.slice(0, 200) : '',
+        // The chosen output's name as the browser gave it, so the choice can be shown before (or without) the device list.
+        output_label: typeof source.output === 'string' && source.output && typeof source.output_label === 'string' ? source.output_label.slice(0, 80) : '',
         noise_suppression: source.noise_suppression !== false,
         auto_gain: source.auto_gain !== false,
         phone_mode: PHONE_MODES.includes(source.phone_mode) ? source.phone_mode : 'auto',
@@ -168,7 +170,8 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
         setChoice(name, value) {
             if (!(name in DEVICE_DEFAULTS)) return this.choices;
             const input = this.convo?.soundInput?.() || '';
-            this.choices = normalizeChoices({ ...this.choices, [name]: value });
+            const named = name === 'output' ? { output_label: this.outputs.find(device => device.id === value)?.label || '' } : {};
+            this.choices = normalizeChoices({ ...this.choices, [name]: value, ...named });
             this.error = '';
             if (!writeChoices(input, this.choices, storage)) this.message = 'This browser is not keeping settings, so this change lasts until the page is reloaded.';
             else this.message = name !== 'output' && this.convo?.active ? 'This applies the next time you start a conversation (the microphone is opened with it).' : '';
@@ -183,7 +186,13 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
             return result;
         },
         // The real output names (the browser gives names once the microphone was allowed); hidden where a browser cannot choose.
-        async listOutputs() { this.outputs = (await this.convo?.listOutputs?.()) || []; return this.outputs; },
+        async listOutputs() { this.outputs = (await this.convo?.listOutputs?.()) || []; this.outputsListed = true; return this.outputs; },
+        outputsListed: false,
+        // The saved output when the list does not hold it: by its name, and "not connected" only once the list was really read.
+        savedOutputLabel() {
+            const name = this.choices.output_label || 'Saved output';
+            return this.outputsListed ? name + ' (not connected)' : name;
+        },
         get canChooseOutput() { return !!this.convo?.outputView?.().can_choose; },
         output() { return this.convo?.outputView?.() || { label: 'System default', state: '', can_choose: false, missing: false, phone: false, mode: '' }; },
         async testSound() {

@@ -225,7 +225,7 @@ class AddressRefused(ContractError):
 CLASSIFIER_REMOTE = ("A public classifier address needs “Allow remote processing” for the classifier: it would receive your "
                      "microphone audio.")
 CLASSIFIER_INVALID = ("The classifier address must be an http(s) address with a valid port and no user name, password, query or "
-                      "fragment, for example http://host.docker.internal:9931.")
+                      "fragment, for example http://host.docker.internal:<port>.")
 
 
 def classifier_url(url, remote=False, path=True):

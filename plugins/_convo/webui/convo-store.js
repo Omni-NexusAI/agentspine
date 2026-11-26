@@ -364,9 +364,22 @@ const voicedOf = meta => (Number.isFinite(meta?.voiced_s) && meta.voiced_s >= 0 
 // The audio's pre-roll (sound kept from before the speech began, audio.js PRE_ROLL_SECONDS): the server subtracts it from "short".
 const preRollField = meta => (Number.isFinite(meta?.pre_roll_s) && meta.pre_roll_s > 0 ? { pre_roll_s: meta.pre_roll_s } : {});
 // An overlap probe also carries this device's "Interrupt after" (`barge_in_s`, 0.4-2.0): the server's safety yield uses it for that probe.
+// The echo guard's latest verdict (state names and numbers only, never audio), sent with each piece of speech so the server's
+// journal can explain afterwards why speech during a reply was let through (2026-11-25: the assistant's own voice, through a loud
+// headset, was taken for the user's twice, and nothing recorded what the guard had seen).
+export function guardVerdict(metric) {
+    if (!metric || typeof metric !== 'object') return null;
+    const number = value => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 1000) / 1000 : undefined);
+    const name = value => (typeof value === 'string' ? value.slice(0, 24) : undefined);
+    return { mode: name(metric.mode), state: name(metric.acousticState), path: name(metric.candidatePath), reject: name(metric.rejectReason),
+        correlation: number(metric.correlation), lag_ms: number(metric.lagMs), independent_ms: number(metric.independentMs),
+        echo_ms: number(metric.echoEvidenceMs), playing: metric.playbackActive === true, native_aec: metric.nativeAec === true };
+}
 function overlapFields(candidate, voiced, final = false) {
     const fields = {};
     if (voiced !== undefined) fields.voiced_s = voiced;
+    const guard = guardVerdict(audio?.echoMetric);
+    if (guard) fields.guard = guard;
     if (candidate?.overlap) {
         fields.overlap = true; if (candidate.heard) fields.heard = { ...candidate.heard };
         if (!final) fields.barge_in_s = store.soundValues().barge_in_seconds;
@@ -892,7 +905,7 @@ export const store = createStore('convo', {
     outputView() {
         const page = pageAudio(), info = page?.snapshot?.() || {}, choices = readChoices(this.soundInput());
         const named = this.outputs?.find?.(device => device.id === (info.missing ? '' : choices.output));
-        const label = choices.output && !info.missing ? (named?.label || 'the chosen output device') : 'System default';
+        const label = choices.output && !info.missing ? (named?.label || choices.output_label || 'the saved output') : 'System default';
         return { label, state: String(info.state || ''), can_choose: !!info.can_choose && !isPhone(), missing: !!info.missing, phone: isPhone(),
                  mode: audioMode.mode, mode_source: audioMode.source, mode_reason: audioMode.reason, reopened: info.reopened || 0,
                  ducks: audio?.duck?.engagements || 0, rebuffers: audio?.underruns || 0 };

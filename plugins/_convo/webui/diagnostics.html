@@ -357,7 +357,7 @@ import { store as diagnostics } from '/plugins/_convo/webui/diagnostics-store.js
                 <x-component path="/plugins/_convo/webui/settings-banner.html"></x-component>
                 <p class="convo-hint">The same settings as Convo settings: an unsaved edit there and here is one draft, and a change saved elsewhere shows the banner above.</p>
                 <label>Echo protection<select x-model="$store.convoSetup.config.echo_guard"><template x-for="option in [['adaptive','Adaptive: ignore Convo’s own voice, allow interruptions'],['strict','Strict: ignore the microphone while Convo speaks'],['off','Off: browser echo cancellation only']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSetup.config.echo_guard" x-text="option[1]"></option></template></select></label>
-                <p class="convo-hint">Also in Voice &amp; Audio. The saved default; a device with its own Sound settings uses those.</p>
+                <p class="convo-hint">The saved default; a device with its own Sound settings uses those.</p>
                 <x-component path="/plugins/_convo/webui/tuning-controls.html"></x-component>
                 <x-component path="/plugins/_convo/webui/synthesis-controls.html"></x-component>
                 <p role="alert" class="convo-error" x-show="$store.convoSetup.error" x-text="$store.convoSetup.error"></p>

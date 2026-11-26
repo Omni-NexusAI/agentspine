@@ -93,6 +93,7 @@ AFTER_REPLY_WAIT = 120.0         # a turn answered after an unheard answer waits
 # at most 1.76 s): a page that stopped playing without saying so (an error stops its audio) is not waited for.
 AFTER_REPLY_MARGIN = 2.0
 LEFT_OVER_SECONDS = 60.0         # a remark that was waiting for an answer's end is told to what ended that answer for this long
+LAST_SAID_LIMIT = 320            # characters of the assistant's last heard words repeated beside the new utterance (_last_said)
 UNSURE_SECONDS = 8.0             # Convo asks whether an utterance was meant for it only this soon after it was said
 UNSURE_ANSWER_SECONDS = 45.0     # ...and what is said within this long of asking, with nothing answered in between, is the answer
 UNSURE = ("It is not clear whether this was meant for you. Ask one short question, in character and in the user's language, that says what "
@@ -151,7 +152,8 @@ RECENT_AUDIO = 2       # turns whose audio stays in memory (never stored) for th
 # 2026-11-09: the desktop model answered "What about Kansas?" with [SILENT] while the classifier read it as addressed (.94). A request
 # not to respond stays silent the second time; anything else is answered.
 CONFIRM_SILENT = ("\nYou chose [SILENT], but this was said to you. Answer it now, reading a short follow-up in the light of the "
-                  "conversation so far, unless the user explicitly asked you not to respond; only then write [SILENT] again.")
+                  "conversation so far, unless the user explicitly asked you not to respond; only then write [SILENT] again. If you truly cannot tell whether they want "
+                  "it from you, ask one short question that says what you understood.")
 # The model waited for the rest of a thought ([WAIT]) and the user said nothing more for WAIT_AGAIN seconds: asked once more, told so.
 # Measured live 2026-11-24: it waited on complete questions ("Is that background task still going?"), which were never answered.
 WAIT_AGAIN = 3.5
@@ -802,7 +804,7 @@ class Realtime(WsHandler):
                 candidate['heard'] = {'phrase_id': heard['phrase_id'], 'played_s': float(heard['played_s'])}
         if final:
             candidate['arrived'] = asyncio.get_running_loop().time()    # when the utterance ended, for joining a continuation
-        self._mark(turn, 'candidate.received', sequence=sequence, final=final)
+        self._mark(turn, 'candidate.received', sequence=sequence, final=final, **self._guard_fields(data.get('guard')))
         state['candidate_pending'] = (candidate, sequence, dict(session), audio, transcript, final)
         if not state.get('candidate_task') or state['candidate_task'].done():
             state['candidate_task'] = asyncio.create_task(self._candidate_loop(sid, state))
@@ -1727,16 +1729,23 @@ class Realtime(WsHandler):
 
     @staticmethod
     def _own_voice(state, turn, line):
-        """Whether the words heard are, almost to the word, a phrase the assistant spoke within the last seconds. Only a whole
-        utterance of five words or more counts: an answer that merely quotes the assistant differs."""
+        """Whether the words heard are, almost to the word, something the assistant spoke within the last seconds: a whole phrase
+        of it, or a run of four words or more from inside one (live 2026-11-25: through a loud headset the microphone caught the
+        first words of a longer phrase, "Yes, sir. Your first question was", twice, and each time the reply was cut and begun
+        again). Words of the user's own around a quotation make it differ, so an answer that quotes the assistant does not count."""
         words = re.findall(r"\w+", str(line or '').casefold())
-        if len(words) < 5:
+        if len(words) < 4:
             return False
         now = asyncio.get_running_loop().time()
         for at, said, other in state.get('voiced', ()):
-            if other != turn and now - at < OWN_VOICE_SECONDS and abs(len(said) - len(words)) <= 2 \
-                    and difflib.SequenceMatcher(None, said, words).ratio() >= .9:
+            if other == turn or now - at >= OWN_VOICE_SECONDS:
+                continue
+            matcher = difflib.SequenceMatcher(None, said, words, autojunk=False)
+            if abs(len(said) - len(words)) <= 2 and matcher.ratio() >= .9:
                 return True
+            blocks = [block for block in matcher.get_matching_blocks() if block.size]
+            if blocks and sum(block.size for block in blocks) >= .9 * len(words)                     and blocks[-1].a + blocks[-1].size - blocks[0].a <= len(words) + 2:
+                return True                                 # nearly all of it, in order, from one stretch of what was said
         return False
 
     @staticmethod
@@ -2905,6 +2914,31 @@ class Realtime(WsHandler):
         return note + (" A task you hand over goes to " + default + " unless the user names a chat: then pass its name as `chat` "
                        "(or \"new\" when they ask for a new chat).")
 
+    @staticmethod
+    def _guard_fields(guard):
+        """The browser's echo-guard verdict for one piece of speech, as mark fields (state names and numbers; convo_metrics drops
+        anything else). Observational only: nothing is decided from it."""
+        if not isinstance(guard, dict):
+            return {}
+        names = {'mode': 'guard_mode', 'state': 'guard_state', 'path': 'guard_path', 'reject': 'guard_reject', 'correlation': 'guard_correlation',
+                 'lag_ms': 'guard_lag_ms', 'independent_ms': 'guard_independent_ms', 'echo_ms': 'guard_echo_ms', 'playing': 'guard_playing',
+                 'native_aec': 'guard_native_aec'}
+        return {field: guard[key] for key, field in names.items() if key in guard}
+
+    @staticmethod
+    def _last_said(context, turn=None):
+        """What the user last heard the assistant say, as the last line of a request's late part: a short reply ("do it") is
+        about that. Live 2026-11-25: after "I can open Settings for you now if you'd like", "Do it." was answered with a sentence
+        about a running task, whose status stood nearer the user's words than the offer did. Only what was delivered (heard), its
+        end kept; the same text for a held reply and the admitted turn (no clock in it)."""
+        for item in reversed(context["turns"][-3:]):
+            said = " ".join(str(item["content"].get("assistant") or "").split())
+            if item["id"] != turn and said:
+                return ("The last thing the user heard you say: " + json.dumps(said[-LAST_SAID_LIMIT:], ensure_ascii=False)
+                        + ". When what they say now is short, read it as their reply to that: an acceptance of something you "
+                        "offered is a request to do it now.")
+        return ""
+
     def _tasks_note(self, state, session):
         """The state of the tasks handed over in this session, for this reply only: what was said earlier about a task ("still
         running") is never what the model goes by."""
@@ -2919,8 +2953,10 @@ class Realtime(WsHandler):
         except Exception:
             return ''
 
-    def _relevant(self, state, target, text, current=""):
-        """Bounded relevant context for `text` (journal, jobs and recent chat of this target only), or None. Never raises."""
+    def _relevant(self, state, target, text, current="", chat_messages=True):
+        """Bounded relevant context for `text` (journal, jobs and recent chat of this target only), or None. Never raises.
+        `chat_messages=False` leaves the chat's own recent messages out: a task handed to that chat's agent must not carry the
+        agent's own earlier output back to it (live 2026-11-25: raw fragments of its replies went along as "context")."""
         if not str(text or "").strip():
             return None
         try:
@@ -2930,7 +2966,7 @@ class Realtime(WsHandler):
             # The journal and jobs are the conversation's; the chat's own recent messages are the selected chat's (none when a
             # conversation across chats has no chat selected).
             chat = self._work(state, state['session']) if target == state['session']["target"] else target
-            candidates = module.candidates_from(_Visible(service.store, current), target, recent(chat) if recent and chat else [])
+            candidates = module.candidates_from(_Visible(service.store, current), target, recent(chat) if recent and chat and chat_messages else [])
             return module.build_context(text, candidates)
         except Exception:
             return None
@@ -3243,7 +3279,8 @@ class Realtime(WsHandler):
         context = state['service'].store.context(session['target'])
         clips = state['remarks'].peek() if audio is not None and config["roles"]["conversation"]["capabilities"].get("audio_input") else []
         offer = self._tool_offer(state, config, bool(context["memory"]["covered"]))
-        system = self._system_prompt(state, config, context["memory"], remarks=bool(clips), heard=audio is not None, context=self._tasks_note(state, session),
+        late = "\n".join(part for part in (self._tasks_note(state, session), self._last_said(context, turn)) if part)
+        system = self._system_prompt(state, config, context["memory"], remarks=bool(clips), heard=audio is not None, context=late,
                                      clock=self._clock(state, turn) if turn else '', tools=offer)
         messages = self._history(context, state)
         self._check_capacity(config, system, messages, audio, transcript, ratio=self._ratio(state, messages), window=self._window(state),
@@ -3284,7 +3321,9 @@ class Realtime(WsHandler):
                 return
             if not self._current(sid, state, epoch):
                 return
-            if decision.explicit_request and decision.confidence >= .9:
+            if policy.verified(decision):
+                # A plain request ends the ambiguity episode. (`confidence` is capped by "was it said to me" for a typed reading, so
+                # the old test almost never passed and the clarifying question could be asked once and then never again.)
                 state["episode"] = uuid.uuid4().hex
             content = {"input": "audio" if audio else "text", "note": str(result.get("context_note", ""))[:1600]}
             transcript = transcript or state["transcripts"].pop(turn, None)
@@ -3345,6 +3384,9 @@ class Realtime(WsHandler):
                 block = (block + "\n" if block else "") + note
                 if confirmed_note:
                     confirmed_names = {open_question['name']}
+            said = self._last_said(context, turn)
+            if said:
+                block = (block + "\n" if block else "") + said        # last: nearest the user's words
             # The tools this conversation offers (the same on every request of it: natively, or described in writing for a server
             # without native tools) and whether this reply may run one.
             offer = self._tool_offer(state, config, bool(context["memory"]["covered"]))
@@ -3589,8 +3631,13 @@ class Realtime(WsHandler):
                     fresh()
                     retried = True
                     held_reply = await generate(asked(request))
-                if held_reply == 'silent' and not retried and (policy.respond_evidence(decision) >= .9 or (decision.explicit_request and decision.confidence >= .9)):
-                    self._mark(turn, 'model.silent_confirm')
+                sure = policy.respond_evidence(decision) >= .9
+                # Live 2026-11-25: two plain questions about "the voice agent" were silenced. The classifier was sure a request was made
+                # (.99) but not that it was addressed (.59, .88), and only the second reading was looked at. A request heard in the
+                # user's own audio, with words the model itself reported, is asked about again; its own voice heard back never is.
+                asked_plainly = policy.verified(decision) and bool(str(heard.get("line") or "").strip()) and 'own voice' not in held_why
+                if held_reply == 'silent' and not retried and (sure or asked_plainly):
+                    self._mark(turn, 'model.silent_confirm', why='addressed' if sure else 'request')
                     request["system"] += CONFIRM_SILENT
                     proposals.clear()
                     fresh()

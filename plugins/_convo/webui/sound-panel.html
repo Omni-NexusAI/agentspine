@@ -37,14 +37,14 @@
     </select>
   </div>
   <div class="convo-sound-row convo-sound-output">
-    <div class="convo-sound-head"><span class="convo-sound-title">Output</span><span class="convo-sound-value" x-text="$store.convoSound.output().label + ($store.convoSound.output().missing ? ' (chosen device gone)' : '')"></span></div>
+    <div class="convo-sound-head"><span class="convo-sound-title">Output</span><span class="convo-sound-value" x-text="$store.convoSound.output().label + ($store.convoSound.output().missing ? ' (' + ($store.convoSound.choices.output_label || 'the saved output') + ' is not connected)' : '')"></span></div>
     <template x-if="$store.convoSound.canChooseOutput">
       <div class="convo-sound-line">
         <label :for="$id('sound-output')">Play to</label>
-        <select :id="$id('sound-output')" @focus="$store.convoSound.listOutputs()" @pointerdown="$store.convoSound.listOutputs()" @change="$store.convoSound.setChoice('output', $event.target.value)">
+        <select :id="$id('sound-output')" x-init="$store.convoSound.listOutputs()" @focus="$store.convoSound.listOutputs()" @pointerdown="$store.convoSound.listOutputs()" @change="$store.convoSound.setChoice('output', $event.target.value)">
           <option value="" :selected="!$store.convoSound.choices.output">System default</option>
           <template x-for="device in $store.convoSound.outputs" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.choices.output" x-text="device.label || 'Unnamed output'"></option></template>
-          <template x-if="$store.convoSound.choices.output && !$store.convoSound.outputs.some(device => device.id === $store.convoSound.choices.output)"><option :value="$store.convoSound.choices.output" selected>The chosen device</option></template>
+          <template x-if="$store.convoSound.choices.output && !$store.convoSound.outputs.some(device => device.id === $store.convoSound.choices.output)"><option :value="$store.convoSound.choices.output" selected x-text="$store.convoSound.savedOutputLabel()"></option></template>
         </select>
       </div>
     </template>
@@ -64,8 +64,8 @@
   </template>
   <fieldset class="convo-sound-row convo-sound-processing">
     <legend>Microphone processing</legend>
-    <label class="convo-sound-check"><input type="checkbox" :checked="$store.convoSound.choices.noise_suppression" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('noise_suppression', $event.target.checked)"> Noise suppression</label>
-    <label class="convo-sound-check"><input type="checkbox" :checked="$store.convoSound.choices.auto_gain" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('auto_gain', $event.target.checked)"> Automatic gain</label>
+    <div class="convo-sound-switch"><span :id="$id('sound-ns')">Noise suppression</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-ns')" :checked="$store.convoSound.choices.noise_suppression" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('noise_suppression', $event.target.checked)"><span class="toggler"></span></label></div>
+    <div class="convo-sound-switch"><span :id="$id('sound-agc')">Automatic gain</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-agc')" :checked="$store.convoSound.choices.auto_gain" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('auto_gain', $event.target.checked)"><span class="toggler"></span></label></div>
     <p class="convo-sound-hint">The browser's own processing for this microphone, applied at the next start. Echo cancelling stays on (interruption by voice needs it); phone Media mode turns all three off.</p>
   </fieldset>
   <template x-if="$store.convo?.settings?.developer_mode">
@@ -101,7 +101,7 @@
 .convo-sound-withheld{position:absolute;right:0;top:0;bottom:0;width:6px;background:repeating-linear-gradient(45deg,var(--color-text) 0 2px,transparent 2px 4px)}
 .convo-sound-track input[type=range]{position:absolute;inset:0;width:100%;height:28px;margin:0;background:transparent;accent-color:var(--color-text);cursor:pointer}
 .convo-sound-line{display:grid;grid-template-columns:7.5rem 1fr 3rem;align-items:center;gap:.5rem}
-.convo-sound-line input[type=range]{width:100%;margin:0;accent-color:var(--color-text);min-height:28px}
+.convo-sound-line input[type=range]{width:100%;margin:0}
 .convo-sound-line select{min-height:36px;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:8px;padding:.3rem .5rem;font:inherit;grid-column:2 / span 2}
 .convo-sound-readout,.convo-sound-hint,.convo-sound-note,.convo-sound-dev{margin:0;line-height:1.4}
 .convo-sound-hint,.convo-sound-dev{opacity:.85}
@@ -115,7 +115,7 @@
 .convo-sound-wide{grid-column:1 / -1}
 .convo-sound-processing{border:1px solid var(--color-border);border-radius:8px;padding:.4rem .6rem;margin:0}
 .convo-sound-processing legend{font-weight:600;padding:0 .3rem}
-.convo-sound-check{display:flex;align-items:center;gap:.4rem;min-height:32px}
+.convo-sound-switch{display:flex;align-items:center;justify-content:space-between;gap:.75rem;min-height:40px}.convo-sound-switch label.toggle{display:inline-block;flex:none}.convo-sound-switch input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}
 .convo-sound-recordings{margin:0;padding-left:1rem;display:flex;flex-direction:column;gap:.2rem}
 .convo-sound-recordings li{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
 @media(max-width:600px){.convo-sound-line{grid-template-columns:1fr 3rem}.convo-sound-line label{grid-column:1 / -1}.convo-sound-line select{grid-column:1 / -1}.convo-sound-actions .button{min-height:44px}}

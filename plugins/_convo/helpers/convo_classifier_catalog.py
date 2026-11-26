@@ -42,7 +42,7 @@ def _chat(name):
 # `base`: the OpenAI-style base including /v1 ('' = an API base is required; Jev's is its server root). `host_key`: the Agent
 # Zero provider whose stored key it uses ('' = Convo's own key or the environment reference).
 PROVIDERS = {
-    'llama_cpp': _local('llama.cpp', 'http://host.docker.internal:8080/v1', 'llama_cpp', True, 'llama-server serves d1 models on /v1/systemone'),
+    'llama_cpp': _local('llama.cpp', 'http://host.docker.internal:8080/v1', 'llama_cpp', True, 'Serves decision models on the System One route (/v1/systemone)'),
     'lm_studio': _local('LM Studio', 'http://host.docker.internal:1234/v1', 'lm_studio'),
     'unsloth_studio': _local('Unsloth Studio', '', ''),
     'ollama': _local('Ollama', 'http://host.docker.internal:11434/v1', 'ollama'),

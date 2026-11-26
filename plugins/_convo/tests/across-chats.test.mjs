@@ -287,15 +287,13 @@ test('The defaults keep the conversation with the selected chat and send unnamed
     assert.deepEqual([namespace.fillDefaults(older).conversation_scope, older.task_chat], ['chat', 'new']);   // a saved file from before the settings
 });
 
-test('The Conversation section has the two selects near its top, each with its options and hint, bound to the shared draft', async () => {
+test('The Advanced section has the two selects, each with its options and hint, bound to the shared draft', async () => {
     const shell = readFileSync(new URL('../webui/settings-controls.html', import.meta.url), 'utf8');
-    const start = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Conversation'" class="convo-stack">`);
-    const section = shell.slice(start, shell.indexOf(`section === 'Voice & Audio'`));
+    const start = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Advanced'" class="convo-stack">`);
+    const section = shell.slice(start, shell.indexOf('<p role="alert"', start));
     const scope = section.indexOf('<label>Conversation<select x-model="$store.convoSetup.config.conversation_scope">');
     const tasks = section.indexOf('<label>Tasks with no chat named<select x-model="$store.convoSetup.config.task_chat">');
-    assert.ok(scope > 0 && tasks > scope);
-    assert.ok(tasks < section.indexOf('config.transcription_enabled'));                    // near the top: right after "Enable Convo"
-    assert.ok(section.indexOf('config.enabled"') < scope);
+    assert.ok(start > 0 && scope > 0 && tasks > scope);                                    // moved out of the Conversation section (2026-11-25)
     const options = from => [...section.slice(from, section.indexOf('</select>', from)).matchAll(/\['(\w+)','([^']+)'\]/g)].map(match => [match[1], match[2]]);
     assert.deepEqual(options(scope), [['chat', 'Follows the selected chat'], ['global', 'One conversation across chats']]);
     assert.deepEqual(options(tasks), [['new', 'Open a new chat'], ['selected', 'Use the selected chat']]);
