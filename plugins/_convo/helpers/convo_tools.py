@@ -92,8 +92,10 @@ CATALOG = {
         'group': 'tasks', 'kind': 'work', 'small': True, 'label': 'task hand-over', 'activity': 'Starting a task in Agent Zero…',
         'ask': 'Hand over a task',
         'description': "Hand a substantial task to the agent of an Agent Zero chat (the user may call it the main chat or the "
-                       "agent): anything that needs code, files, browsing several pages or many steps. It is queued and its "
-                       "result is reported later; never say it is done, or invent its result, before then.",
+                       "agent): anything that needs code, files, browsing several pages or many steps, and anything the user asks "
+                       "for that none of your own tools can do or reach (the user's own computer and its programs, for example: "
+                       "the agent has tools you do not). It is queued and its result is reported later; never say it is done, or "
+                       "invent its result, before then.",
         'primary': 'task', 'arguments': {'task': _text('The task, stated completely so it can be done without this conversation.',
                                                        limit=16000),
                                          'chat': _text('Only when the user names a particular chat by its title: that title, or "new" '
@@ -114,14 +116,14 @@ CATALOG = {
                                          'kind': _choice('Whether it is a task or a timer, when the user says which.', ('task', 'timer'),
                                                          required=False)}},
     'system_status': {
-        'group': 'system', 'kind': 'read', 'small': True, 'label': 'system check', 'activity': 'Checking the system…',
+        'group': 'system', 'kind': 'read', 'small': True, 'own': True, 'label': 'system check', 'activity': 'Checking the system…',
         'description': "Check the computer Agent Zero runs on and the voice services: processor, memory, disk, graphics card, "
                        "uptime and busiest programs (machine); the models, speech server, classifier and search engines "
                        "(services); the network (network). Use it when the user asks how the system or a service is doing.",
         'primary': 'about', 'arguments': {'about': _choice('What to check; leave out for everything.',
                                                            ('machine', 'services', 'network', 'all'), required=False)}},
     'world_time': {
-        'group': 'system', 'kind': 'read', 'small': False, 'label': 'time lookup', 'activity': 'Checking the time…',
+        'group': 'system', 'kind': 'read', 'small': False, 'own': True, 'label': 'time lookup', 'activity': 'Checking the time…',
         'description': "The current date and time in another place, from the system's time-zone data (no search needed). Use it "
                        "whenever the user asks the time or date somewhere else.",
         'primary': 'place', 'arguments': {'place': _text('A city or a time zone, for example Tokyo or Europe/Paris.', limit=120)}},
@@ -142,11 +144,17 @@ CATALOG = {
                                                        'attached to.', required=False, limit=200)}},
     'open': {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'opening', 'activity': 'Opening it…',
-        'description': "Open something in Agent Zero's interface for the user: a chat, Settings, the file browser, or a web page. "
-                       "Use it when the user asks to open, show or go to one of these.",
-        'primary': 'target', 'arguments': {'what': _choice('What to open.', ('chat', 'settings', 'files', 'page')),
-                                           'target': _text('For a chat: its name. For a page: its full address.', required=False,
-                                                           limit=2000)}},
+        'description': "Open or close something on the user's screen: a chat, Agent Zero's Settings, the file browser, a web "
+                       "page, or one of the voice agent's own places: its settings (voice_settings; the target may name the tab: "
+                       "connections, conversation, audio or advanced), the microphone and speaker controls (sound), Voice Studio "
+                       "(voice_studio) or the developer diagnostics (diagnostics). Use it when the user asks to open, show, go "
+                       "to or close one of these. To close a place, use close with the place as the target.",
+        'primary': 'target', 'arguments': {'what': _choice('What to open, or close to close a place.',
+                                                           ('chat', 'settings', 'files', 'page', 'voice_settings', 'sound', 'voice_studio',
+                                                            'diagnostics', 'close')),
+                                           'target': _text('For a chat: its name. For a page: its full address. For voice_settings: '
+                                                           'optionally the tab. For close: voice_settings, sound, voice_studio, '
+                                                           'diagnostics or settings.', required=False, limit=2000)}},
     'voice_speed': {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'voice speed', 'activity': 'Changing the voice…',
         'description': "Speak slower, faster or at the normal speed for the rest of this conversation, when the user asks.",
@@ -348,8 +356,16 @@ HINT = ("When the user's request calls for one of your tools, briefly acknowledg
         "request (never a stock phrase), then call the tool right away in the same reply: do not describe what you could do and do not "
         "wait for another turn. Never invent a tool's result; answer from it when it arrives. After the USER and LANGUAGE lines, your "
         "reply is either your answer or a short acknowledgement followed by a tool call. When you need several look-ups, or the user "
-        "asked for several things, make those calls together in the same reply. Do quick things yourself with your tools; hand over "
-        "only work that needs many steps.")
+        "asked for several things, make those calls together in the same reply. Do quick things yourself with your tools. Hand "
+        "over work that needs many steps, and also anything the user asks for that none of your tools can do, or that a tool's "
+        "result shows it cannot do or see: say that you are handing it to the chat's agent, and call the hand-over in the same "
+        "reply. Never answer that something cannot be done while the hand-over could do it.")
+
+
+def own_reading(name):
+    """Whether a tool's result is Convo's own reading (the system check, the clock) rather than text written by someone else
+    (a web page, a chat, a memory). Only someone else's text can carry instructions, so only that closes a reply to actions."""
+    return bool(CATALOG.get(name, {}).get('own'))
 TEXT_FORMAT = ("Your tools are called in writing: to call one, write on a line of its own exactly "
                '<tool_call>{"name": "<tool>", "arguments": {"<argument>": "<value>"}}</tool_call> '
                "and nothing after it. The call is never spoken.")
@@ -749,6 +765,7 @@ def results_in(history):
     """Whether earlier turns in `history` (convo_history turn contents) carry a tool's result: text that is not the user's words and
     may hold instructions, so starting work then needs the classifier's explicit request (api/realtime.py)."""
     return any(isinstance(turn, dict) and any(isinstance(entry, dict) and entry.get('name') and entry.get('result')
+                                              and not own_reading(entry.get('name'))          # Convo's own readings are not someone else's text
                                               for entry in (turn.get('tools') or [])[:HISTORY_LIMIT])
                for turn in history or ())
 

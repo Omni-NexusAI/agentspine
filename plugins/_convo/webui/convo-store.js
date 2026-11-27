@@ -764,12 +764,80 @@ function openPage(target, title) {
     addLink(url, title);
     return [true, 'A link is shown in the Convo panel.'];
 }
+// ---- The voice agent's own places: a fixed list, each opened and closed the way its own button does it.
+const SETTINGS_TABS = { connections: 'Connections', conversation: 'Conversation', audio: 'Audio & Video', advanced: 'Advanced' };
+const SETTINGS_PATH = '/plugins/_convo/webui/settings-modal.html', STUDIO_PATH = '/plugins/_convo/webui/studio.html';
+function showPanel() { try { const canvas = hostStore('rightCanvas'); if (typeof canvas?.open === 'function') void canvas.open('convo'); } catch { /* the panel is optional */ } }
+async function openVoiceSettings(tab) {
+    const outcome = await hostCall(() => store.openSettingsModal(), UI_START_MS);      // resolves when the modal closes: never awaited to its end
+    if (outcome.error) return [false, 'The voice settings could not be opened.'];
+    const setup = hostStore('convoSetup'), name = SETTINGS_TABS[tab];
+    if (name && setup) setup.section = name;
+    return [true, name ? `The voice settings are open on ${name}.` : 'The voice settings are open.'];
+}
+function openSound() {
+    const sound = hostStore('convoSound');
+    if (typeof sound?.show !== 'function') return [false, 'The sound controls cannot be reached from this page.'];
+    showPanel();
+    if (!sound.open) sound.show();
+    return [true, 'The sound controls are open in the Convo panel.'];
+}
+async function openVoiceStudio() {
+    const outcome = await hostCall(() => store.openStudio(), UI_START_MS);
+    return outcome.error ? [false, 'Voice Studio could not be opened.'] : [true, 'Voice Studio is open.'];
+}
+async function openDiagnostics() {
+    const diagnostics = hostStore('convoDiagnostics');
+    if (!diagnostics?.available || typeof diagnostics.open !== 'function') return [false, 'The diagnostics are only there with developer mode on.'];
+    const outcome = await hostCall(() => diagnostics.open(), UI_START_MS);
+    return outcome.error ? [false, 'The diagnostics could not be opened.'] : [true, 'The diagnostics are open.'];
+}
+async function closeModalAt(path) {
+    const modals = await import('/js/modals.js');
+    if (typeof modals.closeModal !== 'function') return false;
+    if (typeof modals.isModalOpen === 'function' && !modals.isModalOpen(path)) return null;       // it was not open
+    await hostCall(() => modals.closeModal(path), UI_START_MS);
+    return true;
+}
+async function closePlace(place) {
+    if (place === 'sound') {
+        const sound = hostStore('convoSound');
+        if (typeof sound?.hide !== 'function') return [false, 'The sound controls cannot be reached from this page.'];
+        sound.hide();
+        return [true, 'The sound controls are closed.'];
+    }
+    if (place === 'diagnostics') {
+        const diagnostics = hostStore('convoDiagnostics');
+        if (typeof diagnostics?.closeWindow !== 'function') return [false, 'The diagnostics cannot be reached from this page.'];
+        diagnostics.closeWindow({ focus: false });
+        showPanel();
+        return [true, 'The diagnostics are closed.'];
+    }
+    if (place === 'voice_settings') {
+        // Unsaved edits are the user's to keep or drop: the settings stay open rather than asking in a browser dialog nobody expects.
+        if (hostStore('convoSetup')?.dirty) return [false, 'The voice settings have unsaved changes, so they were left open.'];
+        const closed = await closeModalAt(SETTINGS_PATH);
+        return closed === false ? [false, 'The voice settings could not be closed from this page.'] : [true, closed === null ? 'The voice settings were not open.' : 'The voice settings are closed.'];
+    }
+    if (place === 'voice_studio') {
+        const closed = await closeModalAt(STUDIO_PATH + '?v=20260911-ready');
+        return closed === false ? [false, 'Voice Studio could not be closed from this page.'] : [true, closed === null ? 'Voice Studio was not open.' : 'Voice Studio is closed.'];
+    }
+    if (place === 'settings') {
+        const closed = await closeModalAt(SETTINGS_MODAL);
+        return closed === false ? [false, 'The settings of Agent Zero could not be closed from this page.'] : [true, closed === null ? 'The settings of Agent Zero were not open.' : 'The settings of Agent Zero are closed.'];
+    }
+    return [false, 'Convo cannot close that.'];
+}
 async function answerOpen(event) {
     const what = String(event.what || ''), target = typeof event.target === 'string' ? event.target.trim() : '';
     let ok = false, detail = 'That could not be opened.';
     try {
         [ok, detail] = what === 'chat' ? await openChat(target, store.uiWaitMs) : what === 'settings' ? await openHostSettings()
             : what === 'files' ? await openHostFiles() : what === 'page' ? openPage(target, event.title)
+            : what === 'voice_settings' ? await openVoiceSettings(target) : what === 'sound' ? openSound()
+            : what === 'voice_studio' ? await openVoiceStudio() : what === 'diagnostics' ? await openDiagnostics()
+            : what === 'close' ? await closePlace(target)
             : [false, 'Convo cannot open that kind of thing.'];
     } catch { ok = false; detail = 'That could not be opened.'; }
     await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});

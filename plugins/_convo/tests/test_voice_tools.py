@@ -135,7 +135,7 @@ class Arguments(unittest.TestCase):
 
     def test_a_value_that_is_not_one_of_the_choices_is_refused_when_required_and_left_out_when_optional(self):
         self.assertEqual(self.refused('voice_speed', {'speed': 'whisper'}), 'its "speed" must be one of: slower, normal, faster')
-        self.assertEqual(self.refused('open', {'what': 'terminal'}), 'its "what" must be one of: chat, settings, files, page')
+        self.assertEqual(self.refused('open', {'what': 'terminal'}), 'its "what" must be one of: chat, settings, files, page, voice_settings, sound, voice_studio, diagnostics, close')
         self.assertEqual(tools.validate('web_search', {'query': 'q', 'recency': 'decade'}), {'query': 'q'})
         self.assertEqual(tools.validate('system_status', {'about': 'everything'}), {})
 

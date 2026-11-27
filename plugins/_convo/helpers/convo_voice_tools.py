@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import logging
+import re
 import time
 import uuid
 import wave
@@ -513,6 +514,21 @@ def _words(text):
     return ''.join(letter if letter.isalnum() else ' ' for letter in str(text or '').casefold()).split()
 
 
+# The voice agent's own places (the page knows how to open each; nothing else is ever opened by name).
+SETTINGS_TABS = ('connections', 'conversation', 'audio', 'advanced')
+CLOSABLE = ('voice_settings', 'sound', 'voice_studio', 'diagnostics', 'settings')
+
+
+def _named(text, names):
+    """The one of `names` a model's free wording means ("the audio tab", "Voice Studio", "voice-settings"), or ''."""
+    words = re.sub(r'[^a-z]+', ' ', str(text or '').lower()).split()
+    joined = '_'.join(words)
+    for name in names:
+        if name == joined or name in words or name.replace('_', '') == ''.join(words) or all(part in words for part in name.split('_')):
+            return name
+    return ''
+
+
 async def _open(rt, sid, state, session, turn, args):
     """Open a chat, Settings, the file browser or a web page in the user's browser (the page does it and says whether it worked)."""
     what, target, title = args['what'], str(args.get('target') or '').strip(), ''
@@ -528,6 +544,12 @@ async def _open(rt, sid, state, session, turn, args):
         if parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password:
             return False, 'only an ordinary web address can be opened'
         target, title = parts.geturl(), parts.hostname
+    elif what == 'voice_settings':
+        target = _named(target, SETTINGS_TABS)                     # '' opens the settings where they were
+    elif what == 'close':
+        target = _named(target, CLOSABLE)
+        if not target:
+            return False, 'which place to close was not said: the voice settings, the sound controls, Voice Studio, the diagnostics or Settings'
     else:
         target = ''
     request_id = uuid.uuid4().hex
@@ -544,7 +566,10 @@ async def _open(rt, sid, state, session, turn, args):
     detail = ' '.join(str(answer.get('detail') or '').split())[:160]
     if answer.get('ok') is True:
         return True, detail or {'chat': 'The chat "%s" is open.' % title[:80], 'settings': 'Settings are open.',
-                                'files': 'The file browser is open.', 'page': 'A link to the page is shown in the Convo panel.'}[what]
+                                'files': 'The file browser is open.', 'page': 'A link to the page is shown in the Convo panel.',
+                                'voice_settings': 'The voice settings are open.', 'sound': 'The sound controls are open.',
+                                'voice_studio': 'Voice Studio is open.', 'diagnostics': 'The diagnostics are open.',
+                                'close': 'It is closed.'}[what]
     return False, detail or 'the browser could not open it'
 
 

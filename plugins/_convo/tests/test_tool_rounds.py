@@ -257,6 +257,27 @@ class Rounds(Loop):
                 self.assertEqual(errors, ['The model asked for something that changes things at a point where only look-ups run. Nothing was done.'])
                 self.assertIn(('tool.followup_refused', name, 'followup'), self.marks())
 
+    def test_convos_own_readings_do_not_close_the_reply_to_actions(self):
+        """The system check and the clock are Convo's own readings, not someone else's text: a hand-over or a timer the user asked
+        for may follow them in the same reply (2026-11-25: a graphics-card question the check could not answer was never handed
+        over). A web result in the same reply still closes it."""
+        self.assertEqual([name for name in tools.CATALOG if tools.own_reading(name)], ['system_status', 'world_time'])
+        self.assertFalse(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'world_time', 'result': 'y'}]}]))
+        self.assertTrue(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'web_search', 'result': 'y'}]}]))
+
+        async def scenario(h):
+            await self.ask(h)
+            return h.jobs(), self.tool_journal(h), self.errors(h)
+        with patch.object(importlib.import_module('plugins._convo.helpers.convo_actions'), 'system_status', lambda about, **kw: 'No graphics card can be seen from here.'):
+            jobs, journal, errors = self.play(scenario, proposals=[call('system_status', about='machine'), DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+            self.assertEqual((len(jobs), errors), (1, []))                                  # handed over after the check, in the same reply
+            self.assertNotIn(('tool.refused', 'delegate_task', 'followup'), journal)
+            metrics.LOG.reset()
+            jobs, journal, errors = self.play(scenario, proposals=[call('system_status', about='machine'), WEB_SEARCH, DELEGATE_TASK],
+                                              classifier={'ask': script(DELEGATE, .2)})
+            self.assertEqual(jobs, [])                                                      # a page was read meanwhile: nothing starts
+            self.assertEqual(journal[-1], ('tool.refused', 'delegate_task', 'followup'))
+
 
 def refuses(h, answered=()):
     """Make the scripted host's search fail as it does when every engine asked refuses this computer (convo_host.Host.direct)."""
@@ -578,6 +599,32 @@ class Opening(Loop):
                 self.assertEqual([(r['what'], r['target'], r['title'], r['turn_id']) for r in requests], [(what, '', '', 't')])
                 self.assertEqual(result_of(follow), tools.done('opening', sentence))
                 self.assertEqual((kept[0]['name'], kept[0]['ok'], errors, waiting), ('open', True, [], {}))
+
+    def test_the_voice_agents_own_places_are_opened_and_closed_by_name(self):
+        """"Go to voice settings", "open the sound controls", "close the diagnostics" (2026-11-25: the first got "let me check" and
+        then nothing). A fixed list of places; the model's wording for a tab or a place is read by meaning, never passed on."""
+        cases = (({'what': 'voice_settings'}, ('voice_settings', ''), 'The voice settings are open.'),
+                 ({'what': 'voice_settings', 'target': 'the Audio tab'}, ('voice_settings', 'audio'), 'The voice settings are open.'),
+                 ({'what': 'voice_settings', 'target': 'somewhere odd'}, ('voice_settings', ''), 'The voice settings are open.'),
+                 ({'what': 'sound'}, ('sound', ''), 'The sound controls are open.'),
+                 ({'what': 'voice_studio', 'target': 'x'}, ('voice_studio', ''), 'Voice Studio is open.'),
+                 ({'what': 'diagnostics'}, ('diagnostics', ''), 'The diagnostics are open.'),
+                 ({'what': 'close', 'target': 'Voice Studio'}, ('close', 'voice_studio'), 'It is closed.'),
+                 ({'what': 'close', 'target': 'the voice-settings'}, ('close', 'voice_settings'), 'It is closed.'),
+                 ({'what': 'close', 'target': 'sound controls'}, ('close', 'sound'), 'It is closed.'))
+        for arguments, sent, sentence in cases:
+            with self.subTest(arguments):
+                follow, requests, kept, errors, _, waiting = self.open(arguments)
+                self.assertEqual([(r['what'], r['target']) for r in requests], [sent])
+                self.assertEqual(result_of(follow), tools.done('opening', sentence))
+                self.assertEqual((kept[0]['ok'], errors, waiting), (True, [], {}))
+        follow, requests, kept, _, _, _ = self.open({'what': 'close', 'target': 'the window'})        # no known place: nothing is sent
+        self.assertEqual((requests, kept[0]['ok']), ([], False))
+        self.assertIn('which place to close was not said', result_of(follow))
+        for text, names, expected in (('Audio & Video', voice_tools.SETTINGS_TABS, 'audio'), ('ADVANCED tab', voice_tools.SETTINGS_TABS, 'advanced'),
+                                      ('voice studio', voice_tools.CLOSABLE, 'voice_studio'), ('voicestudio', voice_tools.CLOSABLE, 'voice_studio'),
+                                      ('', voice_tools.CLOSABLE, ''), (None, voice_tools.CLOSABLE, ''), ('rm -rf', voice_tools.CLOSABLE, '')):
+            self.assertEqual(voice_tools._named(text, names), expected, text)
 
     def test_the_pages_own_words_are_passed_on_bounded(self):
         follow, _, _, _, _, _ = self.open({'what': 'page', 'target': 'example.org/news'},

@@ -3743,6 +3743,7 @@ class Realtime(WsHandler):
                 keep_open = False
             reported = False
             rounds = 0
+            outside = False          # a tool of this reply returned someone else's text (a page, a chat, a memory)
             tools = self._helper('convo_tools')
             offered = set(offer[0])
             # Earlier tool results (web text, a chat's messages) in this request's history are someone else's text and may hold
@@ -3900,7 +3901,9 @@ class Realtime(WsHandler):
                 before = len(full_text.strip())
                 entries, reads, notes, queued, fallback = [], [], [], '', tools.NO_ANSWER
                 ended = False            # something other than a look-up: the answer to it calls nothing more
-                followup = bool(rounds)
+                # Nothing that starts or changes anything runs once this reply has read someone else's text. Convo's own readings
+                # (the system check, the clock) are not that, so a hand-over may follow them in the same reply.
+                followup = outside
                 for proposal in chosen:
                     name = tools.canonical(proposal.get("name"))
                     label, kind = tools.LABEL[name], tools.kind(name)
@@ -4015,6 +4018,7 @@ class Realtime(WsHandler):
                     reads.append((key, len(entries), name, args, call_id))
                     entries.append(None)
                 rounds += 1
+                outside = outside or any(not tools.own_reading(name) for _, _, name, _, _ in reads)
                 more = allow_tools and not ended and rounds < MAX_TOOL_ROUNDS
                 if reads:
                     if tools_until is None:
