@@ -594,8 +594,9 @@ class Realtime(WsHandler):
             await self._end(sid)
             return {"ok": True}
         if event == 'convo.work' or (event == 'convo.retarget' and self._global(session)):
-            # A conversation across chats: selecting another chat changes only where work goes by default. The conversation, its
-            # audio and its context go on: no new epoch, nothing cancelled, nothing rebuilt.
+            # Selecting another chat changes only where work goes by default, in a conversation across chats and in a chat's own
+            # (2026-11-25: chats follow you). The conversation, its audio and its context go on: no new epoch, nothing cancelled,
+            # nothing rebuilt.
             chat = str(data.get('chat', data.get('target', '')) or '')
             if chat:
                 try:
@@ -3085,9 +3086,10 @@ class Realtime(WsHandler):
         self._keeping = {one for one in getattr(self, "_keeping", ()) if not one.done()} | {task}
 
     def _work(self, state, session):
-        """The chat work goes to by default: the conversation's own chat, or, in a conversation across chats, the chat selected
-        in the interface ('' when none is)."""
-        return str(state.get('work') or '') if self._global(session) else session["target"]
+        """The chat work goes to by default. A conversation across chats: the chat selected in the interface ('' when none is). A
+        chat's own conversation: the chat the user is looking at now when they opened another one meanwhile (the conversation
+        carries on where it is; only its work follows them), else its own chat."""
+        return str(state.get('work') or '') if self._global(session) else str(state.get('work') or session["target"])
 
     def _chats_note(self, state, session):
         """What a conversation across chats is told about the user's chats, for this reply only (after the history: it changes as
@@ -3574,6 +3576,11 @@ class Realtime(WsHandler):
             clock = self._clock(state, turn)
             if self._global(session):
                 block = (block + "\n" if block else "") + self._chats_note(state, session)
+            elif self._work(state, session) != session["target"]:
+                # A chat's own conversation whose user opened another chat: said for this reply, so "do that here" is understood.
+                block = (block + "\n" if block else "") + (
+                    "The user has another chat open now: " + json.dumps(s.host.chat_name(self._work(state, session))[:60] or 'an untitled chat', ensure_ascii=False)
+                    + ". A task you hand over goes to that chat unless they name another one.")
             # An open question of Convo's ("shall I go ahead?") and the user's answer to it, as the classifier read it.
             voice_tools = self._helper('convo_voice_tools')
             confirmed_names, granted_names, confirmed_note = set(), set(), ''

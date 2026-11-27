@@ -847,6 +847,29 @@ class Actions(Loop):
                                           config={'roles': {'tts': {'provider': 'openai_tts'}}}))
 
 
+class ChatsFollowYou(Loop):
+    """A chat's own conversation carries on when the user opens another chat; only its work follows them (2026-11-25)."""
+    def test_work_goes_to_the_chat_the_user_has_open_and_the_model_is_told(self):
+        async def scenario(h):
+            opened = await h.handler.process('convo.work', {**h.ids(), 'chat': 'b'}, 'browser')
+            await self.ask(h)
+            return opened, [job['target'] for job in h.jobs()], h.answers[0]['system'], h.state['session']['target']
+        opened, targets, system, conversation = self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+        self.assertEqual((opened['ok'], opened['work'], targets, conversation), (True, 'b', ['b'], 'a'))     # the conversation stays where it is
+        self.assertIn('The user has another chat open now:', system)
+
+    def test_back_in_its_own_chat_work_goes_there_again_and_an_unknown_chat_is_ignored(self):
+        async def scenario(h):
+            await h.handler.process('convo.work', {**h.ids(), 'chat': 'b'}, 'browser')
+            await h.handler.process('convo.work', {**h.ids(), 'chat': 'a'}, 'browser')
+            ignored = await h.handler.process('convo.work', {**h.ids(), 'chat': 'no-such-chat'}, 'browser')
+            await self.ask(h)
+            return ignored['work'], [job['target'] for job in h.jobs()], h.answers[0]['system']
+        ignored, targets, system = self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+        self.assertEqual((ignored, targets), ('', ['a']))
+        self.assertNotIn('The user has another chat open now:', system)
+
+
 class SettingsByVoice(Loop):
     """The voice agent's own settings by voice: a fixed, safe subset. Three live in the page for this conversation (the microphone,
     the assistant's voice, the camera); five are saved through the same validated path as the settings page."""

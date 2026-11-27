@@ -393,7 +393,7 @@ async def place(rt, state, session, chat='', create=True):
 
     A chat the model names (the user asked for it) always wins: "new" is a new chat, any other name the one chat it matches
     (none or several raise ValueError in plain words, and the model asks the user). With no name: a chat's own conversation
-    hands to its chat. A conversation across chats follows the setting `task_chat`: the chat selected in the interface
+    hands to the chat the user is looking at (its own chat unless they opened another one). A conversation across chats follows the setting `task_chat`: the chat selected in the interface
     ("selected"; a new chat when none is), or a new chat ("new"), the same one for the later tasks of this voice session.
     `create=False` only checks (a named chat must exist) and never makes a chat."""
     host = state["service"].host
@@ -404,7 +404,7 @@ async def place(rt, state, session, chat='', create=True):
     work = rt._work(state, session)
     if not wanted:
         if not rt._global(session):
-            return {'id': session["target"], 'name': host.chat_name(session["target"]), 'new': False}
+            return {'id': work or session["target"], 'name': host.chat_name(work or session["target"]), 'new': False}
         if state['config'].get('task_chat') == 'selected' and work:
             return {'id': work, 'name': host.chat_name(work), 'new': False}
         if state.get('opened_chat'):

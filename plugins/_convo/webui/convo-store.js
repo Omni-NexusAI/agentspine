@@ -995,11 +995,14 @@ export const store = createStore('convo', {
     get targetPrefix() { return this.across ? (this.work ? 'Working in: ' : '') : this.target ? 'Chat · ' : ''; },
     get targetLabel() {
         if (this.across) return this.work ? (this.workName || 'an untitled chat') : 'No chat selected';
-        return this.targetName || (this.target ? 'Selected chat' : 'No chat selected');
+        const own = this.targetName || (this.target ? 'Selected chat' : 'No chat selected');
+        // The conversation stays with its chat; another chat opened meanwhile is where its work goes.
+        return this.session && this.work && this.work !== this.target ? own + ' · work goes to ' + (this.workName || 'the open chat') : own;
     },
     // The live draft as the history will read once it is heard: no Markdown (plain-text.js, the browser copy of the server's cleaner).
     get draftText() { return plainText(this.draft); },
-    get canRetarget() { return !this.across && !!this.selected && this.selected !== this.target; },
+    // Chats follow you: nothing has to be pressed to switch (the conversation carries on and its work goes to the open chat).
+    get canRetarget() { return false; },
     get activeJobs() { return this.jobs.filter(job => ACTIVE_JOB.has(job.status)); },
     // One "You" and one "Convo" entry per turn (view-helpers.js foldTurns); developer mode adds a secondary line and the bookkeeping.
     get visibleEvents() {
@@ -1105,7 +1108,8 @@ export const store = createStore('convo', {
     // Where work goes by default in the conversation across chats. Voice off: the selected chat. Voice on: a changed selection is
     // told to the server (`convo.work`), lightly debounced and never while the conversation starts or re-attaches.
     noteWork() {
-        if (!this.across) return;
+        // A chat's own conversation follows the user too: while it runs, the chat they open is where its work goes.
+        if (!this.across && !this.session) return;
         if (!this.session) { if (!this.busy) { this.work = getCurrentContextId() || ''; this.workName = hostChatName(this.work); } return; }
         if (this.busy || reattaching || this.selected === workAsked) return;
         clearTimeout(workTimer);
@@ -1113,7 +1117,7 @@ export const store = createStore('convo', {
     },
     async sendWork() {
         const chat = getCurrentContextId() || '', session = this.session;
-        if (workSending || !session || this.busy || reattaching || !this.across || chat === workAsked) return false;
+        if (workSending || !session || this.busy || reattaching || chat === workAsked) return false;
         workSending = true;
         try {
             const result = await request('work', { ...identity(), chat });
