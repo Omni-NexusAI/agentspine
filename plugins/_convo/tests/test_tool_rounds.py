@@ -355,6 +355,53 @@ class Promises(Loop):
                                    classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)}), 1)
 
 
+class OwnVoiceResume(Loop):
+    """Through a loud headset the microphone caught the assistant's own words and cut its reply off (2026-11-25, twice in a row).
+    The echo is recognised by the server (Realtime._own_voice); the reply then carries on from what was heard."""
+    FIRST_REPLY = [('USER: a question\nLANGUAGE: English\nYour first question was about the weather in Lisbon today.', .1)]
+    ECHO = [('USER: Your first question was about the weather\nLANGUAGE: English\nYes?', .1)]
+
+    def run_echo(self, interrupted=True, resumed=(('and it is mild and sunny there.', .1),)):
+        async def scenario(h):
+            await self.ask(h)
+            if interrupted:
+                h.store.interrupted(h.session['id'], 'browser', 't', 'Your first question was about the weather in Lisbon today.')   # cut off while it played
+            h.model_deltas, h.resumed = self.ECHO, list(resumed)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            turns = {item['id']: item['content'] for item in h.store.context(h.session['target'])['turns']}
+            return h.answers, turns, self.spoken(h), self.marks('u', prefix='turn.')
+        return self.play(scenario, model_deltas=self.FIRST_REPLY, proposals=[None, None])
+
+    def test_the_cut_off_reply_carries_on_from_what_was_heard(self):
+        answers, turns, spoken, marks = self.run_echo()
+        again = answers[-1]
+        self.assertIn('They heard it up to: "Your first question was about the weather in Lisbon today."', again['system'])
+        self.assertEqual((again['audio'], again['allow_tools']), (None, False))                     # no echo audio, nothing started
+        self.assertIn(('turn.own_voice_resume', None, None), marks)
+        self.assertIn('and it is mild and sunny there.', ' '.join(str(item) for item in spoken))
+        self.assertNotIn('Your first question was about the weather', str(turns['u'].get('transcript')))   # the echo is not the user's words
+        self.assertFalse(turns['u'].get('held'))
+
+    def test_with_nothing_left_to_say_or_no_reply_cut_off_it_stays_silent_as_before(self):
+        answers, turns, spoken, marks = self.run_echo(resumed=())
+        self.assertEqual((turns['u'].get('held'), turns['u'].get('assistant', '')), ('silent', ''))
+        metrics.LOG.reset()
+        answers, turns, spoken, marks = self.run_echo(interrupted=False)
+        self.assertNotIn(('turn.own_voice_resume', None, None), marks)
+        self.assertEqual(turns['u'].get('held'), 'silent')
+
+    def test_what_was_heard_of_the_cut_reply(self):
+        async def scenario(h):
+            return h.module.Realtime._cut_reply
+        cut = self.play(scenario)
+        turns = [{'id': 'a', 'content': {'assistant': 'One  two.', 'interrupted': True}}, {'id': 'b', 'content': {}}]
+        self.assertEqual(cut({'turns': turns}, 'b'), 'One two.')
+        self.assertEqual(cut({'turns': [{'id': 'a', 'content': {'assistant': 'Done.'}}, {'id': 'b', 'content': {}}]}, 'b'), '')
+        self.assertEqual(cut({'turns': []}, 'b'), '')
+        self.assertEqual(cut(None, 'b'), '')
+
+
 def refuses(h, answered=()):
     """Make the scripted host's search fail as it does when every engine asked refuses this computer (convo_host.Host.direct)."""
     async def direct(target, name, args):

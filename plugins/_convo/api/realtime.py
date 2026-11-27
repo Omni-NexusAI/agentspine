@@ -163,6 +163,13 @@ PROMISED = ("\nYou have just said to the user: %s\nThat announced something you 
             "not repeat or rephrase what you said. Either call the tool that does it now, with no words before the call; or, if "
             "none of your tools can do it, say in one short sentence that you cannot do that yourself and are handing it to the "
             "chat's agent, and call the hand-over in the same reply; or, if there is truly nothing to do, reply with nothing.")
+# A reply was cut off by the assistant's own voice heard back (not by the user): it carries on. The request for the rest has no
+# audio; these stand in for the user's words in it and in the history (so the continuation stays in the model's view).
+RESUME_WORDS = "(Your reply was cut off by a sound that was not the user. Nothing new was said.)"
+RESUMED = ("\nYour last reply was cut off before its end by your own voice coming back through the microphone; the user said "
+           "nothing. They heard it up to: %s\nCarry on from exactly there with the rest of what you were saying. Do not repeat what "
+           "they heard, do not mention the interruption or the microphone, and do not start over. If nothing was left to say, "
+           "reply with nothing.")
 OFFER_OPEN = 45.0            # how long after an offer was heard a short reply to it is always answered
 OFFER_REPLY_SECONDS = 4.0    # ...a reply of at most this much speech (longer speech is judged as any other turn)
 WAITED = ("\nYou chose [WAIT], but the user has now been quiet for several seconds. If what they said makes sense as it is (a question, a "
@@ -1984,6 +1991,17 @@ class Realtime(WsHandler):
         return await self._speak_once(sid, state, session, turn, text, role, {})
 
     @staticmethod
+    def _cut_reply(context, turn):
+        """What the user heard of the reply that was cut off just before `turn`: the newest earlier turn, when it was interrupted
+        and something of it was heard. '' when the last reply ended normally (then there is nothing to carry on with)."""
+        try:
+            earlier = [item for item in context["turns"] if item["id"] != turn]
+            content = earlier[-1]["content"] if earlier else {}
+            return " ".join(str(content.get("assistant") or "").split()) if content.get("interrupted") else ""
+        except Exception:
+            return ""
+
+    @staticmethod
     def _offer_open(state):
         """Whether Convo's last reply offered to do something and that is still fresh (OFFER_OPEN seconds from when it was read)."""
         offer = state.get('offer') if isinstance(state, dict) else None
@@ -3732,6 +3750,28 @@ class Realtime(WsHandler):
                 self._remember_line(s.store, session, sid, turn, epoch, heard)
                 return
             self._remember_line(s.store, session, sid, turn, epoch, heard)
+            cut = self._cut_reply(context, turn) if held_reply == 'silent' and 'own voice' in held_why and decision.speech != "silent" else None
+            if cut:
+                # Its own voice stopped its reply (a loud headset, a loudspeaker): the reply carries on from what was heard, in this
+                # turn, whose "user words" were only the echo and are replaced by a neutral line.
+                self._mark(turn, 'turn.own_voice_resume')
+                heard["line"] = ""
+                try:
+                    s.store.forget_whisper(session["id"], sid, turn)
+                    s.store.transcript(session["id"], sid, turn, RESUME_WORDS, epoch=epoch, source="model")
+                except Exception:
+                    pass
+                proposals.clear()
+                fresh(line=False, choice=False)
+                full_text = phrase = ""
+                try:
+                    await generate(asked({**request, "audio": None, "transcript": RESUME_WORDS, "allow_tools": False, "no_tools": "text",
+                                          "system": request["system"] + RESUMED % json.dumps(cut[-600:], ensure_ascii=False)}))
+                except _Revoked:
+                    return
+                proposals.clear()                       # the rest of a sentence: nothing is started from here
+                if full_text.strip():
+                    held_reply = ""
             if held_reply == 'listen':
                 # Suppression only: nothing was shown, spoken or run, and the assistant has no entry in the history.
                 self._mark(turn, 'model.listen')

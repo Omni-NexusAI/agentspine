@@ -342,6 +342,14 @@ class ScriptedSidecar:
             yield {'type': 'answer.done'}
             self.log.append(('answer.done', loop.time(), tag))
             return
+        if self.h.resumed is not None and 'Your last reply was cut off before its end' in str(payload.get('system') or ''):
+            # The pass that carries a cut-off reply on (realtime.RESUMED): scripted apart, as a list of (text, delay).
+            for text, delay in self.h.resumed:
+                await self._nap(delay)
+                yield {'type': 'text.delta', 'text': text}
+            yield {'type': 'answer.done'}
+            self.log.append(('answer.done', loop.time(), tag))
+            return
         # How many of this reply's tool calls the request already carries: 0 on the first pass, n on the n-th tool follow-up.
         carried = payload.get('tool_turns') or ([payload['tool_turn']] if payload.get('tool_turn') else [])
         deltas = self.h.model_deltas
@@ -424,6 +432,7 @@ class Harness:
         self.reading, self.readings, self.speech_roles = reading, [], []
         self.said, self.said_read = 'NO', []          # what a reply without a tool call left open (is_said): a word, or a list of them
         self.kept = None                              # the model's pass that keeps a promise: {'deltas': [...], 'proposals': [...]}
+        self.resumed = None                           # the model's pass that carries a cut-off reply on: [(text, delay), ...]
         self.timeline, self.dispatches, self.answers, self.spoken, self.arrivals = [], [], [], [], []
         self.truth = dict(truth or {}); self.dummy = None
         self.host = RecordingHost()
