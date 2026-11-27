@@ -19,7 +19,7 @@ const GROUPS = {
     timers: ['Set timers and reminders', 'Kept by Convo; you get a notification, and it is said aloud while voice is running.'],
     chats: ['Look at your chats', 'Lists your chats and reads a chat’s latest messages.'],
     senses: ['See and listen back', 'Camera and screen pictures you share with a button, and replaying the last sounds it heard.'],
-    interface: ['Open things and change the voice’s speed', 'Opens a chat, Settings, the file browser or a link, and speaks slower or faster for this conversation.'],
+    interface: ['Open things and change voice settings', 'Opens a chat, Settings, the file browser or a link, and speaks slower or faster for this conversation.'],
 };
 const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
