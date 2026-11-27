@@ -545,8 +545,12 @@ export class EchoGuard {
             const share = this._leakMic / Math.max(this._leakRef, 1e-6);
             this._leakShare = first ? share : Math.min(share, this._leakShare * (onset ? LEAK_ONSET_RISE : LEAK_RISE) + 1e-5);
             // While a stretch begins the leak's level is not known yet: speech is held and counted, but not confirmed (below).
-            leakOnset = onset;
-            aboveLeak = this._leakFastMic >= LEAK_FACTOR * this._leakShare * this._leakRef;
+            // Only where the room is not known to couple: there (loudspeakers) the echo is recognised by its waveform and the echo
+            // model, and the user's voice is often not much louder than the echo itself.
+            if (this._acousticState !== 'coupled') {
+                leakOnset = onset;
+                aboveLeak = this._leakFastMic >= LEAK_FACTOR * this._leakShare * this._leakRef;
+            }
         } else if (this._leakIdle < LEAK_IDLE_CHUNKS) this._leakIdle++;
         const independentCandidate =
             playbackActive
