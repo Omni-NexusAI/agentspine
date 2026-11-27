@@ -83,7 +83,7 @@ try {
 
     // 1. It renders like the Conversation card: the same title, description, note and spacing as the other two Connections cards.
     const head = await page.eval(`(() => { const c = document.querySelector('${CARD}'); return { legend: c.querySelector('legend')?.innerText, note: c.querySelector('.convo-model-note')?.innerText } })()`);
-    check('the card is titled Classifier with its note', head.legend === 'Classifier' && /Decides whether speech is meant for Convo and whether to answer\. A decision model \(System One style\) or a chat model that accepts audio\./.test(head.note || ''), JSON.stringify(head));
+    check('the card is titled Classifier with its note', head.legend === 'Classifier' && /Decides whether speech is meant for the assistant and whether to answer: a decision model, or a chat model that accepts audio\./.test(head.note || ''), JSON.stringify(head));
     const cards = { conversation: `${MODAL} fieldset.convo-model-card:not(.convo-classifier-card):not(.convo-speech)`, classifier: CARD, speech: `${MODAL} fieldset.convo-speech` };
     const computed = Object.fromEntries(await Promise.all(Object.entries(cards).map(async ([name, selector]) => [name, await styleOf(selector)])));
     for (const part of ['title', 'description', 'note', 'field', 'legend']) {

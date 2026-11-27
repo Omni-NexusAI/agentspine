@@ -5,7 +5,7 @@
 <fieldset class="convo-card convo-model-card" x-data="{ role: 'conversation' }" x-init="$store.convoSetup.conversationInit()">
   <legend x-text="$store.convoSetup.label(role)"></legend>
   <template x-if="$store.convoSetup.config"><div class="convo-model-fields" x-data="{ get autosave() { return typeof convoAutosave !== 'undefined' && !!convoAutosave; } }">
-    <p class="convo-model-note"><x-icon name="graphic_eq" aria-hidden="true"></x-icon><span>Convo sends your speech as audio — choose a model that accepts audio input (omni / multimodal audio model).</span></p>
+    <p class="convo-model-note"><x-icon name="graphic_eq" aria-hidden="true"></x-icon><span>Your speech is sent as audio, so choose a model that accepts audio input.</span></p>
     <template x-if="autosave"><div class="convo-model-autosave">
       <p class="field-description convo-model-status" role="status" data-convo-field="autosave-status" x-text="$store.convoSetup.conversationStatusText()"></p>
       <template x-for="item in $store.convoSetup.conversationConflicts()" :key="item.path"><div class="convo-model-conflict" role="group" :aria-label="item.label + ' changed elsewhere'">
@@ -16,7 +16,7 @@
     </div></template>
 
     <div class="field" x-id="['convo-provider']">
-      <div class="field-label"><div class="field-title" :id="$id('convo-provider', 'title')">Provider</div><div class="field-description" :id="$id('convo-provider', 'hint')">Where Convo sends your speech. Only providers Convo can send audio to can be chosen; the others are listed with the reason.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-provider', 'title')">Provider</div><div class="field-description" :id="$id('convo-provider', 'hint')">Where your speech is sent. Providers that cannot take audio are greyed out.</div></div>
       <div class="field-control"><select data-convo-field="provider" :aria-labelledby="$id('convo-provider', 'title')" :aria-describedby="$id('convo-provider', 'hint')"
           :value="$store.convoSetup.config.roles.conversation.provider"
           @change="$event.target.value = $store.convoSetup.conversationSetProvider($event.target.value, autosave)">
@@ -48,7 +48,7 @@
         choose(id) { $store.convoSetup.conversationChooseModel(id, autosave); this.close(); this.$refs.model.focus(); },
         typed() { clearTimeout(this.timer); this.timer = setTimeout(() => this.search(), 300); },
         close() { this.open = false; this.index = -1; } }">
-      <div class="field-label"><div class="field-title" :id="$id('convo-model', 'title')">Model name</div><div class="field-description">Model identifier. The models your server serves are listed as you type or click; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-model', 'title')">Model name</div><div class="field-description">Pick from the server’s list or type a name.</div></div>
       <div class="field-control convo-model-search">
         <input type="text" x-ref="model" data-convo-field="model" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
                :aria-labelledby="$id('convo-model', 'title')" :aria-controls="$id('convo-model', 'list')" :aria-expanded="open ? 'true' : 'false'"
@@ -95,17 +95,18 @@
       <p class="field-description convo-model-alert" data-convo-field="key-move" x-show="$store.convoSetup.conversationKeyMoveOffer()"><span x-text="'Convo’s saved key is for ' + $store.convoSetup.conversationKeyMoveOffer() + '.'"></span> <button type="button" class="button" @click="$store.convoSetup.keyMove(role)">Use it for this address</button></p>
       <p class="field-description convo-model-probe" role="status" data-convo-field="connection-result" :data-state="$store.convoSetup.conversationConnectionView().state"><x-icon :name="$store.convoSetup.conversationConnectionView().icon" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup.conversationConnectionView().label"></strong><span x-text="$store.convoSetup.conversationConnectionView().message"></span></p>
       <p class="field-description convo-model-probe" role="status" data-convo-field="measured-result" x-show="!!$store.convoSetup?.conversationMeasured?.()" :data-state="$store.convoSetup?.conversationMeasured?.()?.state"><x-icon :name="$store.convoSetup?.conversationMeasured?.()?.state === 'ready' ? 'check_circle' : 'help'" aria-hidden="true"></x-icon><strong>What this model can do: </strong><span x-text="$store.convoSetup?.conversationMeasured?.()?.message || ''"></span></p>
+      <p class="field-description" role="status" data-convo-field="fix-note" x-show="$store.convoSetup.connectionFixNote(role)"><span x-text="$store.convoSetup.connectionFixNote(role)"></span> <button type="button" class="text-button" data-convo-field="fix-undo" @click="$store.convoSetup.connectionFixUndo(role)">Undo</button></p>
       <template x-if="$store.convoSetup.connectionSuggestion(role)"><p class="field-description convo-model-alert" data-convo-field="connection-suggestion"><span x-text="$store.convoSetup.connectionSuggestion(role)?.message"></span> <button type="button" class="button" @click="(url => $store.convoSetup.conversationUseAddress(url, autosave))($store.convoSetup.connectionSuggestion(role)?.url)" x-text="$store.convoSetup.connectionSuggestion(role)?.label"></button></p></template>
       <template x-if="$store.convoSetup.conversationCloseMatch()"><p class="field-description convo-model-alert" data-convo-field="close-match"><button type="button" class="button" @click="$store.convoSetup.conversationChooseModel($store.convoSetup.conversationCloseMatch(), autosave)" x-text="'Use “' + $store.convoSetup.conversationCloseMatch() + '”'"></button></p></template>
       <template x-if="$store.convoSetup.certificateChanged(role)"><p class="field-description convo-model-alert" data-convo-field="certificate-changed"><button type="button" class="button" data-convo-field="certificate-accept" @click="$store.convoSetup.certificateAccept(role, $store.convoSetup.certificateChanged(role)?.url)">Accept the new certificate</button></p></template>
       <p class="field-description" data-convo-field="certificate-note" x-show="$store.convoSetup.certificateNote(role)"><span x-text="$store.convoSetup.certificateNote(role)"></span> <button type="button" class="text-button" data-convo-field="certificate-forget" @click="$store.convoSetup.certificateForget(role, $store.convoSetup.conversationUrl())">Forget</button></p>
     </div>
     <div class="field" x-id="['convo-context']">
-      <div class="field-label"><div class="field-title" :id="$id('convo-context', 'title')">Context window (tokens)</div><div class="field-description">Convo keeps the conversation inside this window; the same value as the tuning controls’ context tokens. Applies to the next conversation.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-context', 'title')">Context window (tokens)</div><div class="field-description">How much the model can read at once. Applies to the next conversation.</div></div>
       <div class="field-control"><input type="number" min="4096" step="1" data-convo-field="context" :aria-labelledby="$id('convo-context', 'title')" x-model.number="$store.convoSetup.config.compaction.context_tokens" @input="$store.convoSetup.conversationEdited('compaction.context_tokens', autosave)"></div>
     </div>
     <div class="field" x-id="['convo-compact']">
-      <div class="field-label"><div class="field-title" :id="$id('convo-compact', 'title')">Summarise older conversation at</div><div class="field-description">How full the context window gets before Convo shortens the older part of the conversation into summaries. Lower keeps requests smaller and quicker; higher keeps more of the conversation word for word. Applies to the next conversation.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-compact', 'title')">Summarise older conversation at</div><div class="field-description">How full the context window gets before older parts are shortened into summaries. Lower is quicker and cheaper; higher keeps more word for word.</div></div>
       <div class="field-control"><input type="range" min="0.3" max="0.9" step="0.05" data-convo-field="compaction-threshold" :aria-labelledby="$id('convo-compact', 'title')" :aria-valuetext="$store.convoSetup.conversationThresholdText()" x-model.number="$store.convoSetup.config.compaction.trigger" @change="$store.convoSetup.conversationEdited('compaction.trigger', autosave)"><span class="range-value" x-text="$store.convoSetup.conversationThresholdText()"></span></div>
     </div>
     <div class="field" x-id="['convo-audio']" x-show="$store.convoSetup.config.developer_mode === true">
@@ -114,7 +115,7 @@
     </div>
     <p class="field-description convo-model-remote" role="note" data-convo-field="remote-note" x-effect="$store.convoSetup.conversationRemoteSync(autosave)" x-show="$store.convoSetup.conversationRemoteNote()" x-text="$store.convoSetup.conversationRemoteNote()"></p>
     <div class="field" x-id="['convo-summaries']">
-      <div class="field-label"><div class="field-title" :id="$id('convo-summaries', 'title')">Who writes the summaries</div><div class="field-description">Long conversations are kept in view as short summaries of their older part. The conversation model writes them from its own cached start, so nothing goes to another model. Agent Zero’s utility model may write them instead only when it runs on your own machines, or when you allow it below.</div></div>
+      <div class="field-label"><div class="field-title" :id="$id('convo-summaries', 'title')">Who writes the summaries</div><div class="field-description">Which model shortens the older part of a long conversation. The conversation model keeps everything with one provider.</div></div>
       <div class="field-control"><select data-convo-field="summary-writer" :aria-labelledby="$id('convo-summaries', 'title')" x-model="$store.convoSetup.config.summary_writer" @change="$store.convoSetup.conversationEdited('summary_writer', autosave)">
         <option value="conversation" :selected="$store.convoSetup.config.summary_writer !== 'utility'">The conversation model</option>
         <option value="utility" :selected="$store.convoSetup.config.summary_writer === 'utility'">Agent Zero’s utility model</option>

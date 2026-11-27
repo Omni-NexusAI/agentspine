@@ -225,6 +225,7 @@ export const classifierSetup = {
         } catch (error) { check = { state: 'refused', message: error?.message || String(error) }; }
         const stale = JSON.stringify(this.classifierCheckRequest()) !== JSON.stringify(request) || this.classifierUsesSystemOne();
         Object.assign(this.ui.classifier, { checking: false, check: stale ? null : check });
+        if (!stale && await this.connectionAutoFix('classifier')) return this.ui.classifier.check?.state === 'decision' || this.ui.classifier.check?.state === 'chat';
         return !stale && (check.state === 'decision' || check.state === 'chat');
     },
     classifierChecking() { return this.ui?.classifier?.checking === true; },

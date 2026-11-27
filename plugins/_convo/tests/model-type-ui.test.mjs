@@ -879,7 +879,7 @@ test('The card renders on its own, uses Agent Zero\'s field classes and binds ev
     assert.doesNotMatch(html, /convo-settings-pending/);                          // every control the plan names is here now
     for (const name of ['field', 'field-label', 'field-title', 'field-description', 'field-control', 'toggle', 'toggler', 'model-search-btn', 'model-search-results', 'model-search-item', 'advanced-section', 'advanced-toggle', 'advanced-body', 'masked-text-input'])
         assert.match(html, new RegExp(`class="[^"]*\\b${name}\\b`), name);
-    assert.match(html, /Convo sends your speech as audio — choose a model that accepts audio input \(omni \/ multimodal audio model\)\./);
+    assert.match(html, /Your speech is sent as audio, so choose a model that accepts audio input\./);
     const bound = [...html.matchAll(/\s(?:x-model(?:\.[\w.]+)?|:value|:checked|@change|@input)="([^"]*)"/g)].map(match => match[1]);
     assert.ok(html.includes('data-convo-field="remote-note" x-effect="$store.convoSetup.conversationRemoteSync(autosave)"'));   // the consent follows the address: a line, no switch
     assert.doesNotMatch(html, /Allow remote processing/);
@@ -1034,7 +1034,8 @@ test('One click from a Test answer: the port that answers, the exact model name,
                               suggestion: { url: 'http://localhost:8890/v1', label: 'Use port 8890', message: 'Something answers on port 8890.' }, close_match: 'Gemma' };
     await f.store.discover('conversation', true);
     assert.deepEqual(plain(f.store.connectionSuggestion('conversation')), f.server.answers.test.suggestion);
-    assert.equal(f.store.conversationCloseMatch(), 'Gemma');
+    assert.deepEqual([f.role().model, f.store.conversationCloseMatch(), f.store.connectionFixNote('conversation')],
+                     ['Gemma', '', 'Using “Gemma”, the server’s spelling of the model name you entered.']);   // the spelling is fixed without a click
     await f.store.conversationUseAddress(f.store.connectionSuggestion('conversation').url);
     assert.equal(f.role().api_base, 'http://localhost:8890/v1');
     assert.equal(f.sent('connection_test').length, 2);                                  // tested again at once

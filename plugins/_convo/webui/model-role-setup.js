@@ -198,6 +198,7 @@ export function modelRoleSetup(role, spec) {
         AutoCheck(autosave = false) {
             if (!spec.autoCheck || !this.config?.roles?.[role]) return false;
             const url = this[n('Url')](), model = (this[n('Role')]().model || '').trim(), ui = view(this), key = url + '|' + model;
+            ui.autosave = autosave === true;                                    // a fix applied after the check is saved the same way
             if (!url || !model || ui.checkedFor === key || this[n('AddressProblem')]()) return false;
             clearTimeout(checks[role]);
             checks[role] = setTimeout(async () => {

@@ -379,7 +379,7 @@ test('The card renders on its own, with the Conversation card’s structure and 
     assert.match(html, /^<html><head><script type="module">import \{ store \} from '\/plugins\/_convo\/webui\/setup-store\.js';<\/script><\/head><body>/);
     assert.match(html, /<fieldset class="convo-card convo-model-card convo-classifier-card" x-data="\{ role: 'classifier' \}" x-init="\$store\.convoSetup\.classifierInit\(\)">/);
     assert.match(html, /<legend x-text="\$store\.convoSetup\.label\(role\)"><\/legend>/);
-    assert.match(html, /<span>Decides whether speech is meant for Convo and whether to answer\. A decision model \(System One style\) or a chat model that accepts audio\.<\/span>/);
+    assert.match(html, /<span>Decides whether speech is meant for the assistant and whether to answer: a decision model, or a chat model that accepts audio\.<\/span>/);
     for (const name of ['field', 'field-label', 'field-title', 'field-description', 'field-control', 'toggle', 'toggler', 'model-search-btn', 'model-search-results', 'model-search-item', 'advanced-section', 'advanced-toggle', 'advanced-body', 'masked-text-input', 'convo-model-note', 'convo-model-fields'])
         assert.match(html, new RegExp(`class="[^"]*\\b${name}\\b`), name);
     const own = section(html, 'data-convo-classifier="own"', 'data-convo-classifier="system-one"');
