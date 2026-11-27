@@ -157,6 +157,14 @@ CONFIRM_SILENT = ("\nYou chose [SILENT], but this was said to you. Answer it now
 # The model waited for the rest of a thought ([WAIT]) and the user said nothing more for WAIT_AGAIN seconds: asked once more, told so.
 # Measured live 2026-11-24: it waited on complete questions ("Is that background task still going?"), which were never answered.
 WAIT_AGAIN = 3.5
+# After a reply that announced an action and called no tool (convo_voice_tools.left_open): the same request once more with this
+# at its end. The reply's own words are quoted so it is not said twice.
+PROMISED = ("\nYou have just said to the user: %s\nThat announced something you would do or check now, but you called no tool. Do "
+            "not repeat or rephrase what you said. Either call the tool that does it now, with no words before the call; or, if "
+            "none of your tools can do it, say in one short sentence that you cannot do that yourself and are handing it to the "
+            "chat's agent, and call the hand-over in the same reply; or, if there is truly nothing to do, reply with nothing.")
+OFFER_OPEN = 45.0            # how long after an offer was heard a short reply to it is always answered
+OFFER_REPLY_SECONDS = 4.0    # ...a reply of at most this much speech (longer speech is judged as any other turn)
 WAITED = ("\nYou chose [WAIT], but the user has now been quiet for several seconds. If what they said makes sense as it is (a question, a "
           "request, or something that wants a reply), answer it now, with a tool when it needs one. Only if it is still just the "
           "beginning of a thought, write [WAIT] again; if nothing should be said, write [SILENT].")
@@ -954,6 +962,12 @@ class Realtime(WsHandler):
                     if answered in ('yes', 'no', 'change'):
                         # An answer to Convo's own question is never a mere acknowledgement or side talk: the turn is answered.
                         verdict, reason, requested, unfinished = 'admit', 'confirmation', True, False
+                    if (verdict == 'ignore' and reason in ('backchannel', 'not_addressed') and self._offer_open(state)
+                            and (result.get('speech_seconds') or 0) <= OFFER_REPLY_SECONDS):
+                        # Convo has just offered to do something: a short "yes" or "do it" is the answer to that, never a mere
+                        # acknowledgement. The conversation model, which sees the offer next to these words, decides what it means
+                        # (and may still stay silent for a sound that was no reply at all).
+                        verdict, reason = 'admit', 'offer'
                     if verdict == 'ignore' and candidate['admitted'] and (candidate.get('overlap') or candidate.get('joins')):
                         # It has already stopped a reply (one being heard, or one being prepared): stopping it and then saying
                         # nothing would lose both. The conversation model, which hears it, decides what to say (or [SILENT]).
@@ -1968,6 +1982,15 @@ class Realtime(WsHandler):
             self._mark(turn, 'speech.retry', error=type(error).__name__)
         await self._stalled(sid, state, session, turn, 'speech')
         return await self._speak_once(sid, state, session, turn, text, role, {})
+
+    @staticmethod
+    def _offer_open(state):
+        """Whether Convo's last reply offered to do something and that is still fresh (OFFER_OPEN seconds from when it was read)."""
+        offer = state.get('offer') if isinstance(state, dict) else None
+        try:
+            return bool(offer) and asyncio.get_running_loop().time() - offer['at'] <= OFFER_OPEN
+        except Exception:
+            return False
 
     @staticmethod
     def _lighter_speech(role, status):
@@ -3743,6 +3766,7 @@ class Realtime(WsHandler):
                 keep_open = False
             reported = False
             rounds = 0
+            promise_read = False     # what a reply without a tool call left open is read once (left_open)
             outside = False          # a tool of this reply returned someone else's text (a page, a chat, a memory)
             tools = self._helper('convo_tools')
             offered = set(offer[0])
@@ -3871,6 +3895,29 @@ class Realtime(WsHandler):
                             "The model asked for a tool this turn may not use. Nothing was run and it was not spoken." if call is not None else
                             "The model wrote a tool call as text that Convo could not read. Nothing was run and it was not spoken."))
                 if not proposals:
+                    if (rounds == 0 and not promise_read and conversing and allow_tools and not guard.blocked and decision.speech != "silent"
+                            and full_text.strip() and self._current(sid, state, epoch)):
+                        # A reply that called no tool: did it announce an action ("let me check"), or offer one? Read once, by an
+                        # isolated request, while the reply is already being spoken (nothing the user hears waits for it).
+                        promise_read = True
+                        await flush()
+                        left = await self._helper('convo_voice_tools').left_open(self, state, full_text)
+                        if not self._current(sid, state, epoch):
+                            return
+                        if left == 'offer':
+                            state['offer'] = {'turn': turn, 'at': asyncio.get_running_loop().time()}
+                            self._mark(turn, 'reply.offer')
+                        elif left == 'promise':
+                            # Kept: the model is asked once more to act now, or to say plainly that it cannot and hand it over.
+                            self._mark(turn, 'reply.promise')
+                            fresh(line=False, choice=False)
+                            phrase = ""
+                            try:
+                                await generate(asked({**request, "system": request["system"] + PROMISED % json.dumps(
+                                    " ".join(full_text.split())[-600:], ensure_ascii=False)}))
+                            except _Revoked:
+                                return
+                            continue
                     break
                 if rounds >= MAX_TOOL_ROUNDS:
                     # One reply calls read-only tools at most MAX_TOOL_ROUNDS times; anything more is not run (the follow-up was told).

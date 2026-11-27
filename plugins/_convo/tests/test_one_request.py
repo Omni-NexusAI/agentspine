@@ -401,6 +401,8 @@ class NeverSilent(Base):
         self.assertEqual(said, ['Sorry, the model gave me nothing to say to that. Could you say it again?'])
 
     def test_a_failure_that_may_pass_is_asked_once_more_and_any_other_is_said(self):
+        # These count the model's requests: the separate reading of what a reply left open (left_open) is not part of them.
+        self.enterContext(__import__('unittest.mock').mock.patch('plugins._convo.helpers.convo_voice_tools.left_open', new=__import__('unittest.mock').mock.AsyncMock(return_value='')))
         for reason, tries, said_wanted in (('transient', 2, ['All is well.']), ('', 1, ['Sorry, I could not get an answer from the model just now.'])):
             async def scenario(h, reason=reason):
                 seen = []
@@ -419,6 +421,8 @@ class NeverSilent(Base):
             self.assertEqual(self.play(scenario, classifier={'ask': script(REQUEST, .2)}), (tries, said_wanted, 0 if reason else 1), reason)
 
     def test_a_request_that_hangs_at_someone_elses_server_is_made_once_more(self):
+        # These count the model's requests: the separate reading of what a reply left open (left_open) is not part of them.
+        self.enterContext(__import__('unittest.mock').mock.patch('plugins._convo.helpers.convo_voice_tools.left_open', new=__import__('unittest.mock').mock.AsyncMock(return_value='')))
         async def scenario(h, remote):
             h.state['config']['roles']['conversation']['remote'] = remote
             seen = []

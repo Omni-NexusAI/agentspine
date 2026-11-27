@@ -167,6 +167,12 @@ def is_asked(payload):
     return str(payload.get('system') or '').startswith(convo_voice_tools.ASKED.split('%s')[0])
 
 
+def is_said(payload):
+    """Whether a request is the isolated reading of what a reply without a tool call left open (convo_voice_tools.left_open)."""
+    from plugins._convo.helpers import convo_voice_tools
+    return str(payload.get('system') or '') == convo_voice_tools.SAID
+
+
 def is_belongs(payload):
     """Whether a request is the check whether speech taken for talk to someone else goes on with the conversation
     (convo_voice_tools.belongs)."""
@@ -288,6 +294,16 @@ class ScriptedSidecar:
             yield {'type': 'text.delta', 'text': self.h.asked_for}
             yield {'type': 'answer.done'}
             return
+        if is_said(payload):
+            # What the reply left open: kept apart from the replies (h.said_read), answered at once with the scripted word
+            # (`h.said`: NO unless a test scripts a promise or an offer), so a test's timing and its replies are as before.
+            self.h.said_read.append(copy.deepcopy(payload))
+            word = self.h.said
+            if isinstance(word, list):
+                word = word.pop(0) if word else 'NO'
+            yield {'type': 'text.delta', 'text': word}
+            yield {'type': 'answer.done'}
+            return
         if is_belongs(payload):
             self.calls.append('belongs')
             self.h.weighed.append(copy.deepcopy(payload))
@@ -316,6 +332,16 @@ class ScriptedSidecar:
         self.calls.append('answer')
         self.h.answers.append(copy.deepcopy(payload))  # the host mutates its request between model calls
         self.log.append(('answer.start', loop.time(), tag, bool(payload.get('allow_tools'))))
+        if self.h.kept is not None and 'You have just said to the user:' in str(payload.get('system') or '') and not payload.get('tool_turns') and not payload.get('tool_turn'):
+            # The pass that keeps a promise (realtime.PROMISED): scripted apart from the first pass, as {'deltas', 'proposals'}.
+            for text, delay in self.h.kept.get('deltas', []):
+                await self._nap(delay)
+                yield {'type': 'text.delta', 'text': text}
+            for item in self.h.kept.get('proposals', []):
+                yield copy.deepcopy(item)
+            yield {'type': 'answer.done'}
+            self.log.append(('answer.done', loop.time(), tag))
+            return
         # How many of this reply's tool calls the request already carries: 0 on the first pass, n on the n-th tool follow-up.
         carried = payload.get('tool_turns') or ([payload['tool_turn']] if payload.get('tool_turn') else [])
         deltas = self.h.model_deltas
@@ -396,6 +422,8 @@ class Harness:
         self.weighed = []                # the requests whether speech taken for talk to someone else goes on with the conversation
         self.belongs, self.belongs_delay = 'NO', .5      # the one word they answer with (or a dict per audio tag), and how long they take
         self.reading, self.readings, self.speech_roles = reading, [], []
+        self.said, self.said_read = 'NO', []          # what a reply without a tool call left open (is_said): a word, or a list of them
+        self.kept = None                              # the model's pass that keeps a promise: {'deltas': [...], 'proposals': [...]}
         self.timeline, self.dispatches, self.answers, self.spoken, self.arrivals = [], [], [], [], []
         self.truth = dict(truth or {}); self.dummy = None
         self.host = RecordingHost()

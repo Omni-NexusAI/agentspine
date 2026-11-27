@@ -279,6 +279,82 @@ class Rounds(Loop):
             self.assertEqual(journal[-1], ('tool.refused', 'delegate_task', 'followup'))
 
 
+class Promises(Loop):
+    """A reply that announces an action and calls no tool (2026-11-25: "let me check what I can do", then nothing), and a reply
+    that offers one ("I can open Settings if you'd like", then "do it" was dropped). What the reply left open is read by an
+    isolated request with no history; the scripted word stands for the model's reading, so this tests what Convo does with it."""
+    SAID = [('USER: a request\nLANGUAGE: English\nLet me look into that.', .1)]
+
+    def run_reply(self, said, kept=None, classifier=None, proposals=None, **options):
+        async def scenario(h):
+            h.said, h.kept = said, kept
+            await self.ask(h)
+            return types.SimpleNamespace(said_read=h.said_read, answers=h.answers, offer=h.state.get('offer'), spoken=self.spoken(h), errors=self.errors(h),
+                                         timers=voice_tools.timers(h.service).pending(voice_tools.TIMER_SCOPE))
+        return self.play(scenario, model_deltas=self.SAID, proposals=proposals if proposals is not None else [None, None],
+                         classifier=classifier or {'ask': script(SPEAK, .2), 'next': script(SPEAK_PLAIN, .2)}, **options)
+
+    def test_a_promise_is_kept_the_model_is_asked_once_more_and_its_call_runs(self):
+        h = self.run_reply('YES', {'proposals': [TIMER]})
+        self.assertEqual(len(h.said_read), 1)
+        read = h.said_read[0]
+        self.assertEqual((read['history'], read['allow_tools'], read['audio']), ([], False, None))          # isolated: only the sentence
+        self.assertIn('Let me look into that.', read['transcript'])
+        self.assertIn(('reply.promise', None, None), self.marks(prefix='reply.'))
+        again = h.answers[1]
+        self.assertIn('You have just said to the user: "Let me look into that."', again['system'])
+        self.assertIn("handing it to the chat's agent", again['system'])
+        self.assertTrue(again['allow_tools'])
+        self.assertEqual(len(h.timers), 1)                                                                 # the promised action ran
+        self.assertNotIn('You have just said to the user', h.answers[2]['system'])                         # the result is answered as usual
+        self.assertEqual(h.errors, [])
+
+    def test_a_promise_the_model_cannot_keep_is_said_plainly_and_asked_only_once(self):
+        h = self.run_reply(['YES', 'YES'], {'deltas': [('I cannot do that myself.', .1)]})
+        self.assertEqual((len(h.said_read), len(h.answers)), (1, 2))                                        # read once per reply, never in a loop
+        self.assertIn('I cannot do that myself.', ' '.join(str(item) for item in h.spoken))
+
+    def test_an_answer_that_promised_nothing_is_left_alone(self):
+        for word in ('NO', 'maybe later', ''):
+            with self.subTest(word):
+                metrics.LOG.reset()
+                h = self.run_reply(word, {'proposals': [TIMER]})
+                self.assertEqual((len(h.answers), h.offer, h.timers), (1, None, []))
+
+    def test_a_reply_that_called_a_tool_is_not_read(self):
+        h = self.run_reply('YES', {'proposals': [TIMER]}, proposals=[MEMORY])
+        self.assertEqual(h.said_read, [])
+
+    def test_on_a_single_slot_local_server_the_reading_is_skipped(self):
+        async def scenario(h):
+            h.said = 'YES'
+            return await voice_tools.left_open(types.SimpleNamespace(_server=lambda state: {'kind': 'llama.cpp', 'slots': 1}), h.state, 'Let me check.'), h.said_read
+        self.assertEqual(self.play(scenario), ('', []))
+
+    def test_after_an_offer_a_short_yes_is_answered_instead_of_being_dropped_as_an_acknowledgement(self):
+        backchannel = {'speech': 'silent', 'action': 'none', 'confidence': .95, 'explicit_request': False, 'context_note': 'Acknowledgement'}
+
+        async def scenario(h):
+            h.said = ['OTHER', 'NO']
+            await self.ask(h)                                       # the reply offers something
+            offer = dict(h.state.get('offer') or {})
+            await h.candidate('u', h.audio('next'), final=True)     # "do it": the classifier takes it for an acknowledgement
+            await h.settle()
+            return offer, len(h.answers), [m for m in self.marks('u', prefix='') if m[0].startswith('policy') or m[0].startswith('candidate')]
+        offer, answers, _ = self.play(scenario, model_deltas=self.SAID, proposals=[None, None],
+                                      classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)})
+        self.assertEqual(offer.get('turn'), 't')
+        self.assertEqual(answers, 2)                                # the short reply reached the conversation model
+        # Without an offer the same short reply stays unanswered.
+        async def plain(h):
+            await self.ask(h)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            return len(h.answers)
+        self.assertEqual(self.play(plain, model_deltas=self.SAID, proposals=[None, None],
+                                   classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)}), 1)
+
+
 def refuses(h, answered=()):
     """Make the scripted host's search fail as it does when every engine asked refuses this computer (convo_host.Host.direct)."""
     async def direct(target, name, args):

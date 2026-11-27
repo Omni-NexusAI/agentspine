@@ -258,6 +258,34 @@ def parse_reading(text):
     return {'YES': 'yes', 'NO': 'no', 'OTHER': 'other', 'CHANGE': 'change'}.get(words[0].upper(), 'unread') if len(words) == 1 else 'unread'
 
 
+# What a reply that called no tool left open (2026-11-25: "let me check what I can do", then nothing; "I can open Settings for you
+# if you'd like", then "do it" was not understood). The same isolated one-word reading, of the assistant's own sentence this time:
+# no history and no tool result reach it. It reads meaning in any language, never particular words.
+SAID = ("You are given what a voice assistant has just said to its user. Decide what it left open. Reply with exactly one word and "
+        "nothing else: YES if it says that it is now going to do, check, look up, open, start or find out something, or asks the "
+        "user to wait while it does; OTHER if it offers to do something and leaves it to the user to accept; NO if it does "
+        "neither (it answers, explains, asks a question about something else, or says it cannot).")
+SAID_SECONDS = 4.0
+SAID_CHARS = 600
+
+
+async def left_open(rt, state, said):
+    """'promise' (the reply announced an action and called no tool), 'offer' (it offered one) or '' (neither, or it could not be
+    read). Skipped on the user's own llama.cpp server with a single slot: a second prompt there would evict the conversation's
+    cached start, and the next reply would be slower for it."""
+    said = ' '.join(str(said or '').split())
+    if not said:
+        return ''
+    try:
+        server = rt._server(state)
+        if server.get('kind') == 'llama.cpp' and int(server.get('slots') or 1) <= 1:
+            return ''
+    except Exception:
+        pass
+    answer = await reading(rt, state, None, said[-SAID_CHARS:], SAID, seconds=SAID_SECONDS)
+    return {'yes': 'promise', 'other': 'offer'}.get(answer, '')
+
+
 def can_read(state, audio, transcript):
     """Whether a spoken answer can be read at all: the conversation model hears the audio, or there is recognized text."""
     hears = bool(state['config']["roles"]["conversation"].get("capabilities", {}).get("audio_input"))

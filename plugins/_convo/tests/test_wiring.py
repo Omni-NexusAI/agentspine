@@ -296,6 +296,8 @@ class PersonaRefresh(RealtimeBase):
         await self.handler.connections['browser']['task']
 
     async def test_a_cached_persona_is_found_in_the_background_and_used_from_the_next_response(self):
+        # These count the model's requests: the separate reading of what a reply left open (left_open) is not part of them.
+        self.enterContext(__import__('unittest.mock').mock.patch('plugins._convo.helpers.convo_voice_tools.left_open', new=__import__('unittest.mock').mock.AsyncMock(return_value='')))
         # Reading the host prompt means building it (seconds, on Convo's persona thread): the response never waits for that check.
         state = self.handler.connections['browser']
         systems = []
