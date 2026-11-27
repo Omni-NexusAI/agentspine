@@ -40,6 +40,34 @@ class Fixture(unittest.TestCase):
 
 
 class Planning(unittest.TestCase):
+    def test_the_threshold_scales_the_bands_and_a_bad_value_never_raises(self):
+        base = memory.Budget(SETTINGS)
+        self.assertEqual((base.threshold, base.verbatim_high, base.verbatim_low), (0.7, 8400, 5040))      # the default: as before
+        low, high = memory.Budget({**SETTINGS, 'trigger': 0.35}), memory.Budget({**SETTINGS, 'trigger': 0.9})
+        self.assertEqual((low.verbatim_high, low.verbatim_low), (4200, 2520))                            # half the threshold: half the bands
+        self.assertGreater(high.verbatim_high, base.verbatim_high)
+        room = 24000 - 1024 - memory.STABLE_TOKENS - memory.STANDING_TOKENS
+        self.assertLessEqual(high.verbatim_high + high.chapters_max, room)                               # never the answer's room
+        for bad, expected in ((None, 0.7), ('x', 0.7), (True, 0.7), (float('nan'), 0.7), (0, 0.7), (-1, 0.7), (0.01, 0.3), (5, 0.9), ('0.5', 0.5)):
+            self.assertEqual(memory.Budget({**SETTINGS, 'trigger': bad}).threshold, expected, bad)
+        odd = memory.Budget({'context_tokens': 'many', 'output_reserve': None, 'recent_exchanges': -3, 'trigger': []})
+        self.assertEqual((odd.window, odd.reserve, odd.recent, odd.threshold), (16384, 1024, 6, 0.7))
+        self.assertEqual(memory.Budget(None).window, 16384)
+        tiny = memory.Budget({'context_tokens': 4096, 'output_reserve': 2048, 'trigger': 0.3})
+        self.assertGreaterEqual(tiny.verbatim_high, 256)
+
+    def test_the_contract_bounds_the_threshold_with_a_readable_reason(self):
+        contract = importlib.import_module('plugins._convo.helpers.convo_contract')
+        good = contract.validate_settings(json.loads(json.dumps(contract.DEFAULTS)))
+        self.assertEqual(good['compaction']['trigger'], 0.7)
+        normalize = importlib.import_module('plugins._convo.helpers.setup_store').normalize
+        for value, target in ((0.3, 0.1), (0.9, 0.7), (0.55, 0.35), (0.7, 0.5)):          # the unused target follows it, so the save
+            saved = normalize({**good, 'compaction': {**good['compaction'], 'trigger': value}})   # (and an older Convo) accepts it
+            self.assertEqual((saved['compaction']['trigger'], saved['compaction']['target']), (value, target))
+        for value in (0.29, 0.95, 0, 7):
+            with self.assertRaisesRegex(contract.ContractError, 'between 30% and 90%'):
+                contract.validate_settings({**good, 'compaction': {**good['compaction'], 'trigger': value}})
+
     def test_utf8_sizes_not_escapes(self):
         self.assertLess(memory.tokens('Привет, как дела?'), memory.tokens(json.dumps('Привет, как дела?')))
 

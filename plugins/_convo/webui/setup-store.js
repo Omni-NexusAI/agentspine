@@ -45,8 +45,28 @@ export const store = createStore('convoSetup', compose({
     get dirty() { return !!this.config && (JSON.stringify(this.config) !== this.baseline || Object.keys(this.keys).length > 0); },
     // System One's own decider as the server describes it (decider_reference), with its verdict `audio`.
     get decider() { return this.deciderReference || { installed: false, enabled: false, consumer_enabled: false, registered: [], reasons: [] }; },
-    setKey(role, value) { if (value) this.keys[role] = value; else delete this.keys[role]; },
-    clearKey(role) { this.keys[role] = ''; },
+    setKey(role, value) { delete this.revealed[role]; if (value) this.keys[role] = value; else delete this.keys[role]; },
+    clearKey(role) { delete this.revealed[role]; this.keys[role] = ''; },
+    // ---- the eye on a key field. A key being typed is simply shown. A saved key (Convo's own, write-only otherwise) is asked
+    // for on this click only: the whole key when Agent Zero has a login set, else its last four characters. Hidden again by a
+    // second click, by typing, and whenever the settings are loaded or reset; never stored and never part of a save.
+    revealed: {},
+    keyShown(role) { return this.revealed[role]?.on === true; },
+    keyValue(role) { return this.keys[role] || (this.revealed[role]?.on ? this.revealed[role].key || '' : ''); },
+    keyNote(role) { return this.revealed[role]?.note || ''; },
+    async toggleKey(role) {
+        if (this.revealed[role]?.on || this.revealed[role]?.note) { delete this.revealed[role]; return false; }
+        if (this.keys[role]) { this.revealed[role] = { on: true, key: '', note: '' }; return true; }
+        if (!this.credentials?.[role]) { this.revealed[role] = { on: false, key: '', note: 'No key is saved for this card.' }; return false; }
+        try {
+            const result = await this.api('key_reveal', { role });
+            if (this.keys[role]) return false;                                  // typed meanwhile: that is what the field shows
+            if (result?.whole && typeof result.key === 'string' && result.key) this.revealed[role] = { on: true, key: result.key, note: '' };
+            else this.revealed[role] = { on: false, key: '', note: (result?.ending ? `The saved key ends in ${result.ending}. ` : 'A key is saved. ')
+                + 'The whole key is shown only when Agent Zero has a login set, because without one anyone who can open this page could read it.' };
+        } catch (error) { this.revealed[role] = { on: false, key: '', note: 'The key could not be shown: ' + (error?.message || String(error)) }; }
+        return this.keyShown(role);
+    },
     label(role) { return {conversation:'Conversation model', classifier:'Classifier', tts:'Speech output'}[role]; },
     isDiscovering(role) { return !!this.choices[role]?.busy; },
     // Which controls a role shows. Speech output asks its own card (speechControls); the other roles are one endpoint each.
@@ -69,7 +89,7 @@ export const store = createStore('convoSetup', compose({
         this.classifierCatalog = result.classifier_catalog || null;
         this.profiles = Array.isArray(result.profiles) ? result.profiles.filter(item => item && typeof item.id === 'string').slice(0, 200) : [];
         this.takeFacts(result);
-        this.keys = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
+        this.keys = {}; this.revealed = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
     },
     takeFacts(result) {
         this.network = result.network || this.network || {};
@@ -141,7 +161,7 @@ export const store = createStore('convoSetup', compose({
     discard() {
         if (!this.baseline) return;
         this.config = fillDefaults(clone(JSON.parse(this.baseline)));
-        this.keys = {}; this.error = ''; this.message = '';
+        this.keys = {}; this.revealed = {}; this.error = ''; this.message = '';
     },
     async save() {
         if (this.busy || !this.config) return false;
@@ -305,7 +325,7 @@ export const store = createStore('convoSetup', compose({
                 if (value && typeof value === 'object' && !Array.isArray(value)) { target[key] ||= {}; reset(target[key],value); }
                 else target[key] = clone(value);
             } };
-            reset(this.config, defaults); this.keys = {};
+            reset(this.config, defaults); this.keys = {}; this.revealed = {};
         };
     },
 }, conversationSetup, classifierSetup, speechSetup, dictationSetup, synthesisSetup, voiceToolsSetup, hotkeysSetup));

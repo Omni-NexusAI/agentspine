@@ -371,6 +371,8 @@ def validate_settings(value):
         raise ContractError("Context budget must contain finite positive numbers")
     if any(type(c[key]) is not int for key in ("recent_exchanges", "context_tokens", "output_reserve")):
         raise ContractError("Context counts must be integers")
+    if not 0.3 <= c.get("trigger", 0.7) <= 0.9:
+        raise ContractError("The compaction threshold must be between 30% and 90% of the context window")
     for key in ("direct_timeout", "clarification_cooldown", "audio_token_reserve", "max_audio_seconds"):
         if type(result[key]) not in (float, int) or not math.isfinite(result[key]):
             raise ContractError("Invalid numeric setting: " + key)

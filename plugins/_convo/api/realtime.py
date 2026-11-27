@@ -3224,7 +3224,19 @@ class Realtime(WsHandler):
         between slots) when that is smaller."""
         saved = state['config']['compaction']['context_tokens']
         n_ctx = (state.get('server') or {}).get('n_ctx')
-        return min(saved, n_ctx) if type(n_ctx) is int and n_ctx >= 1024 else saved
+        window = min(saved, n_ctx) if type(n_ctx) is int and n_ctx >= 1024 else saved
+        cap = state.get('ctx_cap')
+        return min(window, cap) if type(cap) is int and cap >= 1024 else window
+
+    def _lower_window(self, state):
+        """The server refused a request as too large although Convo's estimate fitted: the window Convo works with is lowered by a
+        fifth for the rest of this conversation (never under 4096), so the following turns and the summaries are sized to what
+        the server really takes instead of failing the same way again. Returns the window now in effect."""
+        now = self._window(state)
+        lowered = max(4096, int(now * 0.8))
+        if lowered < now:
+            state['ctx_cap'] = lowered
+        return self._window(state)
 
     def _compaction_settings(self, state):
         """The budget settings for this conversation's chapters: the window in effect and the reserve for this turn's audio."""
@@ -3611,7 +3623,7 @@ class Realtime(WsHandler):
                     history = request["history"]
                     left = max(1, len(history) // 2) if history else 0
                     del history[:left]
-                    self._mark(turn, 'ctx.retry', ctx_left_out=left)
+                    self._mark(turn, 'ctx.retry', ctx_left_out=left, ctx_window=self._lower_window(state))
                     fresh()
                     phrase = ""
                     held_reply = await generate(asked(request))

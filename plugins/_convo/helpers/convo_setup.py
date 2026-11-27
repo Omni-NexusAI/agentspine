@@ -775,6 +775,30 @@ def key_rebind(name, provider=None):
     return read()
 
 
+def _login_set():
+    """Whether Agent Zero asks for a login (then only a signed-in person reaches this page)."""
+    try:
+        from helpers import login
+        return bool(login.is_login_required())
+    except Exception:
+        return False
+
+
+def key_reveal(name):
+    """The eye on a key field: Convo's own saved key for one card, on this explicit request only. With an Agent Zero login set it
+    is the whole key. Without one, anyone who can open the page could ask, so only its last four characters are returned
+    (enough to tell which key it is), and nothing at all for a short key. Never an environment-variable key and never one of
+    Agent Zero's own keys: neither is stored here. The key is not logged and not kept in any response but this one."""
+    if name not in ROLES:
+        raise ValueError('Unknown model role')
+    with store.lock():
+        key = dict(_secrets().load_secrets()).get(_key_name(name), '')
+    if not isinstance(key, str) or not key:
+        raise ValueError('Convo has no saved key for this card.')
+    whole = _login_set()
+    return {'ok': True, 'whole': whole, 'key': key if whole else '', 'ending': '' if whole or len(key) < 12 else key[-4:]}
+
+
 def _https_address(url):
     if not isinstance(url, str) or len(url) > 2000 or not url.lower().startswith('https://'):
         raise ValueError('An https address is required.')

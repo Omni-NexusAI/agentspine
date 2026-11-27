@@ -37,7 +37,7 @@ export const CARD_PATHS = {
     'roles.conversation.url': 'Server URL', 'roles.conversation.key_source': 'Key source', 'roles.conversation.remote': 'Consent for an address outside your network',
     'roles.conversation.token_env': 'Credential environment reference', 'roles.conversation.capabilities.audio_input': 'Accepts audio input',
     'roles.conversation.capabilities.cancellation': 'Supports cancellation', 'roles.conversation.capabilities.tool_calls': 'Supports tool calls',
-    'compaction.context_tokens': 'Context window',
+    'compaction.context_tokens': 'Context window', 'compaction.trigger': 'Summarise older conversation at',
     'summary_writer': 'Who writes the summaries', 'utility_summary_consent': 'Allow a utility model outside your network',
 };
 const ROWS = ['conversation_provider', 'conversation_key_route', 'summary_writer'];
@@ -49,7 +49,15 @@ export function conversationUrl(role, compatibleBase = '') {
     return roleUrl(role, spec || (compatibleBase ? { base: compatibleBase } : null));
 }
 
+// The compaction threshold as the server bounds it (helpers/convo_memory.py TRIGGER_MIN / TRIGGER_MAX / TRIGGER_DEFAULT).
+export const THRESHOLD = { min: 0.3, max: 0.9, fallback: 0.7 };
+export function thresholdInEffect(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 && typeof value !== 'boolean' ? Math.min(THRESHOLD.max, Math.max(THRESHOLD.min, number)) : THRESHOLD.fallback;
+}
+
 export const conversationSetup = {
+    conversationThresholdText() { return Math.round(thresholdInEffect(this.config?.compaction?.trigger) * 100) + '% full'; },
     ...modelRoleSetup('conversation', {
         paths: CARD_PATHS,
         trimmed: ['roles.conversation.model', 'roles.conversation.api_base', 'roles.conversation.url', 'roles.conversation.token_env'],
