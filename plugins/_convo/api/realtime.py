@@ -4206,7 +4206,8 @@ class Realtime(WsHandler):
                             self._mark(turn, 'tool.superseded', tool=name)
                             return
                         self._acted(state, turn)
-                        queued = await voice_tools.delegate(self, sid, state, session, turn, text, chat=args.get("chat"))
+                        queued = await voice_tools.delegate(self, sid, state, session, turn, text, chat=args.get("chat"),
+                                                            relation=args.get("relation") or "")
                         ended, fallback = True, ''
                         # The model says, in its own words and the user's language, that the task is queued (never "done").
                         entries.append((name, args, call_id, tools.done(label, queued), None))

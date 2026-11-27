@@ -870,6 +870,45 @@ class ChatsFollowYou(Loop):
         self.assertNotIn('The user has another chat open now:', system)
 
 
+class ParallelWork(Loop):
+    """Separate work for the chat's agent starts at once in a chat of its own instead of waiting behind what is running; work that
+    builds on it waits in line, as before. The relation is the model's reading; this tests what Convo does with it."""
+    def hand_over(self, relation=None, busy=True, chat=None, open_tasks=0):
+        async def scenario(h):
+            made = []
+            h.host.new_chat = lambda title='', like='': (made.append((title, like)) or {'id': 'made-%d' % len(made), 'name': title})
+            with patch.object(h.handler, '_chat_idle', lambda service, chat: not busy), \
+                    patch.object(voice_tools, '_open_tasks', lambda service, session: open_tasks):
+                await self.ask(h)
+            return made, [job['target'] for job in h.jobs()], result_of(h.answers[1]) if len(h.answers) > 1 else ''
+        arguments = {'task': 'Summarise the meeting notes'}
+        if relation: arguments['relation'] = relation
+        if chat: arguments['chat'] = chat
+        return self.play(scenario, proposals=[call('delegate_task', **arguments)], classifier={'ask': script(DELEGATE, .2)})
+
+    def test_separate_work_gets_its_own_chat_named_after_the_task_when_the_chat_is_busy(self):
+        made, targets, told = self.hand_over('separate')
+        self.assertEqual(len(made), 1)
+        self.assertIn('Summarise the meeting notes', made[0][0])
+        self.assertEqual((made[0][1], targets), ('a', ['made-1']))                # in the same project as the chat it would have waited in
+        self.assertIn('starts right away', told)
+        self.assertIn('a new chat', told)
+
+    def test_work_that_builds_on_what_is_running_or_says_nothing_waits_in_line_as_before(self):
+        for relation in ('after', None):
+            with self.subTest(relation):
+                made, targets, told = self.hand_over(relation)
+                self.assertEqual((made, targets), ([], ['a']))
+                self.assertIn('behind its current work', told)
+
+    def test_an_idle_chat_a_named_chat_and_the_limit_keep_the_task_where_it_was_going(self):
+        made, targets, told = self.hand_over('separate', busy=False)
+        self.assertEqual((made, targets), ([], ['a']))                              # nothing is running: no new chat is needed
+        made, targets, _ = self.hand_over('separate', open_tasks=voice_tools.PARALLEL_TASKS)
+        self.assertEqual((made, targets), ([], ['a']))                              # four already: this one waits
+        self.assertEqual(tools.validate('delegate_task', {'task': 't', 'relation': 'sideways'}), {'task': 't'})   # an unknown relation is left out
+
+
 class SettingsByVoice(Loop):
     """The voice agent's own settings by voice: a fixed, safe subset. Three live in the page for this conversation (the microphone,
     the assistant's voice, the camera); five are saved through the same validated path as the settings page."""

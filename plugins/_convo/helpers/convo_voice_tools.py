@@ -417,11 +417,36 @@ async def place(rt, state, session, chat='', create=True):
     return {**made, 'new': True}
 
 
-async def delegate(rt, sid, state, session, turn, text, key=None, chat=''):
-    """Queue one task for a chat's agent (`place`) and say so in the panel. Returns what is now true, as a sentence for the model."""
+PARALLEL_TASKS = 4          # tasks of this conversation running or waiting at once, across chats, before a separate one must wait
+
+
+def _open_tasks(s, session):
+    """How many of this session's tasks are still running or waiting (never raises: unknown counts as none)."""
+    try:
+        return sum(1 for job in s.store.jobs(session["target"])
+                   if job.get('session') == session['id'] and job.get('status') not in ('completed', 'failed', 'uncertain', 'cancelled'))
+    except Exception:
+        return 0
+
+
+async def delegate(rt, sid, state, session, turn, text, key=None, chat='', relation=''):
+    """Queue one task for a chat's agent (`place`) and say so in the panel. Returns what is now true, as a sentence for the model.
+
+    `relation` "separate" (the model's reading, by meaning, of how the task relates to work already going on): when the chat is
+    busy, the task does not wait behind that work but starts at once in a new chat named after it, at most PARALLEL_TASKS of
+    this conversation's tasks at a time. A chat the user named is never replaced, and anything else waits in line as before."""
     s = state["service"]
     where = await place(rt, state, session, chat)
     idle = rt._chat_idle(s, where['id'])               # before the task itself makes its chat busy
+    if not idle and relation == 'separate' and not ' '.join(str(chat or '').split()) and _open_tasks(s, session) < PARALLEL_TASKS:
+        # Separate work: its own chat, named after the task, in the same project as the chat it would have waited in.
+        title = ' '.join(str(text).split())[:48] or 'Voice task'
+        try:
+            made = s.host.new_chat(title, like=where['id'])
+            where, idle = {**made, 'new': True}, True
+            rt._mark(turn, 'task.parallel')
+        except Exception:
+            pass                                       # no new chat could be made: it waits in line, as it always did
     job = s.store.submit(session["id"], sid, session["epoch"], turn, key or (turn + ":job"), text,
                          target=where['id'] if where['id'] != session["target"] else None)
     s.dispatcher.start()
@@ -451,7 +476,8 @@ async def perform(rt, sid, state, session, turn, record):
     try:
         if name == 'delegate_task':
             text = record.get('prepared') or prepare_task(rt, state, session, turn, args.get('task'))
-            return True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'))
+            return True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'),
+                                        relation=args.get('relation') or '')
         return await act(rt, sid, state, session, turn, name, args, state['config'])
     except asyncio.CancelledError:
         raise

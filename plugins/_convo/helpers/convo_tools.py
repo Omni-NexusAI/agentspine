@@ -100,7 +100,13 @@ CATALOG = {
                                                        limit=16000),
                                          'chat': _text('Only when the user names a particular chat by its title: that title, or "new" '
                                                        'when they ask for a new chat. "The main chat" and "the agent" are not titles: '
-                                                       'leave this out for them.', required=False, limit=200)}},
+                                                       'leave this out for them.', required=False, limit=200),
+                                         'relation': _choice("How this task relates to work the chat's agent is already doing. "
+                                                             "separate: it has nothing to do with that work and needs none of its "
+                                                             "results, so it may run at the same time in a chat of its own. after: it "
+                                                             "builds on that work, needs its result, or touches the same files, so it "
+                                                             "waits for it. Leave it out when nothing is running or you are not sure.",
+                                                             ('separate', 'after'), required=False)}},
     'task_status': {
         'group': 'tasks', 'kind': 'read', 'small': True, 'label': 'task check', 'activity': 'Checking on the tasks…',
         'description': "How the tasks handed over from this conversation are going, whether the chat's agent is busy right now, "
