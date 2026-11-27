@@ -444,6 +444,73 @@ class Results(Loop):
         self.assertNotIn('hand the floor back', self.play_task(scenario)[0]['system'])
 
 
+class Courtesy(Loop):
+    """After a substantive answer heard to its end, a short "thanks" may get a few words back; the model decides, Convo rations."""
+    ANSWER = [('USER: a question\nLANGUAGE: English\nThe capital of Portugal is Lisbon, on the river Tagus near the Atlantic coast.', .1)]
+    THANKS = {'speech': 'silent', 'action': 'none', 'confidence': .95, 'explicit_request': False, 'context_note': 'Acknowledgement'}
+
+    def run_thanks(self, first=None, heard=True, again=False):
+        async def scenario(h):
+            await self.ask(h)
+            if heard:
+                # What the user heard of the reply (the harness's page reports no playback): the whole of it.
+                turn = h.store.context(h.session['target'])['turns'][-1]
+                h.store.delivered(h.state['session']['id'], 'browser', h.state['session']['epoch'], turn['id'], 'p1', (first or self.ANSWER)[0][0].split('\n')[-1])
+            due = h.handler._courtesy_due(h.state, h.session)
+            before = len(h.answers)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            thanked = h.answers[before:]
+            second = None
+            if again:
+                more = len(h.answers)
+                await h.candidate('v', h.audio('next'), final=True)
+                await h.settle()
+                second = len(h.answers) - more
+            return due, thanked, second
+        # The classifier's reading of the second utterance as an acknowledgement (a typed decision model says so; the scripted
+        # stand-in only says "not for the assistant", which is never answered out of courtesy).
+        policy = importlib.import_module('plugins._convo.helpers.convo_policy')
+        original = policy.conversation_verdict
+
+        def verdict(decision, **kwargs):
+            found = original(decision, **kwargs)
+            return ('ignore', 'backchannel') if found == ('ignore', 'not_addressed') else found
+        with patch.object(policy, 'conversation_verdict', verdict):
+            return self.play(scenario, model_deltas=first or self.ANSWER, proposals=[None, None],
+                             classifier={'ask': script(SPEAK, .2), 'next': script(self.THANKS, .2)})
+
+    def test_speech_that_was_simply_not_for_the_assistant_is_never_answered_out_of_courtesy(self):
+        async def scenario(h):
+            await self.ask(h)
+            turn = h.store.context(h.session['target'])['turns'][-1]
+            h.store.delivered(h.state['session']['id'], 'browser', h.state['session']['epoch'], turn['id'], 'p1', self.ANSWER[0][0].split('\n')[-1])
+            before = len(h.answers)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            return len(h.answers) - before
+        self.assertEqual(self.play(scenario, model_deltas=self.ANSWER, proposals=[None, None],
+                                   classifier={'ask': script(SPEAK, .2), 'next': script(self.THANKS, .2)}), 0)
+
+    def test_a_thanks_after_a_full_answer_reaches_the_model_with_the_choice_to_say_a_few_words_or_nothing(self):
+        due, thanked, _ = self.run_thanks()
+        self.assertTrue(due)
+        self.assertEqual(len(thanked), 1)
+        self.assertIn('You may answer with a few words', thanked[0]['system'])
+        self.assertIn('or write [SILENT]', thanked[0]['system'])
+
+    def test_never_twice_in_a_row_and_not_within_the_pause(self):
+        due, thanked, second = self.run_thanks(again=True)
+        self.assertEqual((len(thanked), second), (1, 0))                    # the second "thanks" right after stays unanswered
+
+    def test_not_after_a_short_reply_or_one_that_was_not_heard_to_its_end(self):
+        short = [('USER: a question\nLANGUAGE: English\nYes, sir.', .1)]
+        due, thanked, _ = self.run_thanks(first=short)
+        self.assertEqual((due, thanked), (False, []))
+        due, thanked, _ = self.run_thanks(heard=False)
+        self.assertEqual((due, thanked), (False, []))
+
+
 class OwnVoiceResume(Loop):
     """Through a loud headset the microphone caught the assistant's own words and cut its reply off (2026-11-25, twice in a row).
     The echo is recognised by the server (Realtime._own_voice); the reply then carries on from what was heard."""

@@ -179,6 +179,15 @@ SPEECH_START_HOLD = 1.5      # the page said speech began (before any audio arri
 INTERJECT = (" The user is in the middle of talking about something else. Begin with a very short lead-in, in your own words, "
              "that you have the result of their task; give it in one or two short sentences; then hand the floor back to them, "
              "in your own words, so they can carry on with what they were saying.")
+# An occasional acknowledgement: after a substantive answer or a finished task's result that was heard to its end, a short "thanks"
+# or closing remark may get a few words back. The conversation model decides whether anything fits; Convo only rations the
+# opportunity (never twice in a row, and with a pause between two).
+COURTESY_WORDS = 8           # a reply of at least this many words counts as substantive
+COURTESY_PAUSE = 90.0        # seconds between two such opportunities
+COURTESY_SECONDS = 4.0       # the user's remark is at most this much speech
+COURTESY = ("The user has just thanked you or acknowledged what you told them. You may answer with a few words, the way your "
+            "persona would (never more than one short sentence, no new information, no question), or write [SILENT] when "
+            "nothing fits or a reply would only be noise.")
 OFFER_OPEN = 45.0            # how long after an offer was heard a short reply to it is always answered
 OFFER_REPLY_SECONDS = 4.0    # ...a reply of at most this much speech (longer speech is judged as any other turn)
 WAITED = ("\nYou chose [WAIT], but the user has now been quiet for several seconds. If what they said makes sense as it is (a question, a "
@@ -989,6 +998,11 @@ class Realtime(WsHandler):
                         # acknowledgement. The conversation model, which sees the offer next to these words, decides what it means
                         # (and may still stay silent for a sound that was no reply at all).
                         verdict, reason = 'admit', 'offer'
+                    if (verdict == 'ignore' and reason == 'backchannel' and (result.get('speech_seconds') or 0) <= COURTESY_SECONDS
+                            and self._courtesy_due(state, session)):
+                        # A thanks or a closing remark after a full answer: the conversation model may say a few words, or nothing.
+                        verdict, reason = 'admit', 'courtesy'
+                        state['courtesy'] = {'at': asyncio.get_running_loop().time(), 'turn': candidate['turn']}
                     if verdict == 'ignore' and candidate['admitted'] and (candidate.get('overlap') or candidate.get('joins')):
                         # It has already stopped a reply (one being heard, or one being prepared): stopping it and then saying
                         # nothing would lose both. The conversation model, which hears it, decides what to say (or [SILENT]).
@@ -2003,6 +2017,33 @@ class Realtime(WsHandler):
             self._mark(turn, 'speech.retry', error=type(error).__name__)
         await self._stalled(sid, state, session, turn, 'speech')
         return await self._speak_once(sid, state, session, turn, text, role, {})
+
+    @staticmethod
+    def _courtesy_note(state, turn):
+        """The line a reply gets when its turn was admitted as a thanks or a closing remark (see COURTESY)."""
+        record = state.get('courtesy') if isinstance(state, dict) else None
+        return COURTESY if record and turn and record.get('turn') == turn else ''
+
+    def _courtesy_due(self, state, session):
+        """Whether a short acknowledgement may be answered now: the last thing the user heard was a substantive reply (or a
+        finished task's result) to its end, and the last such opportunity was a while ago and not the turn before."""
+        try:
+            now = asyncio.get_running_loop().time()
+            last = state.get('courtesy')
+            if last and now - last['at'] < COURTESY_PAUSE:
+                return False
+            turns = state['service'].store.context(session['target'])['turns']
+            if not turns:
+                return False
+            content = turns[-1]['content']
+            if last and last.get('turn') == turns[-1]['id']:
+                return False                               # never twice in a row
+            said = str(content.get('assistant') or '')
+            if content.get('interrupted') or not said.strip():
+                return False                               # only after a reply that was heard to its end
+            return bool(content.get('jobs')) or len(said.split()) >= COURTESY_WORDS
+        except Exception:
+            return False
 
     @staticmethod
     def _cut_reply(context, turn):
@@ -3440,7 +3481,7 @@ class Realtime(WsHandler):
         context = state['service'].store.context(session['target'])
         clips = state['remarks'].peek() if audio is not None and config["roles"]["conversation"]["capabilities"].get("audio_input") else []
         offer = self._tool_offer(state, config, bool(context["memory"]["covered"]))
-        late = "\n".join(part for part in (self._tasks_note(state, session), self._last_said(context, turn)) if part)
+        late = "\n".join(part for part in (self._tasks_note(state, session), self._last_said(context, turn), self._courtesy_note(state, turn)) if part)
         system = self._system_prompt(state, config, context["memory"], remarks=bool(clips), heard=audio is not None, context=late,
                                      clock=self._clock(state, turn) if turn else '', tools=offer)
         messages = self._history(context, state)
@@ -3548,6 +3589,9 @@ class Realtime(WsHandler):
             said = self._last_said(context, turn)
             if said:
                 block = (block + "\n" if block else "") + said        # last: nearest the user's words
+            polite = self._courtesy_note(state, turn)
+            if polite:
+                block = (block + "\n" if block else "") + polite
             # The tools this conversation offers (the same on every request of it: natively, or described in writing for a server
             # without native tools) and whether this reply may run one.
             offer = self._tool_offer(state, config, bool(context["memory"]["covered"]))
