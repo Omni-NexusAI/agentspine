@@ -38,7 +38,8 @@ READER = ("You are given one short utterance from a person who was just asked wh
 ASKED = ("You are given one utterance a person said to their voice assistant. Decide whether, in this utterance, the person themself asks "
          "the assistant to %s. Any wording and any language counts. Reply with exactly one word and nothing else: YES if they ask for "
          "it; NO if they do not (a remark, a question about it, an answer, something else); OTHER if it is unclear.")
-ASKED_FOR = {'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
+ASKED_FOR = {'change_setting': 'change one of the assistant\'s own settings: to mute or unmute the microphone or its voice, to start or stop the camera, to make its answers shorter or longer, or to turn an option on or off',
+             'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
              'cancel_task': 'stop or cancel a task, a timer or work that is going on'}
 # The last check before speech the classifier took for talk to someone else is left unanswered: is it the user still talking to the
 # assistant about what the two of them were talking about? The decision model cannot tell (measured 2026-11-24 on 96 labelled clips,
@@ -481,6 +482,8 @@ async def act(rt, sid, state, session, turn, name, args, config):
                 '' if sure else ' The speech server was asked for it; some voices ignore a speed, so the user may hear no change.')
         if name == 'open':
             return await _open(rt, sid, state, session, turn, args)
+        if name == 'change_setting':
+            return await _setting(rt, sid, state, session, turn, args)
         if name == 'remember':
             actions = rt._helper('convo_actions')
             agent = s.host.context(session["target"]).agent0
@@ -540,6 +543,81 @@ async def _cancel(rt, state, session, what, kind=''):
 def _words(text):
     """The words of a label or of the model's pointer at one, lower-cased, without punctuation (any script)."""
     return ''.join(letter if letter.isalnum() else ' ' for letter in str(text or '').casefold()).split()
+
+
+# ── Convo's own settings by voice ─────────────────────────────────────────────────
+# A fixed, safe subset. For this conversation only (the page does it): the microphone, the assistant's voice, the camera. Saved
+# (convo_setup.patch, the same validated path as the settings page): answer length, spoken task updates and the developer options.
+# Never by voice: what the voice agent may do, consents, keys, addresses, providers, models and the speech gate.
+ON_WORDS = ('on', 'yes', 'true', 'enable', 'enabled', 'start', 'unmute', 'unmuted', 'show', 'share')
+OFF_WORDS = ('off', 'no', 'false', 'disable', 'disabled', 'stop', 'mute', 'muted', 'hide', 'silent', 'silence')
+SESSION_SETTINGS = ('microphone', 'voice', 'camera')
+SAVED_SETTINGS = {'answer_length': ('response_detail', ('concise', 'balanced', 'detailed')),
+                  'spoken_updates': ('spoken_updates', ('completion', 'milestones', 'frequent')),
+                  'developer_mode': ('developer_mode', None), 'diagnostic_events': ('show_diagnostic_events', None),
+                  'rejected_replies': ('show_rejected_responses', None)}
+SETTING_NAMES = {'answer_length': 'Answer length', 'spoken_updates': 'Spoken task updates', 'developer_mode': 'Developer mode',
+                 'diagnostic_events': 'Diagnostic events in the history', 'rejected_replies': 'Replies that were never delivered'}
+
+
+def switch(value):
+    """True / False for a model's wording of on and off (in any case, with words around it), or None."""
+    words = re.sub(r'[^a-z]+', ' ', str(value or '').lower()).split()
+    on, off = any(word in ON_WORDS for word in words), any(word in OFF_WORDS for word in words)
+    return True if on and not off else False if off and not on else None
+
+
+async def _setting(rt, sid, state, session, turn, args):
+    """Carry out one change of the voice agent's own settings. Returns (worked, what is now true, in words for the model)."""
+    name, value = args['setting'], str(args.get('value') or '').strip()
+    if name in SESSION_SETTINGS:
+        wanted = switch(value)
+        if wanted is None:
+            return False, 'whether to turn it on or off was not said'
+        request_id = uuid.uuid4().hex
+        waiting = state.setdefault('ui_waiting', {})
+        future = asyncio.get_running_loop().create_future()
+        waiting[request_id] = future
+        try:
+            await rt._send(sid, state, session, turn, 'ui.setting', request_id=request_id, setting=name, on=wanted)
+            answer = await asyncio.wait_for(future, UI_WAIT)
+        except (asyncio.TimeoutError, TimeoutError):
+            return False, "the user's browser did not answer"
+        finally:
+            waiting.pop(request_id, None)
+        detail = ' '.join(str(answer.get('detail') or '').split())[:160]
+        if answer.get('ok') is not True:
+            return False, detail or 'the browser could not change it'
+        return True, detail or {('microphone', True): 'The microphone is on.',
+                                ('microphone', False): 'The microphone is muted. The user unmutes it with the microphone button.',
+                                ('voice', True): 'Your voice is on again.',
+                                ('voice', False): 'Your voice is silent from now on; your replies still appear as text.',
+                                ('camera', True): 'The camera is shared.', ('camera', False): 'The camera is no longer shared.'}[(name, wanted)]
+    path, choices = SAVED_SETTINGS[name]
+    if choices is None:
+        new = switch(value)
+        if new is None:
+            return False, 'whether to turn it on or off was not said'
+    else:
+        word = _named(value, choices)
+        if not word:
+            return False, 'it must be one of: ' + ', '.join(choices)
+        new = word
+    current = state['config'].get(path)
+    said = (('on' if new else 'off') if choices is None else new)
+    if current == new:
+        return True, '%s was already %s.' % (SETTING_NAMES[name], said)
+    setup = rt._helper('convo_setup')
+    try:
+        result = await asyncio.to_thread(setup.patch, [{'path': path, 'base': current, 'value': new}])
+    except ValueError as error:
+        return False, _safe(error, 'the settings refused the change')
+    except Exception:
+        return False, 'the settings could not be written'
+    if isinstance(result, dict) and result.get('conflicts'):
+        return False, 'the setting was changed elsewhere at the same moment; nothing was written'
+    state['config'][path] = new                              # this conversation follows it from the next reply
+    return True, '%s is now %s, saved in the voice settings.' % (SETTING_NAMES[name], said)
 
 
 # The voice agent's own places (the page knows how to open each; nothing else is ever opened by name).

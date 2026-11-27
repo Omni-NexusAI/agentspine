@@ -845,6 +845,27 @@ async function answerOpen(event) {
     await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
 }
 
+// ---- Settings by voice (the change_setting tool, `ui.setting`): the three that live in this page, for this conversation.
+async function answerSetting(event) {
+    const setting = String(event.setting || ''), on = event.on === true;
+    let ok = false, detail = 'That setting cannot be changed from this page.';
+    try {
+        if (setting === 'microphone') {
+            store.setMuted(!on);
+            ok = store.muted === !on;
+            detail = ok ? (on ? 'The microphone is on.' : 'The microphone is muted. It is unmuted with the microphone button.') : 'The microphone could not be changed.';
+        } else if (setting === 'voice') {
+            store.setVoiceMuted(!on);
+            ok = true; detail = on ? 'The voice is on again.' : 'The voice is silent from now on; replies still appear as text.';
+        } else if (setting === 'camera') {
+            if (on) await store.shareCamera(); else store.stopCamera();
+            ok = store.cameraShared === on;
+            detail = ok ? (on ? 'The camera is shared.' : 'The camera is no longer shared.') : 'The camera could not be started: the browser has not allowed it for this page.';
+        }
+    } catch { ok = false; detail = 'That setting could not be changed.'; }
+    await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
+}
+
 export const store = createStore('convo', {
     settings: null, settingsRevision: '', session: null, state: 'off', error: '', errorQuiet: false, errorShowMs: ERROR_SHOW_MS, problems: [], loading: '', unavailable: '', activity: '',
     muted: false, talking: false, mutedOver: '',   // the user's mute; push-to-talk held while muted; what the assistant does while muted (the chip)
@@ -901,6 +922,16 @@ export const store = createStore('convo', {
         return true;
     },
     toggleMute() { return this.setMuted(!this.muted); },
+    // The assistant's voice, silent or not (the speaker icon and "be quiet" by voice): replies still arrive and appear as text, and
+    // are played without sound, so everything that depends on a reply having been heard stays as it is.
+    voiceMuted: false,
+    setVoiceMuted(value) {
+        this.voiceMuted = !!value;
+        try { audio?.setVoiceMuted?.(this.voiceMuted); } catch { /* applied when the next audio session starts */ }
+        if (!this.panelOpen) announce(this.voiceMuted ? 'Voice silent.' : 'Voice on.');
+        return this.voiceMuted;
+    },
+    toggleVoice() { return this.setVoiceMuted(!this.voiceMuted); },
     pushToTalk(value) {
         value = !!value;
         if (value ? !this.active || !this.muted || this.talking : !this.talking) return false;
@@ -1265,6 +1296,7 @@ export const store = createStore('convo', {
                     if (event.type === 'action.pending') { showAction(event); return; }
                     if (event.type === 'action.resolved') { if (event.id) clearAction(String(event.id)); return; }
                     if (event.type === 'ui.open') { void answerOpen(event); return; }
+                    if (event.type === 'ui.setting') { void answerSetting(event); return; }
                     // The spoken notice of a finished task could not be spoken: it is offered again (the server bounds how often).
                     if (event.type === 'notice_retry') { if (event.job_id) noticeSeen.delete(String(event.job_id)); return; }
                 }
@@ -1353,7 +1385,7 @@ export const store = createStore('convo', {
             const choices = readChoices(this.soundInput());
             audioMode = phoneAudioMode({ phone: isPhone(), devices: await listDevices(), override: choices.phone_mode });
             const sound = this.soundValues(), key = this.soundKey();
-            ownedAudio = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            ownedAudio = new AudioSession({ voiceMuted: this.voiceMuted, muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 echoState: echoByMode.get(audioMode.mode) ?? null, page: pageAudio(), processing: captureProcessing(audioMode.mode, choices), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },
@@ -1641,7 +1673,7 @@ export const store = createStore('convo', {
             if (attempt !== generation) return;
             const sound = this.soundValues();
             // The same page output and the same phone audio mode as the conversation it continues (the mode is fixed per conversation).
-            const replacement = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            const replacement = new AudioSession({ voiceMuted: this.voiceMuted, muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 page: pageAudio(), processing: captureProcessing(audioMode.mode, readChoices(this.soundInput())), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },

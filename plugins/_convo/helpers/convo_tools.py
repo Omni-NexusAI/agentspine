@@ -159,6 +159,20 @@ CATALOG = {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'voice speed', 'activity': 'Changing the voice…',
         'description': "Speak slower, faster or at the normal speed for the rest of this conversation, when the user asks.",
         'primary': 'speed', 'arguments': {'speed': _choice('How to speak from now on.', ('slower', 'normal', 'faster'))}},
+    'change_setting': {
+        'group': 'interface', 'kind': 'work', 'small': False, 'label': 'setting change', 'activity': 'Changing a setting…',
+        'ask': 'Change a voice setting',
+        'description': "Change one of the voice agent's own settings when the user asks for it: mute or unmute the microphone "
+                       "(microphone: off mutes it; once muted, the user unmutes with the button), silence or restore your spoken "
+                       "voice while your replies still appear as text (voice), start or stop sharing the camera (camera), how "
+                       "long your answers are (answer_length: concise, balanced or detailed), how often task progress is spoken "
+                       "(spoken_updates: completion, milestones or frequent), and the developer options (developer_mode, "
+                       "diagnostic_events, rejected_replies). Nothing else can be changed by voice: for anything else, open the "
+                       "voice settings for the user instead.",
+        'primary': 'setting', 'arguments': {'setting': _choice('Which setting.', ('microphone', 'voice', 'camera', 'answer_length',
+                                                                                   'spoken_updates', 'developer_mode',
+                                                                                   'diagnostic_events', 'rejected_replies')),
+                                            'value': _text('on or off; for answer_length and spoken_updates one of their values.', limit=40)}},
     'listen_back': {
         'group': 'senses', 'kind': 'read', 'small': False, 'label': 'listening back', 'activity': 'Listening again…',
         'description': "Hear again the last few things the microphone picked up (the user's recent speech and the sounds around "

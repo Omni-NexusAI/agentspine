@@ -591,7 +591,8 @@ export class AudioSession {
     // keep "listening" to nothing; restart: true offers a restart) and 'unmuted'.
     constructor({ onStart, onTurn, onProbe = () => {}, onError, maximum, deviceId, onLevel = () => {}, echoGuard = 'adaptive', echoState = null, onEchoMetric = () => {}, onPlaybackState = () => {},
                   duck = {}, stuckMs = STUCK_PHRASE_MS, resumeWaitMs = RESUME_WAIT_MS, sound = {}, onMeter = () => {}, onMicrophone = () => {},
-                  page = null, processing = null, onOutput = () => {}, muted = false }) {
+                  page = null, processing = null, onOutput = () => {}, muted = false, voiceMuted = false }) {
+        this.voiceMuted = !!voiceMuted;                    // the assistant's voice is silent (its replies still appear as text)
         // page: the page's one output (PageAudio); without it this session owns a context of its own (tests, older callers).
         // processing: the microphone's echoCancellation / noiseSuppression / autoGainControl (captureProcessing); default all on.
         // onOutput receives {message} when the chosen output device went away or came back.
@@ -640,7 +641,11 @@ export class AudioSession {
             if (this.page) { this.context = await this.page.acquire(); this.acquired = true; }
             else this.context = new AudioContext();
             if (this.closed) return this.close();
-            this.outputGain = this.context.createGain(); this.outputGain.connect(this.context.destination);
+            // The assistant's voice can be silenced (setVoiceMuted) after everything that listens to the output: the duck, the echo
+            // guard's reference and the level meter still see the reply, so what counts as heard stays as it is.
+            this.outputGain = this.context.createGain(); this.voiceGain = this.context.createGain();
+            this.voiceGain.gain.value = this.voiceMuted ? 0 : 1;
+            this.outputGain.connect(this.voiceGain); this.voiceGain.connect(this.context.destination);
             if (!this.page) await this.context.resume();
             this.watchOutput();
             // echo_guard 'off' keeps the previous capture (its own, untouched worklet file); otherwise the guard worklet is used.
@@ -865,6 +870,7 @@ export class AudioSession {
         if (context.state !== 'running') return this.ensureRunning();
         return true;
     }
+    setVoiceMuted(value) { this.voiceMuted = !!value; if (this.voiceGain) this.voiceGain.gain.value = this.voiceMuted ? 0 : 1; return this.voiceMuted; }
     // A short soft tone through the conversation's own output (outputGain: the duck and the echo guard's reference see it too).
     // The click that asks for it is a user gesture, so a paused context is resumed first.
     async testTone() {

@@ -847,6 +847,86 @@ class Actions(Loop):
                                           config={'roles': {'tts': {'provider': 'openai_tts'}}}))
 
 
+class SettingsByVoice(Loop):
+    """The voice agent's own settings by voice: a fixed, safe subset. Three live in the page for this conversation (the microphone,
+    the assistant's voice, the camera); five are saved through the same validated path as the settings page."""
+    def change(self, arguments, answer=lambda payload: ('convo.ui_result', {'ok': True, 'detail': ''}), classifier=None, patched=None):
+        async def scenario(h):
+            browser(h, 'ui.setting', answer)
+            calls = []
+
+            def patch_settings(changes):
+                calls.append(changes)
+                if patched is not None:
+                    return patched(changes)
+                return {'ok': True}
+            with patch.object(importlib.import_module('plugins._convo.helpers.convo_setup'), 'patch', patch_settings):
+                await self.ask(h)
+            return (h.answers, [p for _, p in h.events('ui.setting')], calls, self.kept(h), h.state.get('pending'),
+                    {key: h.state['config'].get(key) for key in ('response_detail', 'developer_mode', 'spoken_updates')})
+        return self.play(scenario, proposals=[call('change_setting', **arguments)], classifier=classifier or {'ask': script(DELEGATE, .2)})
+
+    def test_the_microphone_the_voice_and_the_camera_are_changed_by_the_page_for_this_conversation(self):
+        cases = (({'setting': 'microphone', 'value': 'off'}, ('microphone', False), 'The microphone is muted. The user unmutes it with the microphone button.'),
+                 ({'setting': 'microphone', 'value': 'Unmute it'}, ('microphone', True), 'The microphone is on.'),
+                 ({'setting': 'voice', 'value': 'silent'}, ('voice', False), 'Your voice is silent from now on; your replies still appear as text.'),
+                 ({'setting': 'voice', 'value': 'on'}, ('voice', True), 'Your voice is on again.'),
+                 ({'setting': 'camera', 'value': 'start'}, ('camera', True), 'The camera is shared.'),
+                 ({'setting': 'camera', 'value': 'stop'}, ('camera', False), 'The camera is no longer shared.'))
+        for arguments, sent, sentence in cases:
+            with self.subTest(arguments):
+                answers, requests, saved, kept, pending, _ = self.change(arguments)
+                self.assertEqual([(r['setting'], r['on']) for r in requests], [sent])
+                self.assertEqual(result_of(answers[1]), tools.done('setting change', sentence))
+                self.assertEqual((saved, kept[0]['ok'], pending), ([], True, None))        # nothing is written to the settings
+
+    def test_what_the_page_could_not_do_is_said_and_an_unclear_value_changes_nothing(self):
+        answers, requests, _, kept, _, _ = self.change({'setting': 'camera', 'value': 'on'},
+                                                       lambda payload: ('convo.ui_result', {'ok': False, 'detail': 'The camera could not be started.'}))
+        self.assertEqual(kept[0]['ok'], False)
+        self.assertIn('The camera could not be started.', result_of(answers[1]))
+        answers, requests, saved, kept, _, _ = self.change({'setting': 'microphone', 'value': 'maybe'})
+        self.assertEqual((requests, saved, kept[0]['ok']), ([], [], False))
+        self.assertIn('whether to turn it on or off was not said', result_of(answers[1]))
+
+    def test_saved_settings_go_through_the_settings_own_validated_path_and_this_conversation_follows(self):
+        answers, requests, saved, kept, _, config = self.change({'setting': 'answer_length', 'value': 'Concise, please'})
+        self.assertEqual((requests, saved), ([], [[{'path': 'response_detail', 'base': 'balanced', 'value': 'concise'}]]))
+        self.assertEqual(result_of(answers[1]), tools.done('setting change', 'Answer length is now concise, saved in the voice settings.'))
+        self.assertEqual(config['response_detail'], 'concise')
+        answers, _, saved, _, _, config = self.change({'setting': 'developer_mode', 'value': 'on'})
+        self.assertEqual((saved, config['developer_mode']), ([[{'path': 'developer_mode', 'base': False, 'value': True}]], True))
+        answers, _, saved, kept, _, _ = self.change({'setting': 'spoken_updates', 'value': 'completion'})         # already so: nothing is written
+        self.assertEqual((saved, kept[0]['ok']), ([], True))
+        self.assertIn('was already completion', result_of(answers[1]))
+        answers, _, saved, kept, _, config = self.change({'setting': 'answer_length', 'value': 'enormous'})
+        self.assertEqual((saved, kept[0]['ok'], config['response_detail']), ([], False, 'balanced'))
+        self.assertIn('it must be one of: concise, balanced, detailed', result_of(answers[1]))
+
+    def test_a_refused_or_conflicting_write_is_said_and_the_conversation_keeps_its_value(self):
+        def refuse(changes):
+            raise ValueError('End the voice conversation before changing this.')
+        answers, _, _, kept, _, config = self.change({'setting': 'answer_length', 'value': 'detailed'}, patched=refuse)
+        self.assertEqual((kept[0]['ok'], config['response_detail']), (False, 'balanced'))
+        self.assertIn('End the voice conversation before changing this.', result_of(answers[1]))
+        answers, _, _, kept, _, config = self.change({'setting': 'answer_length', 'value': 'detailed'}, patched=lambda changes: {'conflicts': [{'path': 'response_detail'}]})
+        self.assertEqual((kept[0]['ok'], config['response_detail']), (False, 'balanced'))
+
+    def test_only_the_listed_settings_exist_and_it_is_work_that_needs_the_users_request(self):
+        self.assertEqual(list(tools.CATALOG['change_setting']['arguments']['setting']['enum']),
+                         ['microphone', 'voice', 'camera', 'answer_length', 'spoken_updates', 'developer_mode', 'diagnostic_events', 'rejected_replies'])
+        self.assertEqual(set(voice_tools.SAVED_SETTINGS) | set(voice_tools.SESSION_SETTINGS), set(tools.CATALOG['change_setting']['arguments']['setting']['enum']))
+        for path, _ in voice_tools.SAVED_SETTINGS.values():                       # never a permission, a consent, a key, an address or a model
+            self.assertIn(path, ('response_detail', 'spoken_updates', 'developer_mode', 'show_diagnostic_events', 'show_rejected_responses'))
+        # It is "work" (convo_policy.authorize): never in a tool's follow-up, and outside a conversation the user started only on
+        # the classifier's confident request. Whether the user themself asked is read like for a hand-over (ASKED_FOR).
+        self.assertEqual((tools.kind('change_setting'), 'change_setting' in voice_tools.ASKED_FOR), ('work', True))
+        policy = importlib.import_module('plugins._convo.helpers.convo_policy')
+        self.assertEqual(policy.authorize('change_setting', 'work', None, conversing=True, followup=True), 'refuse')
+        for value, expected in (('on', True), ('OFF', False), ('turn it on', True), ('please mute', False), ('on and off', None), ('', None), (None, None), ('purple', None)):
+            self.assertIs(voice_tools.switch(value), expected, value)
+
+
 def browser(h, kind, answer):
     """A stand-in page: when the server sends `kind`, `answer(payload)` gives the message the page sends back (None: no answer)."""
     original = h.handler.emit_to
