@@ -14,11 +14,23 @@ install();
   <div class="convo-update convo-owner" role="status" x-show="$store.convo.ownerElsewhere || $store.convo.reconnecting || $store.convo.movedTo"><span x-text="$store.convo.reconnecting ? 'Connection lost — reconnecting to the conversation…' : $store.convo.ownerElsewhere ? $store.convo.ownerText : 'Voice moved to ' + $store.convo.movedTo + '.'"></span><button type="button" class="button convo-link" x-show="$store.convo.ownerElsewhere && !$store.convo.active && !$store.convo.busy" @click="$store.convo.takeOver()">Take over here</button></div>
   <div class="convo-drawer" id="convo-sound-drawer" x-show="$store.convoSound?.open"><x-component path="/plugins/_convo/webui/sound-panel.html"></x-component><x-component path="/plugins/_convo/webui/synthesis-controls.html"></x-component></div>
   <div class="convo-target"><span class="convo-target-name"><span x-text="$store.convo.targetPrefix"></span><strong x-text="$store.convo.targetLabel"></strong></span><button type="button" class="button convo-link" x-show="$store.convo.canRetarget" @click="$store.convo.retarget()" title="Switch voice to the selected Agent Zero chat">Use selected chat</button></div>
-  <div class="convo-controls">
-    <button type="button" class="button convo-primary" @click="$store.convo.active || $store.convo.busy ? $store.convo.stop() : $store.convo.toggle()" :disabled="$store.convo.settings?.ai_link_development_mode && !$store.convo.active && !$store.convo.busy" x-text="$store.convo.active || $store.convo.busy ? 'Stop conversation' : $store.convo.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Start conversation'"></button>
-    <button type="button" class="button convo-mute" x-show="$store.convo.active" @click="$store.convo.toggleMute()" :aria-pressed="$store.convo.muted ? 'true' : 'false'" title="Turns only your microphone off; the assistant can still be heard"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.muted ? 'mic_off' : 'mic'"></span><span x-text="$store.convo.muted ? 'Unmute' : 'Mute'"></span></button>
-    <button type="button" class="button convo-camera" @click="$store.convo.toggleCamera()" :aria-pressed="$store.convo.cameraShared ? 'true' : 'false'" title="The camera stays in this page; one picture is taken only when the assistant looks"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.cameraShared ? 'videocam_off' : 'videocam'"></span><span x-text="$store.convo.cameraLabel"></span></button>
-    <button type="button" class="button convo-screen" x-show="$store.convo.canShareScreen" @click="$store.convo.toggleScreen()" :aria-pressed="$store.convo.screenShared ? 'true' : 'false'" title="The screen stays in this page; one picture is taken only when the assistant looks"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.screenShared ? 'stop_screen_share' : 'screen_share'"></span><span x-text="$store.convo.screenLabel"></span></button>
+  <div class="convo-controls convo-stage" :data-active="$store.convo.active || $store.convo.busy ? 'true' : 'false'">
+    <button type="button" class="convo-primary convo-panel-orb" x-init="$store.convo.bindPanelOrb($el)" x-destroy="$store.convo.bindPanelOrb(null)" @click="$store.convo.active || $store.convo.busy ? $store.convo.stop() : $store.convo.toggle()" :disabled="$store.convo.settings?.ai_link_development_mode && !$store.convo.active && !$store.convo.busy"><span class="convo-orb-text" x-text="$store.convo.active || $store.convo.busy ? 'Stop conversation' : $store.convo.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Start conversation'"></span></button>
+    <p class="convo-stage-label" x-show="!($store.convo.active || $store.convo.busy)" x-text="$store.convo.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Tap to start a conversation'"></p>
+    <div class="convo-icons" role="group" aria-label="Conversation controls">
+      <button type="button" class="button convo-iconbtn convo-mute" x-show="$store.convo.active" @click="$store.convo.toggleMute()" :aria-pressed="$store.convo.muted ? 'true' : 'false'" :aria-label="$store.convo.muted ? 'Unmute the microphone' : 'Mute the microphone'"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.muted ? 'mic_off' : 'mic'"></span><span class="convo-iconlabel" x-text="$store.convo.muted ? 'Unmute' : 'Mute'"></span></button>
+      <button type="button" class="button convo-iconbtn convo-voice" @click="$store.convo.toggleVoice()" :aria-pressed="$store.convo.voiceMuted ? 'true' : 'false'" :aria-label="$store.convo.voiceMuted ? 'Turn the assistant\u2019s voice on' : 'Silence the assistant\u2019s voice'"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.voiceMuted ? 'volume_off' : 'volume_up'"></span><span class="convo-iconlabel" x-text="$store.convo.voiceMuted ? 'Voice off · text only' : 'Silence voice'"></span></button>
+      <button type="button" class="button convo-iconbtn convo-camera" @click="$store.convo.toggleCamera()" :aria-pressed="$store.convo.cameraShared ? 'true' : 'false'" :aria-label="$store.convo.cameraLabel"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.cameraShared ? 'videocam_off' : 'videocam'"></span><span class="convo-iconlabel" x-text="$store.convo.cameraLabel"></span></button>
+      <button type="button" class="button convo-iconbtn convo-screen" x-show="$store.convo.canShareScreen" @click="$store.convo.toggleScreen()" :aria-pressed="$store.convo.screenShared ? 'true' : 'false'" :aria-label="$store.convo.screenLabel"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.screenShared ? 'stop_screen_share' : 'screen_share'"></span><span class="convo-iconlabel" x-text="$store.convo.screenLabel"></span></button>
+    </div>
+  </div>
+  <div class="convo-preview" x-show="$store.convo.cameraShared || $store.convo.screenShared" :data-flash="$store.convo.previewFlash ? 'true' : 'false'" :style="$store.convo.previewStyle" @pointerdown="$store.convo.previewGrab($event, $el)" role="group" aria-label="What is being shared">
+    <video class="convo-preview-video" muted playsinline autoplay x-effect="$store.convo.attachPreview($el, $store.convo.cameraShared, $store.convo.screenShared)"></video>
+    <span class="convo-preview-tag" x-text="$store.convo.cameraShared && $store.convo.screenShared ? 'Camera · screen shared too' : $store.convo.screenShared ? 'Sharing screen' : 'Camera'"></span>
+    <div class="convo-preview-tools">
+      <button type="button" class="button convo-icon" x-show="$store.convo.cameraShared && $store.convo.screenShared" @click.stop="$store.convo.previewSwap()" aria-label="Show the other picture"><span class="material-symbols-outlined" aria-hidden="true">swap_horiz</span></button>
+      <button type="button" class="button convo-icon" x-show="$store.convo.canPopPreview" @click.stop="$store.convo.previewPop($el.closest('.convo-preview').querySelector('video'))" aria-label="Open the preview in its own window"><span class="material-symbols-outlined" aria-hidden="true">picture_in_picture_alt</span></button>
+    </div>
   </div>
   <p class="convo-hint" x-text="$store.convo.note || $store.convo.waiting || ($store.convo.active ? ($store.convo.micMuted ? 'Microphone muted · ' : 'Microphone active · ') + ($store.convo.settings?.remote_processing ? 'remote processing configured' : 'local providers configured') : ($store.convo.dictating ? 'Dictating · click the composer orb to finish, Escape cancels' : 'Microphone off · click the composer orb to talk, hold to dictate'))"></p>
   <button type="button" class="button convo-resume" x-show="$store.convo.audioPaused" @click="$store.convo.resumeAudio()"><span class="material-symbols-outlined" aria-hidden="true">volume_off</span>Audio paused — click to resume</button>
@@ -73,6 +85,31 @@ install();
 .convo-target-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .convo-panel .convo-link{min-height:30px;padding:.15rem .6rem;font-size:.75rem}
 .convo-controls{display:flex;flex-wrap:wrap;gap:.5rem}
+/* The orb is the start and stop control (the composer orb's own layers and states, webui/orb.js): large and centred before a
+   conversation, small beside its icons during one. The icons grow a label on hover and on keyboard focus. */
+.convo-stage{align-items:center;justify-content:flex-start;gap:.6rem;position:relative}
+.convo-stage[data-active=false]{flex-direction:column;justify-content:center;gap:.5rem;padding:1.1rem 0 .2rem}
+.convo-panel .convo-panel-orb{position:relative;flex:0 0 auto;width:46px;height:46px;border:0;border-radius:50%;background:transparent;padding:0;margin:0;cursor:pointer;color:inherit;transition:width .28s ease,height .28s ease}
+.convo-stage[data-active=false] .convo-panel-orb{width:108px;height:108px}
+.convo-panel .convo-panel-orb:disabled{opacity:.45;cursor:not-allowed}
+.convo-panel .convo-panel-orb:not([data-convo]){border:2px solid var(--color-border)}
+.convo-orb-text{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.convo-stage-label{margin:0;opacity:.75;font-size:.9rem}
+.convo-icons{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
+.convo-panel .convo-iconbtn{display:inline-flex;align-items:center;justify-content:center;gap:0;min-width:38px;height:38px;padding:0 .55rem;border-radius:19px}
+.convo-iconbtn .convo-iconlabel{display:inline-block;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;margin-left:0;transition:max-width .22s ease,opacity .22s ease,margin-left .22s ease}
+.convo-iconbtn:hover .convo-iconlabel,.convo-iconbtn:focus-visible .convo-iconlabel{max-width:14rem;opacity:1;margin-left:.35rem}
+.convo-panel .convo-iconbtn[aria-pressed=true]{border-color:var(--color-text);background:var(--color-highlight,var(--color-panel))}
+/* What is being shared, small, in the panel's lower corner: dragged anywhere inside the panel, opened as its own window on request.
+   The frame lights up for a moment each time the assistant actually takes a picture. */
+.convo-panel{position:relative}
+.convo-preview{position:absolute;right:.75rem;bottom:.75rem;z-index:3;width:168px;border:1px solid var(--color-border);border-radius:10px;overflow:hidden;background:#000;box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:grab;touch-action:none;transition:box-shadow .2s ease,border-color .2s ease}
+.convo-preview[data-flash=true]{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.75),0 4px 14px rgba(0,0,0,.35)}
+.convo-preview-video{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;pointer-events:none}
+.convo-preview-tag{position:absolute;left:.35rem;top:.3rem;padding:.05rem .4rem;border-radius:8px;background:rgba(0,0,0,.6);color:#fff;font-size:.72rem}
+.convo-preview-tools{position:absolute;right:.25rem;bottom:.25rem;display:flex;gap:.2rem}
+.convo-preview-tools .convo-icon{background:rgba(0,0,0,.6);color:#fff;border-color:transparent;min-width:30px;height:30px;padding:0 .3rem}
+@media (prefers-reduced-motion:reduce){.convo-panel .convo-panel-orb,.convo-iconbtn .convo-iconlabel,.convo-preview{transition:none}}
 .convo-panel .convo-primary{background:var(--color-highlight,var(--color-panel));border-color:var(--color-text);color:#fff}
 .convo-panel .convo-primary:disabled{background:transparent;border-color:var(--color-border);color:var(--color-text);opacity:.5;cursor:not-allowed}
 .convo-panel .convo-hint{font-size:.75rem;line-height:1.4;opacity:.65;margin:0}

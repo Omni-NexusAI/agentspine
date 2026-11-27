@@ -346,8 +346,14 @@ test('Muted, a finished task’s notice still arrives; a test clip and a raw rec
 
 test('The panel: Mute beside Start and Stop, only during a conversation, and no Dictate button; dictation still says so and can be ended', async () => {
     const html = await readFile(new URL('../webui/main.html', import.meta.url), 'utf8');
-    const controls = html.slice(html.indexOf('<div class="convo-controls">'), html.indexOf('<p class="convo-hint"'));
-    assert.match(controls, /<button type="button" class="button convo-mute" x-show="\$store\.convo\.active" @click="\$store\.convo\.toggleMute\(\)" :aria-pressed="\$store\.convo\.muted \? 'true' : 'false'"/);
+    const controls = html.slice(html.indexOf('<div class="convo-controls convo-stage"'), html.indexOf('<p class="convo-hint"'));
+    assert.match(controls, /<button type="button" class="button convo-iconbtn convo-mute" x-show="\$store\.convo\.active" @click="\$store\.convo\.toggleMute\(\)" :aria-pressed="\$store\.convo\.muted \? 'true' : 'false'"/);
+    // The orb is Start and Stop; the icons beside it are the microphone, the assistant's voice, the camera and the screen, in that order.
+    assert.ok(controls.indexOf('convo-mute') < controls.indexOf('convo-voice') && controls.indexOf('convo-voice') < controls.indexOf('convo-iconbtn convo-camera')
+        && controls.indexOf('convo-iconbtn convo-camera') < controls.indexOf('convo-iconbtn convo-screen'));
+    assert.match(controls, /class="button convo-iconbtn convo-voice" @click="\$store\.convo\.toggleVoice\(\)" :aria-pressed="\$store\.convo\.voiceMuted \? 'true' : 'false'"/);
+    for (const name of ['convo-mute', 'convo-voice', 'convo-camera', 'convo-screen'])               // every icon has a name without its label showing
+        assert.match(controls, new RegExp(`class="button convo-iconbtn ${name}"[^>]*:aria-label=`), name);
     assert.match(controls, /x-text="\$store\.convo\.muted \? 'Unmute' : 'Mute'"/);
     assert.ok(controls.indexOf('convo-primary') < controls.indexOf('convo-mute') && controls.indexOf('convo-mute') < controls.indexOf('convo-camera'));
     assert.doesNotMatch(html, /toggleDictation|>Dictate<|'Dictate'/);

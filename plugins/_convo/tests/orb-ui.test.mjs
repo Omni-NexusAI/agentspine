@@ -282,7 +282,7 @@ test('The orb stylesheet has a glyph and animation for every state, honours redu
     const glyphFor = { ready: 'g-mic', idle: 'g-idle', connecting: 'g-spin', loading: 'g-spin', listening: 'g-bars', hearing: 'g-bars', thinking: 'g-dots', speaking: 'g-voice', muted: 'g-muted', 'dictating-latched': 'g-pen', 'dictating-ptt': 'g-ptt', error: 'g-err' };
     for (const id of ORB_STATES) assert.match(css, new RegExp(`\\[data-convo=${id}\\] \\.${glyphFor[id]}`), id);
     assert.doesNotMatch(css, /\[data-convo=muted\][^{]*\{[^}]*animation/);              // muted is still: nothing looks like it listens
-    const hover = css.match(/#microphone-button\[data-convo\]:hover\{[^}]*\}/)[0];
+    const hover = css.match(/:is\(#microphone-button,\.convo-panel-orb\)\[data-convo\]:hover\{[^}]*\}/)[0];   // the composer's orb and the panel's share every rule
     assert.doesNotMatch(hover, /--co|data-convo=|opacity/);                         // hover brightens only: it is not microphone-on proof
     for (const [, name] of css.matchAll(/animation:(co-[a-z-]+)/g)) assert.match(css, new RegExp(`@keyframes ${name}\\{`), name);
     const reduced = css.slice(css.indexOf('@media(prefers-reduced-motion:reduce)'));

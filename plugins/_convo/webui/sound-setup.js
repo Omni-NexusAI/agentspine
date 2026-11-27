@@ -257,7 +257,11 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
         },
         async listRecordings() { this.recordings = (await this.convo?.recordingList?.()) || []; return this.recordings; },
         async deleteRecording(id) { await this.convo?.recordingDelete?.(id); return this.listRecordings(); },
-        show() { this.open = true; this.message = ''; this.error = ''; this.refresh(); void this.setup?.load?.(); },   // the voice row needs the settings
+        // Opening the drawer reads the device lists (a saved device then shows by its name, not as "the chosen device").
+        show() {
+            this.open = true; this.message = ''; this.error = ''; this.refresh(); void this.setup?.load?.();
+            for (const list of ['listOutputs', 'listMicrophones', 'listCameras']) { try { void this[list]?.()?.catch?.(() => {}); } catch { /* a list is optional */ } }
+        },   // the voice row needs the settings
         hide() { this.open = false; this.stopMeasure(); },
         toggle() { if (this.open) this.hide(); else this.show(); },
         overridden(key) { return key in this.own; },

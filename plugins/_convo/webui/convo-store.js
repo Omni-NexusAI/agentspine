@@ -578,6 +578,21 @@ function updateOrb() {
     if (spoken !== lastDictationLabel) { lastDictationLabel = spoken; if (spoken) announce(spoken); }
     const mic = typeof document !== 'undefined' ? document.getElementById?.('microphone-button') : null;
     if (mic) syncOrb(mic, view, id === 'speaking' ? store.outputLevel : store.inputLevel);
+    // The panel's own orb (its start and stop control) shows the same state with the same layers.
+    if (panelOrb) { try { syncOrb(panelOrb, view, id === 'speaking' ? store.outputLevel : store.inputLevel); } catch { /* the panel is optional */ } }
+}
+let panelOrb = null;
+
+// ---- The preview of what is shared (camera, screen): this page's own streams shown small in the panel; nothing leaves the page.
+const PREVIEW_KEY = 'convo.preview.v1';
+let previewShows = 'camera', previewDrag = null, previewFlashTimer = null;
+function readPreviewPlace() {
+    try { const place = JSON.parse(globalThis.localStorage?.getItem(PREVIEW_KEY) || 'null'); return place && Number.isFinite(place.right) && Number.isFinite(place.bottom) ? place : null; } catch { return null; }
+}
+function flashPreview() {
+    store.previewFlash = true;
+    clearTimeout(previewFlashTimer);
+    previewFlashTimer = setTimeout(() => { store.previewFlash = false; }, 450);
 }
 
 // History entries are keyed by the sequence number of the event they are placed at (a folded turn: its first event).
@@ -664,6 +679,7 @@ export function pictureEdge(asked, chosen) {
 }
 async function answerCamera(event) {
     let image = '';
+    flashPreview();                                        // the assistant is looking now: the preview's frame lights up
     try { image = videoFrame(cameraVideo, pictureEdge(event.max_edge, readPicture().camera_edge), event.quality); } catch { image = ''; }
     await request('camera_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
@@ -681,6 +697,7 @@ function releaseScreen() {
 }
 async function answerScreen(event) {
     let image = '';
+    flashPreview();
     try { image = videoFrame(screenVideo, pictureEdge(event.max_edge, readPicture().screen_edge), event.quality); } catch { image = ''; }
     await request('screen_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
@@ -1116,6 +1133,49 @@ export const store = createStore('convo', {
     jobChat(job) { return this.across && job ? (jobChats.get(job.id) || hostChatName(job.target)) : ''; },
     async mountPanel() { this.panelOpen = true; if (!this.active) this.target = this.idleTarget(); this.syncTargetName(); await this.refresh(); await this.history(); },
     unmountPanel() { this.panelOpen = false; },
+    bindPanelOrb(element) { panelOrb = element || null; if (panelOrb) updateOrb(); },
+    // ---- the preview
+    previewFlash: false, previewPlace: readPreviewPlace(),
+    get previewStyle() { const place = this.previewPlace; return place ? `right:${place.right}px;bottom:${place.bottom}px` : ''; },
+    get canPopPreview() { return typeof globalThis.document?.pictureInPictureEnabled === 'boolean' ? globalThis.document.pictureInPictureEnabled : false; },
+    attachPreview(video, camera, screen) {
+        if (!video) return;
+        if (!camera && !screen) { try { video.srcObject = null; } catch { /* already gone */ } return; }
+        const which = camera && screen ? previewShows : camera ? 'camera' : 'screen';
+        const stream = which === 'camera' ? cameraStream : screenStream;
+        try { if (video.srcObject !== stream) { video.srcObject = stream; void video.play?.()?.catch?.(() => {}); } } catch { /* the preview is optional */ }
+    },
+    // Both are shared: the preview shows one of them, and this switches to the other.
+    previewSwap() {
+        previewShows = previewShows === 'camera' ? 'screen' : 'camera';
+        this.attachPreview(globalThis.document?.querySelector?.('.convo-preview-video'), this.cameraShared, this.screenShared);
+    },
+    async previewPop(video) {
+        try {
+            if (globalThis.document?.pictureInPictureElement) await globalThis.document.exitPictureInPicture();
+            else await video?.requestPictureInPicture?.();
+        } catch { this.say?.('The preview could not be opened in its own window here.'); }
+    },
+    // Dragged by pointer inside the panel; where it was left is kept for this browser.
+    previewGrab(event, element) {
+        if (!element || event.button > 0 || event.target?.closest?.('button')) return;
+        const panel = element.closest('.convo-panel'), box = element.getBoundingClientRect(), outer = panel?.getBoundingClientRect?.();
+        if (!outer) return;
+        previewDrag = { x: event.clientX, y: event.clientY, right: outer.right - box.right, bottom: outer.bottom - box.bottom, maxRight: outer.width - box.width, maxBottom: outer.height - box.height };
+        const move = moved => {
+            if (!previewDrag) return;
+            const right = Math.max(0, Math.min(previewDrag.maxRight, previewDrag.right - (moved.clientX - previewDrag.x)));
+            const bottom = Math.max(0, Math.min(previewDrag.maxBottom, previewDrag.bottom - (moved.clientY - previewDrag.y)));
+            this.previewPlace = { right: Math.round(right), bottom: Math.round(bottom) };
+        };
+        const drop = () => {
+            globalThis.removeEventListener?.('pointermove', move); globalThis.removeEventListener?.('pointerup', drop); globalThis.removeEventListener?.('pointercancel', drop);
+            previewDrag = null;
+            try { globalThis.localStorage?.setItem(PREVIEW_KEY, JSON.stringify(this.previewPlace)); } catch { /* kept for this page only */ }
+        };
+        globalThis.addEventListener?.('pointermove', move); globalThis.addEventListener?.('pointerup', drop); globalThis.addEventListener?.('pointercancel', drop);
+        event.preventDefault?.();
+    },
     get enabled() { return !!this.settings?.enabled; },
     get active() { return !!this.session; },
     async refresh() {
