@@ -346,8 +346,8 @@ test('A check that cannot run says why and is never sent; a check that runs repo
     assert.match(f.store.speechStatus().message, /no documented OpenAI-style speech route/);
     assert.equal(f.store.speechStatus().label, 'Not verified');
     f.store.setSpeechProvider('openai_tts');
-    assert.match(f.store.speechBlocked(), /consent/);
-    f.store.config.roles.tts.remote = true;
+    assert.deepEqual([f.store.speechBlocked(), f.store.config.roles.tts.remote], ['', true]);        // a cloud provider is its own consent: no switch
+    assert.match(f.store.speechRemoteLabel(), /Choosing this provider is your consent\.$/);
     assert.equal(f.store.speechBlocked(), '');
     f.store.setSpeechProvider('audiocpp');
     answer = { ok: true, models: [{ id: 'qwen3-tts-1.7b-base-bf16', label: 'qwen3-tts-1.7b-base-bf16' }], voices: [{ id: 'clone:2098c329bc9d', label: 'J.A.R.V.I.S' }], tuning: [],
@@ -421,7 +421,9 @@ test('Delivery instructions carry the agreed label and the declaration is its ow
     assert.match(html, /Sent with each phrase to the speech engine only; it doesn't change the words \(that's Answer length and Personality\)\./);
     assert.match(html, /x-model="\$store\.convoSetup\.config\.roles\.tts\.instructions"/);
     assert.match(html, /:checked="\$store\.convoSetup\.config\.roles\.tts\.accepts_instructions === true" @change="\$store\.convoSetup\.speechSetDeclared\(\$event\.target\.checked\)"/);
-    assert.match(html, /Accepts delivery instructions \(declared\)/);
+    assert.match(html, /Server takes delivery instructions/);
+    assert.ok(html.indexOf('data-convo-field="speech-declare"') > html.indexOf('advanced-body') && html.indexOf('data-convo-field="speech-pcm"') > html.indexOf('advanced-body'));
+    assert.doesNotMatch(html, /Allow remote processing/);
     assert.doesNotMatch(html, /capabilities\.instruction_control"/);                                  // set by normalization, never by hand
 });
 

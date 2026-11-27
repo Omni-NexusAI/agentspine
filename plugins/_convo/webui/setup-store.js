@@ -147,6 +147,9 @@ export const store = createStore('convoSetup', compose({
         if (this.busy || !this.config) return false;
         this.busy = true; this.error = '';
         if (patching) await patching;                       // a patch in flight lands first, so this save carries the revision it made
+        // The address is the consent (no switch): each role's stored flag follows its address before the settings are sent.
+        this.conversationRemoteSync?.(); this.speechRemoteSync?.();
+        if (!this.classifierUsesSystemOne?.()) this.classifierRemoteSync?.();
         const submitted = clone(this.config), keys = clone(this.keys);
         let finished; saving = new Promise(resolve => { finished = resolve; });
         try {

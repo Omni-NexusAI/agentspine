@@ -636,27 +636,31 @@ test('Closing the editor saves a change still inside its 350 ms at once, and onl
     await f.store.conversationFlush();
     await f.clock.advance(1000);
     assert.equal(f.sent('setup_patch').length, 1);
-    f.store.conversationSetProvider('google', true);                              // held: no remote consent yet
+    f.store.conversationSetProvider('google', true);                              // an outside provider carries its own consent: no switch, saved with it
     await f.store.conversationEditorClosed();
-    assert.equal(f.sent('setup_patch').length, 1);
-    assert.deepEqual([f.role().provider, f.store.dirty, plain(f.store.ui.conversation.edited), f.store.conversationStatusText()], ['google', true, {}, 'Changes save automatically.']);
-    f.role().remote = true;                                                       // consented later in Convo's own modal ...
+    assert.equal(f.sent('setup_patch').length, 2);
+    const sent = f.sent('setup_patch').at(-1).changes;
+    assert.deepEqual([sent.some(change => change.path === 'roles.conversation.provider' && change.value === 'google'), sent.some(change => change.path === 'roles.conversation.remote' && change.value === true)], [true, true]);
+    f.store.conversationSetProvider('other', true);
+    f.role().api_base = 'http:/'; f.store.conversationEdited('roles.conversation.api_base', true);   // held: not an address
+    await f.store.conversationEditorClosed();
+    assert.equal(f.sent('setup_patch').filter(call => call.changes.some(change => change.path === 'roles.conversation.api_base' && change.value === 'http:/')).length, 0);
+    assert.deepEqual([f.role().api_base, f.store.dirty, plain(f.store.ui.conversation.edited), f.store.conversationStatusText()], ['http:/', true, {}, 'Changes save automatically.']);
+    const before = f.sent('setup_patch').length;
+    f.role().api_base = 'http://host.docker.internal:8080/v1';                    // corrected later in Convo's own modal ...
     await f.store.conversationFlush();
-    assert.equal(f.sent('setup_patch').length, 1);                                // ... is saved by that modal's Save, not by an old mark
+    assert.equal(f.sent('setup_patch').length, before);                           // ... is saved by that modal's Save, not by an old mark
 });
 
-test('A value the server would refuse waits with its reason: remote consent, a complete address, a usable context window', async () => {
+test('An outside provider is saved with its consent; a value the server would refuse waits with its reason: a complete address, a usable context window', async () => {
     const f = await rig();
     assert.equal(f.store.conversationSetProvider('openai', true), 'openai');
     await f.clock.advance(1000);
-    assert.equal(f.sent('setup_patch').length, 0);
-    assert.match(f.store.conversationStatusText(), /api\.openai\.com needs remote-processing consent/);
+    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path).sort(), ['roles.conversation.provider', 'roles.conversation.remote']);
+    assert.equal(f.server.config.roles.conversation.remote, true);               // the address was the consent: no switch, nothing held
     f.role().model = 'gpt-4o-audio-preview'; f.store.conversationEdited('roles.conversation.model', true);
     await f.clock.advance(AUTOSAVE_MS);
-    assert.deepEqual(f.sent('setup_patch').map(call => call.changes.map(change => change.path)), [['roles.conversation.model']]);   // the rest still goes
-    f.role().remote = true; f.store.conversationEdited('roles.conversation.remote', true);
-    await f.clock.advance(AUTOSAVE_MS);
-    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path).sort(), ['roles.conversation.provider', 'roles.conversation.remote']);
+    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path), ['roles.conversation.model']);
     assert.deepEqual([f.server.config.roles.conversation.url, f.role().url, f.store.conversationStatusText()], ['https://api.openai.com/v1', 'https://api.openai.com/v1', 'Saved']);
     f.store.conversationSetProvider('other', true);
     f.role().api_base = 'http:/'; f.store.conversationEdited('roles.conversation.api_base', true);
@@ -701,7 +705,7 @@ test('A server you run yourself (llama.cpp) shows its address as a main field, w
     f.role().api_base = 'http://100.101.102.103:8081/v1'; f.store.conversationEdited('roles.conversation.api_base', true);
     await f.clock.advance(AUTOSAVE_MS);
     assert.equal(f.sent('setup_patch').at(-1).changes.find(change => change.path === 'roles.conversation.api_base').value, 'http://100.101.102.103:8081/v1');
-    assert.equal(f.store.conversationRemoteShown(), false);                          // no consent box for your tailnet
+    assert.deepEqual([f.store.conversationRemoteNeeded(), f.store.conversationRemoteNote()], [false, '']);   // nothing to say for your tailnet
     f.store.conversationSetProvider('openrouter', true);
     assert.equal(f.store.conversationLocalServer(), false);                         // a cloud provider keeps its override in Advanced
 });
@@ -877,7 +881,9 @@ test('The card renders on its own, uses Agent Zero\'s field classes and binds ev
         assert.match(html, new RegExp(`class="[^"]*\\b${name}\\b`), name);
     assert.match(html, /Convo sends your speech as audio — choose a model that accepts audio input \(omni \/ multimodal audio model\)\./);
     const bound = [...html.matchAll(/\s(?:x-model(?:\.[\w.]+)?|:value|:checked|@change|@input)="([^"]*)"/g)].map(match => match[1]);
-    for (const path of Object.keys(CARD_PATHS)) assert.ok(bound.some(expression => new RegExp(`config\\.${path.replace(/\./g, '\\.')}(?!\\w)`).test(expression)), path);
+    assert.ok(html.includes('data-convo-field="remote-note" x-effect="$store.convoSetup.conversationRemoteSync(autosave)"'));   // the consent follows the address: a line, no switch
+    assert.doesNotMatch(html, /Allow remote processing/);
+    for (const path of Object.keys(CARD_PATHS).filter(path => path !== 'roles.conversation.remote')) assert.ok(bound.some(expression => new RegExp(`config\\.${path.replace(/\./g, '\\.')}(?!\\w)`).test(expression)), path);
     for (const capability of ['audio_input', 'cancellation', 'tool_calls'])
         assert.match(html, new RegExp(`<input type="checkbox" data-convo-field="[\\w-]+" [^>]*x-model="\\$store\\.convoSetup\\.config\\.roles\\.conversation\\.capabilities\\.${capability}" @change="\\$store\\.convoSetup\\.conversationEdited\\('roles\\.conversation\\.capabilities\\.${capability}', autosave\\)">`), capability);
     assert.equal((html.match(/x-model\.number="\$store\.convoSetup\.config\.compaction\.context_tokens"/g) || []).length, 1);
@@ -919,7 +925,9 @@ test('The conversation card checks by itself, so its tests sit in Advanced; the 
         assert.ok(card.includes(`<div class="field" x-id="['${name}']" x-show="$store.convoSetup.config.developer_mode === true">`), name);
     {
         const markup = await readWebui('classifier-model-field.html'), advanced = markup.indexOf('advanced-body');
-        assert.ok(markup.indexOf('data-convo-field="classifier-check"') > 0 && markup.indexOf('data-convo-field="classifier-check"') < advanced);
+        assert.ok(markup.indexOf('data-convo-field="classifier-check"') > advanced && advanced > 0);                 // Check server is in Advanced Settings
+        const speech = await readWebui('speech-output-field.html'), speechAdvanced = speech.indexOf('advanced-body');
+        assert.ok(speech.indexOf('>Test connection</button>') > speechAdvanced && speech.indexOf('Find models &amp; voices</button>') > speechAdvanced && speechAdvanced > 0);
     }
     for (const [file, prefix] of [['conversation-model-field.html', ''], ['classifier-model-field.html', 'classifier-'], ['speech-output-field.html', 'speech-']])
         for (const part of ['this-computer', 'key-move', 'connection-suggestion', 'certificate-note', 'certificate-forget', 'certificate-accept'])

@@ -34,7 +34,7 @@ export const UNKNOWN_COMPATIBLE = { short: 'audio not verified',
 // Every setting this card edits, with the name a conflict is shown under.
 export const CARD_PATHS = {
     'roles.conversation.provider': 'Provider', 'roles.conversation.model': 'Model name', 'roles.conversation.api_base': 'API base URL',
-    'roles.conversation.url': 'Server URL', 'roles.conversation.key_source': 'Key source', 'roles.conversation.remote': 'Allow remote processing',
+    'roles.conversation.url': 'Server URL', 'roles.conversation.key_source': 'Key source', 'roles.conversation.remote': 'Consent for an address outside your network',
     'roles.conversation.token_env': 'Credential environment reference', 'roles.conversation.capabilities.audio_input': 'Accepts audio input',
     'roles.conversation.capabilities.cancellation': 'Supports cancellation', 'roles.conversation.capabilities.tool_calls': 'Supports tool calls',
     'compaction.context_tokens': 'Context window',

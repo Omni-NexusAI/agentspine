@@ -23,6 +23,8 @@ PENDING = re.compile(r'<!--\s*convo-settings-pending:\s*(.*?)\s*\|\s*(.*?)\s*-->
 
 # Stored on purpose but not edited in the interface, each with its reason.
 EXCLUDED = {
+    'roles.conversation.remote': 'The address is the consent: the page sets this flag from the address (conversationRemoteSync / speechRemoteSync) and says so in one line; there is no switch.',
+    'roles.tts.remote': 'The address is the consent: the page sets this flag from the address (conversationRemoteSync / speechRemoteSync) and says so in one line; there is no switch.',
     'compaction.trigger': 'Compaction thresholds are tuned together; the context window and response reserve are exposed instead.',
     'compaction.target': 'Compaction thresholds are tuned together; the context window and response reserve are exposed instead.',
     'compaction.recent_exchanges': 'A safety floor for what compaction never touches, not a preference.',

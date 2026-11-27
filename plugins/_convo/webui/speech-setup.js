@@ -76,7 +76,7 @@ export const speechSetup = {
         try {
             const tts = this.config.roles.tts;
             const next = id === 'audiocpp' && !connection && legacyAudiocppOffer(tts) ? adoptProvider(tts, 'audiocpp', 'external') : switchProvider(tts, id, connection);
-            if (next !== tts) { this.config.roles.tts = next; this.speechReset(); }
+            if (next !== tts) { this.config.roles.tts = next; this.speechReset(); this.speechRemoteSync(); }
         } catch (error) { this.fail(error); }
         return this.speechProvider();
     },
@@ -84,7 +84,7 @@ export const speechSetup = {
         try {
             const tts = this.config.roles.tts, [provider] = effectiveProvider(tts);
             const next = SPEECH_PROVIDERS[provider].connections.includes(connection) ? switchProvider(tts, provider, connection) : tts;
-            if (next !== tts) { this.config.roles.tts = next; this.speechReset(); }
+            if (next !== tts) { this.config.roles.tts = next; this.speechReset(); this.speechRemoteSync(); }
         } catch (error) { this.fail(error); }
         return this.speechConnection();
     },
@@ -94,11 +94,11 @@ export const speechSetup = {
     speechAcceptOffer() { this.speechAdopt('audiocpp', 'external'); },
     speechDeclineOffer() { this.speechAdopt('openai_compatible', ''); },
     speechAdopt(provider, connection) {
-        try { this.config.roles.tts = adoptProvider(this.config.roles.tts, provider, connection); } catch (error) { this.fail(error); }
+        try { this.config.roles.tts = adoptProvider(this.config.roles.tts, provider, connection); this.speechRemoteSync(); } catch (error) { this.fail(error); }
     },
     // Set fields and derive the rest as the server will (backend, instruction_control, waiting delivery instructions).
     speechUpdate(changes) {
-        try { this.config.roles.tts = normalizeTts({ ...this.config.roles.tts, ...changes }); } catch (error) { this.fail(error); }
+        try { this.config.roles.tts = normalizeTts({ ...this.config.roles.tts, ...changes }); this.speechRemoteSync(); } catch (error) { this.fail(error); }
     },
     // A Test answer's one-click address (the port Docker publishes, or this computer's own address), then the test again.
     speechUseAddress(url) { if (typeof url !== 'string') return null; this.speechUpdate({ url }); return this.discover('tts', true); },
@@ -108,7 +108,21 @@ export const speechSetup = {
     // ---- which controls show (the markup asks show('tts', name)); hidden values are kept, never cleared
     speechRemoteNeeded() {
         const tts = this.config?.roles?.tts || {};
-        return this.speechSpec().group === 'cloud' || tts.remote === true || (!!tts.url && !isLocalUrl(tts.url));
+        return this.speechSpec().group === 'cloud' || (!!tts.url && !isLocalUrl(tts.url));
+    },
+    // The address (or a cloud provider) is the consent: the stored flag follows it. Raised whenever needed; lowered only when the
+    // provider or the address was changed here, so opening the settings never makes an edit by itself.
+    speechRemoteSync() {
+        const tts = this.config?.roles?.tts, verify = tts ? this.speechVerify() : 'native';
+        if (!tts || verify === 'native' || verify === 'managed') return false;
+        const needed = this.speechRemoteNeeded();
+        if (needed === (tts.remote === true)) return false;
+        if (!needed) {
+            const saved = this.baseline ? (JSON.parse(this.baseline).roles?.tts || {}) : {};
+            if (tts.url === saved.url && tts.provider === saved.provider && tts.backend === saved.backend) return false;
+        }
+        tts.remote = needed;
+        return true;
     },
     speechControls() {
         const tts = this.config?.roles?.tts || {}, [provider, connection] = effectiveProvider(tts);
@@ -133,8 +147,10 @@ export const speechSetup = {
         return this.speechSpec().group === 'cloud' ? text : text + ' ' + NETWORK_HINT;
     },
     speechRemoteLabel() {
-        const spec = this.speechSpec();
-        return spec.group === 'cloud' ? `Send Convo’s replies to ${spec.label} to be spoken (remote provider consent)` : 'Remote provider — explicitly permitted';
+        const spec = this.speechSpec(), tts = this.config?.roles?.tts || {};
+        let host = ''; try { host = new URL(tts.url).hostname; } catch { host = ''; }
+        return spec.group === 'cloud' ? `Convo’s replies are sent to ${spec.label} to be spoken. Choosing this provider is your consent.`
+            : `${host || 'This address'} is outside this computer and your network: Convo’s replies are sent there to be spoken. Entering this address is your consent.`;
     },
     // Agent Zero's key for the provider (shared with its models), or Convo's own write-only key bound to this address.
     speechUsesConvoKey() { return !this.speechSpec().host_key || this.config?.roles?.tts?.key_source === 'convo'; },
@@ -233,8 +249,6 @@ export const speechSetup = {
         if (verify === 'managed') return '';
         if (!String(tts.url || '').trim())
             return provider === 'unsloth_studio' ? 'Enter your Unsloth Studio server’s URL first: it has no documented default address.' : 'Enter the server URL first.';
-        if (this.speechRemoteNeeded() && tts.remote !== true)
-            return spec.group === 'cloud' ? `Allow sending Convo’s replies to ${spec.label} first (remote provider consent).` : 'This address is not on this machine or its network: allow the remote provider first (consent).';
         return '';
     },
     speechStatus() {
