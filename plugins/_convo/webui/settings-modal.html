@@ -3,7 +3,7 @@ import { store as convo } from '/plugins/_convo/webui/convo-store.js';
 import { store as setup } from '/plugins/_convo/webui/setup-store.js';
 </script></head><body>
 <div x-data="{release: null}" class="convo-modal" x-init="$store.convoSetup.load(); $store.convo.refresh(); release = $store.convo.trapFocus($el); $nextTick(() => $el.querySelector('[data-initial-focus]')?.focus())" x-destroy="release && release(); $store.convoSetup.keys = {}">
-  <p class="convo-hint convo-lead" tabindex="-1" data-initial-focus>These are the same settings as Plugins → Convo → Config. Model changes apply to the next conversation; voice changes apply to the next response. Native Kokoro blending and dictation devices stay in Agent Zero’s speech settings.</p>
+  <p class="convo-hint convo-lead" tabindex="-1" data-initial-focus>Model changes apply to the next conversation; voice changes apply to the next reply.</p>
   <details class="convo-status" x-show="$store.convoSetup?.config"><summary>Connection status <small x-text="'Gateway: ' + ($store.convo.runtime?.label || ($store.convo.runtime?.mode === 'external' ? 'external, not managed by Convo' : $store.convo.runtime?.state) || 'checking')"></small></summary>
     <template x-for="item in ($store.convoSetup?.readiness || [])" :key="item.id"><div class="convo-status-row"><strong x-text="item.label"></strong><span x-text="item.state"></span><p class="convo-hint" x-text="item.detail"></p></div></template>
     <p class="convo-hint">A running gateway does not mean a model connection has been verified.</p>

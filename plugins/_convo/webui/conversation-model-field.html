@@ -191,7 +191,9 @@
 .convo-model-card .convo-model-conflict code{overflow-wrap:anywhere}
 .convo-model-card .convo-model-row,.convo-model-card .convo-model-probe,.convo-model-card .convo-model-alert{display:flex;flex-wrap:wrap;gap:.3rem;align-items:baseline;overflow-wrap:anywhere}
 .convo-model-card .convo-model-why{font-size:.82rem;margin:.1rem 0 .4rem}.convo-model-card .convo-model-why summary{cursor:pointer}.convo-model-card .convo-model-why ul{margin:.4rem 0;padding-left:1.1rem;line-height:1.5}
-@container convo-model (max-width:560px){.convo-model-card .field{display:block}.convo-model-card .field-label{padding-right:0}.convo-model-card .field-control{margin-top:.35rem}}
+@container convo-model (max-width:560px){.convo-model-card .field{display:block}
+.convo-model-card .field:has(> .field-control > label.toggle){display:grid;grid-template-columns:60% 1fr;align-items:center}
+.convo-model-card .field:has(> .field-control > label.toggle) > .field-control{margin-top:0}.convo-model-card .field-label{padding-right:0}.convo-model-card .field-control{margin-top:.35rem}}
 @media (prefers-reduced-motion:reduce){.convo-model-card .advanced-toggle-icon{transition:none}}
 /* As its own model type in the preset editor the section is the frame and the title: no second border or legend. */
 .convo-model-type .convo-model-card{border:0;padding:0;margin:0;background:none;min-width:0}

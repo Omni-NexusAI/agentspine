@@ -63,9 +63,11 @@ try {
     await page.key('Escape'); await sleep(300);
     const recorded = await page.eval(`(() => { const s = Alpine.store('convoSetup'); return { recording: s.ui.hotkeys.recording || '', dirty: s.dirty, open: !!document.querySelector('.convo-tabs'), mute: document.querySelector('[data-hotkey=mute]')?.textContent.trim() }; })()`);
     check('the Hotkeys card lists every action and records one combination at a time', hotkeys.rows === 10 && hotkeys.pressed === 'true' && /Press the keys/.test(hotkeys.reading || '') && !recorded.recording && !recorded.dirty && recorded.open, JSON.stringify({ hotkeys, recorded }));
-    // The tunables (speech gate included) moved to the developer diagnostics panel; Settings keeps a Developer row for the two modes.
-    const developer = await page.eval(`(() => { const r = document.querySelector('.convo-settings .convo-developer'); const t = r?.innerText || ''; return { shown: !!r && r.offsetParent !== null, diagnostics: /Developer diagnostics/.test(t), aiLink: /AI Link development mode/.test(t) }; })()`);
-    check('the Developer row offers Developer diagnostics and AI Link development mode', developer.shown && developer.diagnostics && developer.aiLink, JSON.stringify(developer));
+    // The tunables (speech gate included) are in the developer diagnostics panel; the Advanced tab holds the two modes as switches.
+    await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Advanced').click()`);
+    await sleep(500);
+    const developer = await page.eval(`(() => { const r = [...document.querySelectorAll('.convo-settings > .convo-stack')].find(s => s.offsetParent !== null); const t = r?.innerText || ''; return { shown: !!r, diagnostics: /Developer mode/.test(t), aiLink: /AI Link development mode/.test(t), switches: r ? r.querySelectorAll('label.toggle input[type=checkbox]').length : 0, old: !!document.querySelector('.convo-settings .convo-developer') }; })()`);
+    check('the Advanced tab offers Developer mode and AI Link development mode as switches', developer.shown && developer.diagnostics && developer.aiLink && developer.switches >= 4 && !developer.old, JSON.stringify(developer));
     const gate = await page.eval(`(() => { const row = (Alpine.store('convoSetup').readiness || []).find(i => i.id === 'speech_gate'); return { row: row ? { state: row.state, detail: row.detail.slice(0, 70) } : null }; })()`);
     check('readiness says whether the gate is calibrated or unsupported for the selected classifier', !!gate.row && ['ready', 'unsupported', 'unavailable'].includes(gate.row.state), JSON.stringify(gate.row));
     check('opening and browsing every section raised no console warning or error', page.problems().length === 0, page.problems().slice(0, 2).map(p => p.text.slice(0, 160)).join(' | '));

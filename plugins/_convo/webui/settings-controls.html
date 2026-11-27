@@ -2,7 +2,6 @@
 <div x-data><template x-if="$store.convoSetup?.config"><section class="convo-settings" @input="$store.convoSetup.message = ''">
   <nav class="convo-tabs" aria-label="Convo settings sections"><template x-for="section in $store.convoSetup.sections" :key="section"><button type="button" class="button" :aria-pressed="$store.convoSetup.section === section" @click="$store.convoSetup.section = section" x-text="section"></button></template></nav>
   <x-component path="/plugins/_convo/webui/settings-banner.html"></x-component>
-  <p class="convo-hint">One set of settings for the sidebar and Voice Studio. No models are downloaded or loaded by discovering options.</p>
   <div x-show="$store.convoSetup.section === 'Connections'" class="convo-stack">
     <x-component path="/plugins/_convo/webui/conversation-model-field.html"></x-component>
     <x-component path="/plugins/_convo/webui/classifier-model-field.html"></x-component>
@@ -63,5 +62,5 @@
 /* Cards are x-components: the wrapper takes no box, so each card lays out exactly as if it were written here. */
 .convo-settings x-component{display:contents}
 .convo-voice-tools small{margin-top:.15rem;font-size:.82rem;line-height:1.4;opacity:.8}.convo-search-health{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .75rem;margin:-.3rem 0 0 1.6rem}.convo-search-health .convo-hint{flex:1 1 12rem;margin:0}
-.convo-settings .convo-switch{align-items:center;margin:0}.convo-settings .convo-switch .field-control{display:flex;justify-content:flex-end}.convo-settings .convo-switch label.toggle{display:inline-block;flex:none}.convo-settings .convo-switch input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}.convo-advanced-open{display:flex;justify-content:flex-end}
+.convo-settings .convo-switch{align-items:center;margin:0}.convo-settings .convo-switch .field-control{display:flex;justify-content:flex-start}.convo-settings .convo-switch label.toggle{display:inline-block;flex:none}.convo-settings .convo-switch input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}.convo-advanced-open{display:flex;justify-content:flex-end}
 </style></body></html>
