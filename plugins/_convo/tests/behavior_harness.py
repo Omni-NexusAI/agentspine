@@ -304,6 +304,18 @@ class ScriptedSidecar:
             yield {'type': 'text.delta', 'text': word}
             yield {'type': 'answer.done'}
             return
+        if str(payload.get('system') or '') == __import__('plugins._convo.helpers.convo_voice_tools', fromlist=['STILL']).STILL:
+            # Whether an owed answer is still wanted: kept apart (h.still_read), answered with the scripted word (`h.still`).
+            self.h.still_read.append(copy.deepcopy(payload))
+            yield {'type': 'text.delta', 'text': self.h.still}
+            yield {'type': 'answer.done'}
+            return
+        if 'The look-up for an earlier request has finished' in str(payload.get('transcript') or ''):
+            # The owed answer itself: kept apart (h.owed_answers), answered with `h.owed_text`.
+            self.h.owed_answers.append(copy.deepcopy(payload))
+            yield {'type': 'text.delta', 'text': self.h.owed_text}
+            yield {'type': 'answer.done'}
+            return
         if is_belongs(payload):
             self.calls.append('belongs')
             self.h.weighed.append(copy.deepcopy(payload))
@@ -433,6 +445,8 @@ class Harness:
         self.said, self.said_read = 'NO', []          # what a reply without a tool call left open (is_said): a word, or a list of them
         self.kept = None                              # the model's pass that keeps a promise: {'deltas': [...], 'proposals': [...]}
         self.resumed = None                           # the model's pass that carries a cut-off reply on: [(text, delay), ...]
+        self.still, self.still_read = 'YES', []       # whether an owed answer is still wanted (convo_voice_tools.still_wanted)
+        self.owed_answers, self.owed_text = [], 'About your earlier question: it is sunny.'   # the owed answer's request and text
         self.timeline, self.dispatches, self.answers, self.spoken, self.arrivals = [], [], [], [], []
         self.truth = dict(truth or {}); self.dummy = None
         self.host = RecordingHost()

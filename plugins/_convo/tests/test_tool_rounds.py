@@ -870,6 +870,68 @@ class ChatsFollowYou(Loop):
         self.assertNotIn('The user has another chat open now:', system)
 
 
+class OwedAnswers(Loop):
+    """Two things at once: the user speaks on while a look-up is still running. The look-up carries on and its answer is owed; what
+    they said next is answered at once; the owed answer comes in the next quiet moment, unless they withdrew that request."""
+    def overlap(self, still='YES', lookup_seconds=10):
+        async def scenario(h):
+            h.still = still
+            original = h.host.direct
+
+            async def slow(target, name, args):
+                await asyncio.sleep(lookup_seconds)
+                return await original(target, name, args)
+            h.host.direct = slow
+            await h.candidate('t', h.audio('ask'), final=True)          # "look that up": a search starts
+            await h.advance(2)
+            searching = len(h.host.directs) if hasattr(h.host, 'directs') else 0
+            h.proposals = [None]                                        # what they say next needs no tool
+            await h.candidate('u', h.audio('next'), final=True)         # they speak on while it is still searching
+            await h.advance(3)
+            owed_during = [dict(item, at=0) for item in h.state.get('owed', [])]
+            second = [answer for answer in h.answers if answer.get('audio') is not None][-1]
+            await h.advance(40)
+            await h.settle()
+            return types.SimpleNamespace(owed_during=owed_during, second_system=second['system'], directs=h.host.directs, owed_answers=h.owed_answers,
+                                         still_read=h.still_read, spoken=[str(item) for item in self.spoken(h)], left=h.state.get('owed'),
+                                         marks=self.marks('t', prefix='owed.'), answers=len(h.answers))
+        return self.play(scenario, proposals=[WEB_SEARCH], classifier={'ask': script(SPEAK, .2), 'next': script(SPEAK, .2)})
+
+    def test_the_look_up_carries_on_both_are_answered_and_nothing_is_looked_up_twice(self):
+        r = self.overlap()
+        self.assertEqual([item['turn'] for item in r.owed_during], ['t'])                  # owed while they were being answered
+        self.assertIn('Still being looked up from before', r.second_system)                # the new request is told so...
+        self.assertIn('Do not look that up again', r.second_system)
+        self.assertEqual([name for _, name, _ in r.directs], ['web_search'])               # ...and nothing is looked up twice
+        self.assertEqual(len(r.owed_answers), 1)                                           # the owed answer is given, once
+        system = r.owed_answers[0]['system']
+        self.assertIn('Look-up results:', system)
+        self.assertIn('opening with a few words that say which earlier request this is about', system)
+        self.assertTrue(any('About your earlier question' in text for text in r.spoken))
+        self.assertEqual(r.left, [])
+        self.assertIn(('owed.kept', None, None), r.marks)
+
+    def test_a_request_the_user_withdrew_meanwhile_stays_unsaid(self):
+        r = self.overlap(still='NO')
+        self.assertEqual((len(r.still_read), len(r.owed_answers)), (1, 0))
+        self.assertFalse(any('About your earlier question' in text for text in r.spoken))
+        self.assertIn(('owed.withdrawn', None, None), r.marks)
+        self.assertIn('Earlier request:', r.still_read[0]['transcript'])
+        self.assertEqual((r.still_read[0]['history'], r.still_read[0]['allow_tools']), ([], False))
+
+    def test_at_most_two_are_owed_and_one_switch_restores_the_earlier_behaviour(self):
+        async def scenario(h):
+            for turn in ('a', 'b', 'c'):
+                h.handler._owe(h.state, turn, ['web_search'])
+            kept = [item['turn'] for item in h.state['owed']]
+            with patch.object(h.module, 'OWED_ANSWERS', False):
+                h.state['owed'] = []
+                h.handler._owe(h.state, 'd', ['web_search'])
+                off = list(h.state['owed'])
+            return kept, off, h.module.OWED_LIMIT
+        self.assertEqual(self.play(scenario), (['b', 'c'], [], 2))
+
+
 class ParallelWork(Loop):
     """Separate work for the chat's agent starts at once in a chat of its own instead of waiting behind what is running; work that
     builds on it waits in line, as before. The relation is the model's reading; this tests what Convo does with it."""

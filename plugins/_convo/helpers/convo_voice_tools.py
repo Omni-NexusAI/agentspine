@@ -266,6 +266,24 @@ SAID = ("You are given what a voice assistant has just said to its user. Decide 
         "nothing else: YES if it says that it is now going to do, check, look up, open, start or find out something, or asks the "
         "user to wait while it does; OTHER if it offers to do something and leaves it to the user to accept; NO if it does "
         "neither (it answers, explains, asks a question about something else, or says it cannot).")
+# An answer that is owed (the user spoke on while a look-up was running): before it is given, is the earlier request still wanted?
+# Read from the user's later words alone, with the earlier request beside them. Meaning, never particular words.
+STILL = ("A person asked their voice assistant for something; the assistant was still looking it up when the person went on "
+         "talking. You are given the earlier request and what the person said after it. Decide whether the earlier request "
+         "should still be answered. Reply with exactly one word and nothing else: NO if the person since withdrew it, corrected "
+         "or replaced it with another request, or it no longer makes sense after what they said; YES if it still stands; OTHER "
+         "if it is unclear.")
+
+
+async def still_wanted(rt, state, earlier, later):
+    """Whether an owed answer is still wanted: False only when the reading says no (withdrawn, corrected, replaced)."""
+    later = ' '.join(str(later or '').split())
+    if not later:
+        return True
+    text = 'Earlier request: ' + json.dumps(' '.join(str(earlier or '').split())[:400], ensure_ascii=False) + '\nSaid after it: ' + json.dumps(later[-600:], ensure_ascii=False)
+    return await reading(rt, state, None, text, STILL, seconds=SAID_SECONDS) != 'no'
+
+
 SAID_SECONDS = 4.0
 SAID_CHARS = 600
 
