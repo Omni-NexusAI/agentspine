@@ -355,6 +355,95 @@ class Promises(Loop):
                                    classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)}), 1)
 
 
+class Results(Loop):
+    """A handed-over task's result is announced by the server (2026-11-25: the page decided, after four quiet seconds, and the
+    announcement was written without the conversation in view): at once when the user is idle, after their turn when they are
+    talking, and as a short interjection that hands the floor back when they have kept talking for long."""
+    ENDED = 'A task the user handed over earlier has ended'
+
+    @staticmethod
+    def finish(h):
+        job = h.jobs()[0]['id']
+        for expected, status in (('queued', 'dispatching'), ('dispatching', 'running'), ('running', 'completed')):
+            h.store.transition(job, expected, status, 'The report is in the documents folder.' if status == 'completed' else '')
+        h.proposals = [None]                       # from here on the scripted model only speaks
+        return job
+
+    def notices(self, h):
+        return [answer for answer in h.answers if self.ENDED in str(answer.get('system'))]
+
+    def play_task(self, scenario):
+        return self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2), 'next': script(SPEAK_PLAIN, .2)}, default=SPEAK_PLAIN)
+
+    def test_idle_the_result_is_announced_by_itself_with_the_conversation_in_view(self):
+        async def scenario(h):
+            await self.ask(h)
+            self.finish(h)
+            await h.advance(25)
+            await h.settle()
+            return self.notices(h), [m for m in self.marks(prefix='notice.')]
+        notices, _ = self.play_task(scenario)
+        self.assertEqual(len(notices), 1)                                          # once, without the page asking
+        system = notices[0]['system']
+        self.assertIn('The conversation so far, for reference only', system)
+        self.assertIn('User: "a request"', system)
+        self.assertNotIn('hand the floor back', system)
+        self.assertEqual((notices[0]['history'], notices[0]['allow_tools']), ([], False))
+
+    def test_while_the_user_is_speaking_it_waits_and_comes_after_their_turn(self):
+        async def scenario(h):
+            await self.ask(h)
+            self.finish(h)
+            await h.candidate('u', h.audio('next'), final=False)                   # they are in the middle of saying something
+            await h.advance(3)
+            during = len(self.notices(h))
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            await h.advance(25)
+            await h.settle()
+            return during, len(self.notices(h)), len(h.answers)
+        during, after, _ = self.play_task(scenario)
+        self.assertEqual((during, after), (0, 1))
+
+    def test_the_page_saying_speech_began_holds_it_back_before_any_audio_arrives(self):
+        async def scenario(h):
+            now = asyncio.get_running_loop().time()
+            quiet = h.handler._speaking(h.state)
+            h.state['speech_started'] = now
+            started = h.handler._speaking(h.state)
+            h.state['speech_started'] = now - h.module.SPEECH_START_HOLD - .1
+            return quiet, started, h.handler._speaking(h.state)
+        self.assertEqual(self.play(scenario), (False, True, False))
+
+    def test_after_a_long_wait_while_the_user_kept_talking_it_is_an_interjection_that_hands_the_floor_back(self):
+        async def scenario(h):
+            await self.ask(h)
+            job = self.finish(h)
+            now = asyncio.get_running_loop().time()
+            h.state['results_at'] = {job: now - h.module.RESULT_PATIENCE - 1}       # it arrived a while ago...
+            h.state['spoke_at'] = now - 1                                           # ...and they were speaking until a moment ago
+            announced = h.handler._announce_result('browser', h.state, now)
+            await h.settle()
+            again = h.handler._announce_result('browser', h.state, asyncio.get_running_loop().time())
+            return announced, again, self.notices(h)
+        announced, again, notices = self.play_task(scenario)
+        self.assertEqual((announced, again, len(notices)), (True, False, 1))        # announced once, never twice
+        self.assertIn('hand the floor back', notices[0]['system'])
+        self.assertIn('very short lead-in', notices[0]['system'])
+
+    def test_a_result_that_arrived_long_ago_while_nobody_spoke_is_a_plain_announcement(self):
+        async def scenario(h):
+            await self.ask(h)
+            job = self.finish(h)
+            now = asyncio.get_running_loop().time()
+            h.state['results_at'] = {job: now - 60}
+            h.state['spoke_at'] = now - 30
+            h.handler._announce_result('browser', h.state, now)
+            await h.settle()
+            return self.notices(h)
+        self.assertNotIn('hand the floor back', self.play_task(scenario)[0]['system'])
+
+
 class OwnVoiceResume(Loop):
     """Through a loud headset the microphone caught the assistant's own words and cut its reply off (2026-11-25, twice in a row).
     The echo is recognised by the server (Realtime._own_voice); the reply then carries on from what was heard."""

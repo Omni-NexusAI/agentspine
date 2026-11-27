@@ -392,6 +392,8 @@ function beginCandidate(attempt) {
     // A test clip armed in diagnostics takes this utterance instead: no candidate, no probe, no turn.
     if (store.clipArmed) { clipCapture = { label: store.clipArmed, attempt }; store.clipArmed = ''; store.clipNote = 'Recording the test clip…'; return; }
     setHearing(true); lastActivity = Date.now();
+    // Told at once, before any audio exists (no audio and no words go with it): a finished task's result never starts over the user.
+    void request('speaking', { ...identity() }).catch(() => {});
     candidateCapture = resumeAbandoned(attempt) || { turn_id: crypto.randomUUID(), sequence: 0, attempt, final: false };
     candidates.set(candidateCapture.turn_id, candidateCapture); orderOf(candidateCapture.turn_id);
     mark(candidateCapture.turn_id, 'onset', audio?.boundary?.onsetAt || clock());
