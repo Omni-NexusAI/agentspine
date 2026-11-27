@@ -278,8 +278,9 @@
   is not offered at all), a chapter swap (`recall_conversation`), a shared camera or screen with a model measured to accept images
   (`camera_context`, `screen_context`), whether the model hears audio (`listen_back`), and how it takes tools: a model that takes them
   in writing (`tool_mode` 'text') is offered the small set only (`small`: eight tools; few, flat tools, never one tool with many
-  actions). `tool_mode` (`convo_tools.tool_mode`): the measured record (`data/model_capabilities.json`, Test connection's probe)
-  decides, and the declared `tool_calls` checkbox is an override; native means `tools` + `tool_choice: "auto"`, otherwise they are
+  actions). `tool_mode` (`convo_tools.tool_mode`): the measured record (`data/model_capabilities.json`, the connection check's
+  probe) decides; the declared `tool_calls` setting counts only while nothing is measured, and in developer mode (`override`) it
+  turns native tools on whatever was measured; native means `tools` + `tool_choice: "auto"`, otherwise they are
   described in the system text with the written `<tool_call>{...}</tool_call>` format `parse_text_call` reads (also Gemma, Hermes,
   `<function=…>`, Mistral `[TOOL_CALLS]`, bare JSON; the same `validate`). A request never carries both. `search_engine` (Agent
   Zero's name) is `web_search`; `camera_snapshot` (the fork's) is `camera_context`. Tool markup is recognised before the control-word
@@ -414,15 +415,22 @@
   default not offered. When the model calls the tool, the server asks for one frame (`camera.request`), the browser answers
   `convo.camera_snapshot` (longest edge 768 px, JPEG 0.7, checked by `convo_tools.snapshot`), waited for at most `SNAPSHOT_WAIT`;
   the picture goes to the model in that reply's follow-up only and is never stored or journaled.
-- Tool and image probe (`convo_setup.probe_capabilities`, conversation card's Test connection only, and only when the model is
-  listed; refused while a voice session is live): two requests at temperature 0 (thinking off on a local server): one tiny tool
+- Capability probe (`convo_setup.probe_capabilities`: the conversation card's connection check, which runs by itself once an
+  address or a model name is committed and from Test connection, only when the model is listed; refused while a voice session is
+  live): three requests at temperature 0 (thinking off on a local server). The third carries a short synthetic clip:
+  `audio_input` true when the model answers it, false only when the server refuses it (400/415/422) after answering another
+  request of the same check, unmeasured otherwise (`audio_verdict`), so a key, a quota or an outage never changes the record.
+  The first two: one tiny tool
   (`get_time`) with `tool_choice: "required"` (a 400/422 is asked once more with "auto"), reported `native` (a structured call came back),
   `text` (a call written in the answer: `parse_text_call` reads it or it names the tool) or `ignored`; one 16 px red PNG built in code,
   `image_input` true only when the answer names its colour, false on a refusal (400/413/415/422/500/501) or a blind answer, unmeasured
   otherwise. The verdict is merged into this url+model's record in `data/model_capabilities.json` (`{"models":[{url, model, tool_mode,
   image_input, measured_at, ...}]}`, newest first, 50 kept; fields not measured keep their value), never into settings `capabilities`.
-  No model text is echoed. The card shows it under Test connection (`conversationMeasured`: the fresh answer, else the readiness row
-  `conversation_measured`). The session reads the record once (`Realtime._tool_offer`), and again when the camera is shared.
+  No model text is echoed. The card shows it under the connection's status line (`conversationMeasured`: the fresh answer, else
+  the readiness row `conversation_measured`). The page then writes what was measured into the two declarations an older Convo
+  reads (`capabilities.audio_input`, `capabilities.tool_calls`) as an ordinary edit, except in developer mode, where those
+  switches are the user's; the server never writes settings from a probe. The session reads the record once
+  (`Realtime._tool_offer`), and again when the camera is shared.
 - A request to do something is never answered with a control word (`convo_control.INSTRUCTION` says so: the model acts, with a
   tool when it needs one, and answers; live 2026-11-22 a model answered "set a timer" and "speak slower" with [SILENT] and an
   invented result after it).

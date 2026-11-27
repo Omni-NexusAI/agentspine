@@ -52,8 +52,8 @@ UNKNOWN = UNKNOWN_SPEC['reason']
 # A provider id Convo does not list (for example one another plugin adds, such as a local router): the browser offers it when
 # Agent Zero's details say it is OpenAI-compatible. It is used through its own API base and Agent Zero's key for that id.
 # Same words as webui/conversation-setup.js UNKNOWN_COMPATIBLE.
-UNKNOWN_COMPATIBLE = ('Agent Zero lists this provider as OpenAI-compatible; Convo has not verified that it accepts audio input. '
-                      'Test audio input checks it.')
+UNKNOWN_COMPATIBLE = ('Agent Zero lists this provider as OpenAI-compatible; Convo checks whether it accepts audio once a model '
+                      'is chosen.')
 PROVIDER_ID = re.compile(r'[a-z0-9_]{1,64}')
 
 

@@ -330,14 +330,17 @@ def summary(name, arguments, limit=300):
     return '; '.join(parts)[:limit]
 
 
-def tool_mode(capabilities, record=None):
+def tool_mode(capabilities, record=None, override=False):
     """'native' when the conversation model's server takes tools, else 'text': the same tools described in the system text with a
-    written call format Convo reads back (parse_text_call). A request never carries both. The measured record (`measured`,
-    Test connection's probe: `tool_mode` 'native' | 'text' | 'ignored') decides; the declared `tool_calls` checkbox is an override
-    that turns native tools on whatever was measured. Nothing measured and nothing declared: 'text'."""
-    if isinstance(capabilities, dict) and capabilities.get('tool_calls'):
-        return 'native'
-    return 'native' if isinstance(record, dict) and record.get('tool_mode') == 'native' else 'text'
+    written call format Convo reads back (parse_text_call). A request never carries both. The measured record (`measured`, the
+    connection check's probe: `tool_mode` 'native' | 'text' | 'ignored') decides. The declared `tool_calls` setting counts while
+    nothing is measured (the check writes it to match, so an older Convo reads the same), and with `override` (developer mode) it
+    turns native tools on whatever was measured. Nothing measured and nothing declared: 'text'."""
+    declared = isinstance(capabilities, dict) and bool(capabilities.get('tool_calls'))
+    measured = record.get('tool_mode') if isinstance(record, dict) else None
+    if measured in ('native', 'text', 'ignored') and not (override and declared):
+        return 'native' if measured == 'native' else 'text'
+    return 'native' if declared else 'text'
 
 
 # The standalone fork's tool-use hint (TOOL_USE_HINT), added to the rules whenever tools are offered.
@@ -488,7 +491,7 @@ SAFE_REASONS = {
 
 
 # ── Measured model capabilities (the image check) ───────────────────────────────────────────────────────────────────────────
-# Whether the conversation model accepts images is measured (Test connection's probe, change 1), never assumed, and kept as a
+# Whether the conversation model accepts images is measured (the connection check's probe), never assumed, and kept as a
 # record in Convo's data folder, not in the settings' `capabilities` (an older Convo rejects unknown capability keys, which would
 # break a rollback). Until a record says so, the camera tool is not offered.
 MEASURED = 'model_capabilities.json'

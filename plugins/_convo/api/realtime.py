@@ -2287,7 +2287,7 @@ class Realtime(WsHandler):
             state['measured'] = self._measured(state)          # read once per session; sharing the camera reads it again
         images = tools.accepts_images(state.get('measured'))
         capabilities = config["roles"]["conversation"].get("capabilities")
-        mode = tools.tool_mode(capabilities, state.get('measured'))
+        mode = tools.tool_mode(capabilities, state.get('measured'), override=config.get('developer_mode') is True)
         # The user's permission switches (settings `voice_tools`), a shared camera or screen with a model that takes images, and
         # the small set for a model that takes its tools in writing (convo_tools.offered).
         return tools.offered(recall=recall, camera=bool(state.get('camera')) and images, screen=bool(state.get('screen')) and images,

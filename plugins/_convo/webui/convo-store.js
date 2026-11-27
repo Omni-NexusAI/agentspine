@@ -6,7 +6,7 @@ import { AudioSession } from './audio.js';
 import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
 import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
-import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, soundKey, soundSource } from './sound-setup.js';
+import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, readPicture, soundKey, soundSource } from './sound-setup.js';
 import { plainText } from './plain-text.js';
 import { bindHotkeys } from './hotkeys.js';
 
@@ -158,12 +158,12 @@ async function native() {
         if (modern) {
             const { store } = await import(path);
             await store.initRuntime?.();
-            return nativeBinding = { store, device: () => store.getSelectedDevice(), transcribe: '/plugins/_whisper_stt/transcribe' };
+            return nativeBinding = { store, mic: store, device: () => store.getSelectedDevice(), transcribe: '/plugins/_whisper_stt/transcribe' };
         }
         const [{ store }, { store: devices }] = await Promise.all([
             import('/components/chat/speech/speech-store.js'), import('/components/settings/speech/microphone-setting-store.js'),
         ]);
-        return nativeBinding = { store, device: () => devices.getSelectedDevice(), transcribe: '/transcribe' };
+        return nativeBinding = { store, mic: devices, device: () => devices.getSelectedDevice(), transcribe: '/transcribe' };
     })();
     return nativePromise;
 }
@@ -655,9 +655,14 @@ function releaseCamera() {
     if (cameraVideo) cameraVideo.srcObject = null;
     cameraStream = null; cameraVideo = null;
 }
+// The edge for one picture: the smaller of what the server asked for and what this browser's Audio & Video setting allows.
+export function pictureEdge(asked, chosen) {
+    const limit = Number(chosen) > 0 ? Number(chosen) : SNAPSHOT_EDGE;
+    return Math.min(Number(asked) > 0 ? Number(asked) : SNAPSHOT_EDGE, limit);
+}
 async function answerCamera(event) {
     let image = '';
-    try { image = videoFrame(cameraVideo, event.max_edge, event.quality); } catch { image = ''; }
+    try { image = videoFrame(cameraVideo, pictureEdge(event.max_edge, readPicture().camera_edge), event.quality); } catch { image = ''; }
     await request('camera_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
 
@@ -674,7 +679,7 @@ function releaseScreen() {
 }
 async function answerScreen(event) {
     let image = '';
-    try { image = videoFrame(screenVideo, event.max_edge, event.quality); } catch { image = ''; }
+    try { image = videoFrame(screenVideo, pictureEdge(event.max_edge, readPicture().screen_edge), event.quality); } catch { image = ''; }
     await request('screen_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
 
@@ -912,6 +917,31 @@ export const store = createStore('convo', {
     },
     outputs: [],
     async listOutputs() { const page = pageAudio(); this.outputs = page?.supportsSink?.() ? await page.outputs() : []; return this.outputs; },
+    // The microphones Agent Zero's own speech setting lists, and the one it has chosen. Convo has no microphone setting of its
+    // own: choosing one here changes that setting, so dictation and Convo use the same microphone.
+    async microphones() {
+        try {
+            const mic = (await native()).mic;
+            if (!(mic.devices || []).length) await mic.loadDevices?.();
+            const list = (mic.devices || []).filter(device => device?.deviceId)
+                .map(device => ({ id: String(device.deviceId), label: String(device.label || '').slice(0, 80) }));
+            return { chosen: String(mic.getSelectedDevice?.()?.deviceId || ''), list };
+        } catch { return { chosen: '', list: [] }; }
+    },
+    async chooseMicrophone(id) {
+        try {
+            const mic = (await native()).mic;
+            if (typeof mic.selectDevice !== 'function' || !(mic.devices || []).some(device => device?.deviceId === id))
+                return { ok: false, message: 'That microphone is not available any more.' };
+            await mic.selectDevice(id);
+            return { ok: true, message: this.active ? 'Used the next time you start a conversation.' : '' };
+        } catch (error) { return { ok: false, message: 'The microphone was not changed: ' + (error?.message || String(error)) }; }
+    },
+    // The cameras this browser can name (names appear once a camera or the microphone was allowed); opens nothing.
+    async cameras() {
+        return (await listDevices()).filter(device => device.kind === 'videoinput' && device.deviceId)
+            .map(device => ({ id: String(device.deviceId), label: String(device.label || '').slice(0, 80) }));
+    },
     async chooseOutput(id) {
         const page = pageAudio();
         if (!page) return { ok: false, message: 'This browser cannot choose an output here.' };
@@ -1372,7 +1402,14 @@ export const store = createStore('convo', {
         try {
             const media = globalThis.navigator?.mediaDevices;
             if (!media?.getUserMedia) throw new Error('This browser cannot share a camera here.');
-            const stream = await media.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+            // The camera chosen under Audio & Video; one that is gone (unplugged, another browser profile) falls back to the default.
+            const size = { width: { ideal: 1280 }, height: { ideal: 720 } }, chosen = readPicture().camera;
+            let stream = null;
+            if (chosen) stream = await media.getUserMedia({ video: { ...size, deviceId: { exact: chosen } }, audio: false }).catch(error => {
+                if (error?.name === 'OverconstrainedError' || error?.name === 'NotFoundError') return null;
+                throw error;
+            });
+            if (!stream) stream = await media.getUserMedia({ video: size, audio: false });
             const video = document.createElement('video');
             video.muted = true; video.playsInline = true; video.srcObject = stream;
             await video.play?.().catch(() => {});

@@ -905,14 +905,86 @@ test('Every control is labelled and keyboard reachable, and nothing writes a tit
 });
 
 // ---- Connections: Test on the card, a typed key, the server's own model list, and the extras every card shows.
-test('Test connection sits on the card (not in Advanced) on all three cards, with its extras', async () => {
-    for (const [file, test] of [['conversation-model-field.html', 'connection-test'], ['classifier-model-field.html', 'classifier-check']]) {
-        const markup = await readWebui(file), advanced = markup.indexOf('advanced-body');
-        assert.ok(markup.indexOf(`data-convo-field="${test}"`) > 0 && markup.indexOf(`data-convo-field="${test}"`) < advanced, file);
+test('The conversation card checks by itself, so its tests sit in Advanced; the other cards keep theirs on the card, all with the extras', async () => {
+    const card = await readWebui('conversation-model-field.html'), body = card.indexOf('advanced-body');
+    for (const part of ['connection-test', 'audio-probe']) assert.ok(card.indexOf(`data-convo-field="${part}"`) > body, part);
+    for (const part of ['connection-result', 'measured-result']) assert.ok(card.indexOf(`data-convo-field="${part}"`) < body, part);   // the answers stay in view
+    // Committing an address or a model name asks for the check (a change event, never each keystroke).
+    assert.equal((card.match(/@change="\$store\.convoSetup\.conversationAutoCheck\(autosave\)"/g) || []).length, 4);       // two address fields, the earlier-setup URL, the model
+    assert.doesNotMatch(card, /@input="[^"]*AutoCheck/);
+    assert.doesNotMatch(card, /x-init="[^"]*(AutoCheck|discover)/);                              // opening Settings contacts nothing
+    assert.match(card, /data-convo-field="connection-test"[^>]*@click="\$store\.convoSetup\.discover\(role, true\)\.then\(\(\) => \$store\.convoSetup\.conversationAdopt\(autosave\)\)"/);
+    // What the model can do is measured: its three switches show in developer mode only.
+    for (const name of ['convo-audio', 'convo-cancel', 'convo-tools'])
+        assert.ok(card.includes(`<div class="field" x-id="['${name}']" x-show="$store.convoSetup.config.developer_mode === true">`), name);
+    {
+        const markup = await readWebui('classifier-model-field.html'), advanced = markup.indexOf('advanced-body');
+        assert.ok(markup.indexOf('data-convo-field="classifier-check"') > 0 && markup.indexOf('data-convo-field="classifier-check"') < advanced);
     }
     for (const [file, prefix] of [['conversation-model-field.html', ''], ['classifier-model-field.html', 'classifier-'], ['speech-output-field.html', 'speech-']])
         for (const part of ['this-computer', 'key-move', 'connection-suggestion', 'certificate-note', 'certificate-forget', 'certificate-accept'])
             assert.ok((await readWebui(file)).includes(`data-convo-field="${prefix}${part}"`), file + ' ' + part);
+});
+
+const MEASURED = { ok: true, models: [{ id: 'omni-1', label: 'omni-1' }], voices: [], tuning: [], warnings: [], verification: { state: 'ready', message: 'listed' } };
+
+test('A committed address and model are checked once, by themselves, and what was measured becomes the declaration', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    assert.equal(f.store.conversationAutoCheck(), false);                              // no model yet: nothing to check
+    f.role().model = 'omni-1';
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'text', image_input: false, audio_input: false, message: 'm' } };
+    assert.equal(f.store.conversationAutoCheck(), true);
+    assert.equal(f.store.conversationAutoCheck(), true);                               // asked again before it ran: still one request
+    assert.equal(f.sent('connection_test').length, 0);                                 // not on the keystroke: after a short pause
+    await f.clock.advance(600);
+    assert.equal(f.sent('connection_test').length, 1);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [false, false]);
+    assert.equal(f.store.conversationAutoCheck(), false);                              // the same address and model: not asked twice
+    await f.clock.advance(5000);
+    assert.equal(f.sent('connection_test').length, 1);
+    f.server.answers.test = { ...MEASURED, models: [{ id: 'omni-2', label: 'omni-2' }], capabilities: { state: 'ready', tool_mode: 'native', audio_input: true, message: 'm' } };
+    f.store.conversationChooseModel('omni-2');                                         // a choice from the list checks too
+    await f.clock.advance(600);
+    assert.equal(f.sent('connection_test').length, 2);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [true, true]);
+});
+
+test('A check with no clear answer changes nothing, developer mode keeps your switches, and a refused address is not contacted', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.model': 'omni-1', 'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    for (const capabilities of [undefined, { state: 'unavailable', message: 'no answer' }, { state: 'skipped', message: 'busy' }, { state: 'ready', image_input: true, message: 'm' }]) {
+        f.server.answers.test = { ...MEASURED, ...(capabilities ? { capabilities } : {}) };
+        await f.store.discover('conversation', true);
+        assert.equal(f.store.conversationAdopt().length, 0);
+        assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [true, true]);
+    }
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'ignored', audio_input: false, message: 'm' } };
+    await f.store.discover('conversation', true);
+    f.store.config.developer_mode = true;
+    assert.equal(f.store.conversationAdopt().length, 0);                                 // developer mode: the switches are yours
+    f.store.config.developer_mode = false;
+    assert.deepEqual([...f.store.conversationAdopt()].sort(), ['audio_input', 'tool_calls']);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [false, false]);
+    const before = f.sent('connection_test').length;
+    f.role().api_base = 'http://203.0.113.9:8098/v1';                                  // outside your network, in plain http: refused by the settings
+    assert.equal(f.store.conversationAutoCheck(), false);
+    await f.clock.advance(5000);
+    assert.equal(f.sent('connection_test').length, before);
+});
+
+test('In the preset editor an adopted measurement is saved like any other edit', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.model': 'omni-1', 'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'text', audio_input: true, message: 'm' } };
+    f.role().model = 'omni-1 ';                                                        // an edit that commits (trimmed to the same model)
+    f.role().model = 'omni-1';
+    f.store.ui.conversation.checkedFor = '';
+    assert.equal(f.store.conversationAutoCheck(true), true);
+    await f.clock.advance(600);
+    await f.clock.advance(1000);                                                       // the autosave pause
+    assert.equal(f.server.config.roles.conversation.capabilities.tool_calls, false);
+    assert.equal(f.server.config.roles.conversation.capabilities.audio_input, true);
 });
 
 test('Test connection uses a key typed but not saved, and an answer survives typing a model name but not a new address', async () => {

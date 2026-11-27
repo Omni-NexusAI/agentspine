@@ -5,7 +5,7 @@
      next start). The meter is a visual only: no live region, no gating, nothing recorded. -->
 <div x-data class="convo-sound">
 <template x-if="$store.convoSound">
-<section class="convo-sound-panel" aria-label="Sound for this device" x-init="$store.convoSound.refresh()" x-id="['sound-gate', 'sound-gate-hint', 'sound-barge', 'sound-end', 'sound-echo', 'sound-output', 'sound-phone']">
+<section class="convo-sound-panel" aria-label="Sound for this device" x-init="$store.convoSound.refresh()" x-id="['sound-gate', 'sound-gate-hint', 'sound-barge', 'sound-end', 'sound-echo', 'sound-output', 'sound-phone', 'sound-mic', 'sound-camera', 'sound-camera-size', 'sound-screen-size']">
   <div class="convo-sound-row convo-sound-gate">
     <div class="convo-sound-head"><label :for="$id('sound-gate')">Noise gate</label><span class="convo-sound-value" x-text="$store.convoSound.values.noise_gate_db <= -66 ? 'Off' : $store.convoSound.values.noise_gate_db + ' dB'"></span></div>
     <div class="convo-sound-track">
@@ -35,6 +35,15 @@
     <select :id="$id('sound-echo')" :value="$store.convoSound.values.echo_guard" @change="$store.convoSound.set('echo_guard', $event.target.value)">
       <template x-for="option in [['adaptive','Adaptive'],['strict','Strict'],['off','Off']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.values.echo_guard" x-text="option[1]"></option></template>
     </select>
+  </div>
+  <div class="convo-sound-row convo-sound-line convo-sound-mic">
+    <label :for="$id('sound-mic')">Microphone</label>
+    <select :id="$id('sound-mic')" x-init="$store.convoSound.listMicrophones()" @focus="$store.convoSound.listMicrophones()" @pointerdown="$store.convoSound.listMicrophones()" @change="$store.convoSound.chooseMicrophone($event.target.value)">
+      <template x-if="!$store.convoSound.microphones.length"><option value="" selected>The browser’s default</option></template>
+      <template x-for="device in $store.convoSound.microphones" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.microphone" x-text="device.label || (device.id === 'default' ? 'System default' : 'Unnamed microphone')"></option></template>
+    </select>
+    <p class="convo-sound-hint convo-sound-wide">The same microphone as Agent Zero’s own dictation: choosing one here changes it there too. Names appear once the browser was allowed to use a microphone.</p>
+    <p class="convo-sound-note convo-sound-wide" x-show="$store.convoSound.microphoneNote" x-text="$store.convoSound.microphoneNote"></p>
   </div>
   <div class="convo-sound-row convo-sound-output">
     <div class="convo-sound-head"><span class="convo-sound-title">Output</span><span class="convo-sound-value" x-text="$store.convoSound.output().label + ($store.convoSound.output().missing ? ' (' + ($store.convoSound.choices.output_label || 'the saved output') + ' is not connected)' : '')"></span></div>
@@ -67,6 +76,30 @@
     <div class="convo-sound-switch"><span :id="$id('sound-ns')">Noise suppression</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-ns')" :checked="$store.convoSound.choices.noise_suppression" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('noise_suppression', $event.target.checked)"><span class="toggler"></span></label></div>
     <div class="convo-sound-switch"><span :id="$id('sound-agc')">Automatic gain</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-agc')" :checked="$store.convoSound.choices.auto_gain" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('auto_gain', $event.target.checked)"><span class="toggler"></span></label></div>
     <p class="convo-sound-hint">The browser's own processing for this microphone, applied at the next start. Echo cancelling stays on (interruption by voice needs it); phone Media mode turns all three off.</p>
+  </fieldset>
+  <fieldset class="convo-sound-row convo-sound-picture">
+    <legend>Camera and screen</legend>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-camera')">Camera</label>
+      <select :id="$id('sound-camera')" x-init="$store.convoSound.listCameras()" @focus="$store.convoSound.listCameras()" @pointerdown="$store.convoSound.listCameras()" @change="$store.convoSound.setPicture('camera', $event.target.value)">
+        <option value="" :selected="!$store.convoSound.picture.camera">The browser’s default</option>
+        <template x-for="device in $store.convoSound.cameras" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.picture.camera" x-text="device.label || 'Unnamed camera'"></option></template>
+        <template x-if="$store.convoSound.picture.camera && !$store.convoSound.cameras.some(device => device.id === $store.convoSound.picture.camera)"><option :value="$store.convoSound.picture.camera" selected x-text="$store.convoSound.savedCameraLabel()"></option></template>
+      </select>
+    </div>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-camera-size')">Camera picture</label>
+      <select :id="$id('sound-camera-size')" @change="$store.convoSound.setPicture('camera_edge', Number($event.target.value))">
+        <template x-for="option in [[384,'Small (fastest)'],[512,'Medium'],[768,'Large (most detail)']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.picture.camera_edge" x-text="option[1]"></option></template>
+      </select>
+    </div>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-screen-size')">Screen picture</label>
+      <select :id="$id('sound-screen-size')" @change="$store.convoSound.setPicture('screen_edge', Number($event.target.value))">
+        <template x-for="option in [[384,'Small (fastest)'],[512,'Medium'],[768,'Large (most detail)']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.picture.screen_edge" x-text="option[1]"></option></template>
+      </select>
+    </div>
+    <p class="convo-sound-hint">Used when you share the camera or your screen in the Convo panel. The model gets one picture only when it looks; a smaller one is quicker and costs less, a larger one shows small text. Nothing is stored. Kept in this browser.</p>
   </fieldset>
   <template x-if="$store.convo?.settings?.developer_mode">
     <div class="convo-sound-row convo-sound-record">
@@ -113,7 +146,8 @@
 .convo-sound-title{font-weight:600}
 .convo-sound-outbar{position:relative;top:0;height:8px}
 .convo-sound-wide{grid-column:1 / -1}
-.convo-sound-processing{border:1px solid var(--color-border);border-radius:8px;padding:.4rem .6rem;margin:0}
+.convo-sound-processing,.convo-sound-picture{border:1px solid var(--color-border);border-radius:8px;padding:.4rem .6rem;margin:0}
+.convo-sound-picture{display:grid;gap:.4rem}.convo-sound-picture legend{font-weight:600;padding:0 .3rem}
 .convo-sound-processing legend{font-weight:600;padding:0 .3rem}
 .convo-sound-switch{display:flex;align-items:center;justify-content:space-between;gap:.75rem;min-height:40px}.convo-sound-switch label.toggle{display:inline-block;flex:none}.convo-sound-switch input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}
 .convo-sound-recordings{margin:0;padding-left:1rem;display:flex;flex-direction:column;gap:.2rem}

@@ -29,7 +29,7 @@ export const CONVERSATION_CATALOG = {
 };
 // A provider Convo has no verdict for that Agent Zero describes as OpenAI-compatible (another plugin may add one): selectable.
 export const UNKNOWN_COMPATIBLE = { short: 'audio not verified',
-    reason: 'Agent Zero lists this provider as OpenAI-compatible; Convo has not verified that it accepts audio input. Test audio input checks it.' };
+    reason: 'Agent Zero lists this provider as OpenAI-compatible; Convo checks whether it accepts audio once a model is chosen.' };
 
 // Every setting this card edits, with the name a conflict is shown under.
 export const CARD_PATHS = {
@@ -63,6 +63,7 @@ export const conversationSetup = {
         context: { path: 'compaction.context_tokens', min: 4096, message: 'Enter a context window of at least 4096 tokens.' },
         sectionKey: 'convo_conversation_model',
         probe: { action: 'audio_probe', busy: 'Sending one short synthetic clip…' },
+        autoCheck: true,
         keyCopy: { action: 'conversation_key_copy' },
     }),
     // The saved choice, for the "Convo — provider / model" row in Agent Zero's preset overview.
@@ -72,7 +73,7 @@ export const conversationSetup = {
         const name = !provider ? 'Custom endpoint' : usable ? usable.label : `${this.conversationHostLabels()[provider] || provider} (not usable)`;
         return { provider: name, model: saved.model || '' };
     },
-    // Tools and images, measured by Test connection (helpers/convo_setup.probe_capabilities): the newest test's answer, else the saved
+    // Audio, tools and images, measured by the connection check (helpers/convo_setup.probe_capabilities): the newest answer, else the saved
     // record as the readiness row `conversation_measured` reports it. Never inferred in the browser.
     conversationMeasured() {
         const fresh = this.choices?.conversation?.capabilities;

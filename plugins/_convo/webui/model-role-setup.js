@@ -18,7 +18,8 @@ const PROVIDER_ID = /^[a-z0-9_]{1,64}$/;                         // convo_contra
 // Private to this module, never in reactive state: Agent Zero's store (one for every card) and, per role, the debounce timer and
 // the autosave in flight.
 let host = null, hostLoading = null;
-const timers = {}, flushing = {};
+const timers = {}, flushing = {}, checks = {};
+export const CHECK_MS = 600;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // convo_contract.endpoint's locality rule (connection-rules.js), for advice only: the server decides.
@@ -187,7 +188,38 @@ export function modelRoleSetup(role, spec) {
             spec.afterProvider?.(this, next);
             this[n('Edited')]([prefix + 'provider', prefix + 'api_base', ...(spec.providerPaths || [])], autosave);
             void this[n('ProviderHook')](previous, bases[previous], autosave);
+            this[n('AutoCheck')](autosave);
             return next;
+        },
+        // ---- The check that runs by itself (spec.autoCheck): the same request as Test connection, once an address or a model
+        // name is committed (a change event, a choice from the list; never per keystroke and never because Settings opened), once
+        // per address and model. An address the settings would refuse is not contacted.
+        AutoCheck(autosave = false) {
+            if (!spec.autoCheck || !this.config?.roles?.[role]) return false;
+            const url = this[n('Url')](), model = (this[n('Role')]().model || '').trim(), ui = view(this), key = url + '|' + model;
+            if (!url || !model || ui.checkedFor === key || this[n('AddressProblem')]()) return false;
+            clearTimeout(checks[role]);
+            checks[role] = setTimeout(async () => {
+                checks[role] = null;
+                ui.checkedFor = key;
+                await this.discover(role, true);
+                this[n('Adopt')](autosave);
+            }, CHECK_MS);
+            return true;
+        },
+        // What a check measured becomes the declaration (the two settings an older Convo reads), so nobody has to know what a
+        // model can do. In developer mode the switches are yours and nothing is written. No clear answer changes nothing.
+        Adopt(autosave = false) {
+            const found = this.choices?.[role]?.capabilities, declared = this.config?.roles?.[role]?.capabilities;
+            if (!found || !declared || this.config.developer_mode === true) return [];
+            const next = { ...(typeof found.audio_input === 'boolean' ? { audio_input: found.audio_input } : {}),
+                           ...(typeof found.tool_mode === 'string' ? { tool_calls: found.tool_mode === 'native' } : {}) };
+            const changed = Object.keys(next).filter(name => declared[name] !== next[name]);
+            if (!changed.length) return [];
+            spec.beforeEdit?.(this);
+            for (const name of changed) declared[name] = next[name];
+            this[n('Edited')](changed.map(name => prefix + 'capabilities.' + name), autosave);
+            return changed;
         },
         // Agent Zero's provider-change hook, when its store has one (Provider Profiles: address defaults, the model last used with
         // each provider). It gets this role as one of its model slots: `name` is Convo's model, `ctx_length` the context window,
@@ -380,6 +412,7 @@ export function modelRoleSetup(role, spec) {
             spec.beforeEdit?.(this);
             this.config.roles[role].model = id;
             this[n('Edited')](prefix + 'model', autosave);
+            this[n('AutoCheck')](autosave);
         },
 
         // ---- Keys. A provider Agent Zero holds keys for uses Agent Zero's key, entered the Agent Zero way (its key store); Other,
