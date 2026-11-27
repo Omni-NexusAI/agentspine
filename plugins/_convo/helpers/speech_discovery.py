@@ -169,6 +169,38 @@ async def _managed(role, result, options):
     return {'state': 'ready' if loaded else 'unverified', 'message': 'Managed audio responded; selected model is loaded.' if loaded else 'Managed audio responded; selected model must be explicitly loaded.'}
 
 
+STUDIO_LIMIT = 64 * 1024
+
+
+async def _studio_page(url):
+    """The speech server's own Voice Studio, when its address shows a page: one read-only GET of the server's origin (no key is
+    sent, no redirect is followed, at most STUDIO_LIMIT bytes are read), only for a server on this machine or the user's network.
+    Returns {'url', 'browser_url'} or None. `browser_url` is the same page as the user's browser reaches it on the computer that
+    runs Agent Zero (the container's name for that computer becomes localhost)."""
+    from .convo_contract import local_host
+    parts = urlsplit(url)
+    host = parts.hostname or ''
+    if parts.scheme not in ('http', 'https') or not host or not local_host(host):
+        return None
+    origin = parts.scheme + '://' + parts.netloc
+    try:
+        async with _client() as client:
+            async with client.stream('GET', origin + '/') as response:
+                if response.status_code != 200 or 'text/html' not in response.headers.get('content-type', '').lower():
+                    return None
+                body = b''
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) >= STUDIO_LIMIT:
+                        break
+    except httpx.HTTPError:
+        return None
+    if b'<html' not in body[:STUDIO_LIMIT].lower():
+        return None
+    seen = origin.replace('://' + convo_net.DOCKER_HOST, '://localhost', 1) if host == convo_net.DOCKER_HOST else origin
+    return {'url': origin + '/', 'browser_url': seen + '/'}
+
+
 async def _external(role, result, options, provider, kind):
     label = PROVIDERS[provider]['label']
     if not (role.get('url') or '').strip():
@@ -185,6 +217,11 @@ async def _external(role, result, options, provider, kind):
             break                                                  # no answer: the remaining routes are not tried
     first = answers[PLANS[kind][0]]
     ok = lambda route: route in answers and answers[route]['status'] == 200 and answers[route]['data'] is not None
+    if first['status'] is not None and kind != 'models':
+        # A server that answered: does its own address show a Voice Studio page? (The panel's Studio button opens it.)
+        studio = await _studio_page(url)
+        if studio:
+            result['studio'] = studio
     if first['status'] is None:
         if first.get('failure') is None:
             return {'state': 'unavailable', 'message': 'No answer from ' + url + '. ' + NO_FALLBACK}

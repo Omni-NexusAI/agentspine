@@ -132,7 +132,9 @@ export const speechSetup = {
             native: verify === 'native', connection: spec.connections.length > 0, runtime: verify === 'managed',
             apibase: external && fixed, url: external && !fixed, key: external, keysource: !!spec.host_key, remote: external && this.speechRemoteNeeded(),
             discover: verify !== 'native' && !fixed, test: verify !== 'native', model: verify !== 'native', voice: verify !== 'native',
-            tuning: verify === 'managed', server: verify === 'audiocpp', pcm: fields.includes('native_pcm'), studio: verify === 'managed',
+            tuning: verify === 'managed', server: verify === 'audiocpp', pcm: fields.includes('native_pcm'),
+            // Voice Studio: Convo's own (managed), or the page the user's speech server shows at its own address (found by a check).
+            studio: verify === 'managed' || !!this.choices?.tts?.studio?.browser_url,
             declare: fields.includes('accepts_instructions'), instructions: instructionsSupported(tts, provider, connection), advanced: external,
         };
         return Object.fromEntries(SPEECH_CONTROLS.map(name => [name, !!on[name]]));
