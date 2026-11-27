@@ -1945,6 +1945,7 @@ class Realtime(WsHandler):
         """One phrase, spoken. A request that failed before any of its audio went out (so nothing of it can have been heard) is
         made once more; anything later, and a request the server refused outright, is the reply's failure as before."""
         began = {}
+        role = self._plain_speech(state, role)
         try:
             return await self._speak_once(sid, state, session, turn, text, role, began)
         except asyncio.CancelledError:
@@ -1952,12 +1953,46 @@ class Realtime(WsHandler):
         except Exception as error:
             status = getattr(getattr(error, 'response', None), 'status_code', None)
             refused = isinstance(status, int) and 400 <= status < 500 and status != 409
+            # Learned from the server instead of declared: a request it refuses before any audio is asked once more without the
+            # streamed playback, then without the delivery instructions. What worked is kept for the rest of this conversation,
+            # so a server that takes neither is asked the plain way from then on instead of failing every reply.
+            lighter, dropped = self._lighter_speech(role, status) if not began.get('audio') and self._current(sid, state, session['epoch']) else (None, '')
+            if lighter is not None:
+                self._mark(turn, 'speech.lighter', dropped=dropped, status=status)
+                result = await self._speak(sid, state, session, turn, text, lighter)
+                state.setdefault('speech_plain', set()).add(dropped)
+                return result
             if began.get('audio') or refused or isinstance(error, self._busy()) or isinstance(error, (ValueError, TypeError)) and not self._stream_failed(error) \
                     or not self._current(sid, state, session['epoch']):
                 raise
             self._mark(turn, 'speech.retry', error=type(error).__name__)
         await self._stalled(sid, state, session, turn, 'speech')
         return await self._speak_once(sid, state, session, turn, text, role, {})
+
+    @staticmethod
+    def _lighter_speech(role, status):
+        """The same speech request without one optional feature the server may not take, or (None, ''). Only after an answer
+        that is the server's own refusal: a 4xx (not "busy", not a key or quota answer), or a 501/502 to a streamed request."""
+        if not isinstance(role, dict) or role.get('backend') == 'host_kokoro' or not isinstance(status, int) or status in (401, 403, 409, 429):
+            return None, ''
+        capabilities = role.get('capabilities') if isinstance(role.get('capabilities'), dict) else {}
+        if capabilities.get('native_pcm') and (400 <= status < 500 or status in (501, 502)):
+            return {**role, 'capabilities': {**capabilities, 'native_pcm': False}}, 'stream'
+        if role.get('instructions') and 400 <= status < 500:
+            return {key: value for key, value in role.items() if key != 'instructions'}, 'instructions'
+        return None, ''
+
+    @staticmethod
+    def _plain_speech(state, role):
+        """The role without what this conversation's speech server was found not to take (_lighter_speech)."""
+        learned = state.get('speech_plain') if isinstance(state, dict) else None
+        if not learned or not isinstance(role, dict):
+            return role
+        if 'stream' in learned and (role.get('capabilities') or {}).get('native_pcm'):
+            role = {**role, 'capabilities': {**role['capabilities'], 'native_pcm': False}}
+        if 'instructions' in learned and role.get('instructions'):
+            role = {key: value for key, value in role.items() if key != 'instructions'}
+        return role
 
     @staticmethod
     def _stream_failed(error):
