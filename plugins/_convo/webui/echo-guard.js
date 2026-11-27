@@ -76,6 +76,18 @@ export const LEGACY_VOICED_RMS = 0.02;
 const ADOPT_VOICED_FRAMES = 150;
 const SNAPSHOT_FRAMES = 25;
 export const ECHO_EVIDENCE_CORRELATION = 0.6;
+// A loud headset: the microphone hears a quiet, muffled copy of the playback (live 2026-11-25: Convo answered its own voice twice
+// in a row). Such a leak correlates too weakly with the reference to count as echo evidence, so the level is what tells it from
+// the user: the slow microphone level during playback, as a share of the slow playback level, is tracked downwards (the
+// quietest it gets while the reply plays is the leak; a voice over it only raises it for a moment). Speech on the "no echo here"
+// path must be LEAK_FACTOR times louder than that. Where nothing leaks the share is the room's noise and nothing changes.
+const LEAK_SMOOTH = 0.1;              // per analysis chunk (40 ms): about 0.4 s, longer than any playback delay's gaps
+const LEAK_FAST = 0.35;               // the microphone level a candidate is judged by: about 0.1 s, so one loud peak of a leak is not a voice
+const LEAK_RISE = 1.02;               // the tracked share may rise 2 % per chunk (a volume turned up is followed in seconds)
+const LEAK_ONSET_RISE = 1.6;          // ...and fast while a stretch of playback begins: the leak arrives after the playback's own delay
+const LEAK_ONSET_CHUNKS = 18;         // 0.72 s: a headset's playback delay (wired or Bluetooth) plus the time the slow levels take to settle
+const LEAK_IDLE_CHUNKS = 6;           // playback silent this long ends a stretch
+const LEAK_FACTOR = 3;                // about 9.5 dB above the leak
 const LAG_STEP = 16;                   // _echoMatch searches lags in steps of 16 analysis samples (1 ms)
 const LAG_STABLE_FRAMES = 3;
 // Convo, double talk (2026-11): once the user's speech over the reply is confirmed, a frame that is not echo is kept only within
@@ -162,6 +174,7 @@ export class EchoGuard {
         this._referenceHistory = new Float32Array(0);
         this._echoTailRemaining = 0;
         this._acousticState = 'unknown';
+        this._leakMic = 0; this._leakRef = 0; this._leakFastMic = 0; this._leakShare = 0; this._leakChunks = 0; this._leakStretch = 0; this._leakIdle = 0;
         this._candidatePath = 'none';
         this._lastRejectReason = 'warming';
         this._echoEvidenceSamples = 0;
@@ -520,10 +533,26 @@ export class EchoGuard {
             );
         // Independent speech: a voice-like frame with no echo evidence. While the room is known to couple the speaker into the
         // microphone, the waveform must also be clearly unlike the playback (the standalone guard's independence test).
+        let aboveLeak = true, leakOnset = false;
+        if (playbackActive && referenceRms >= REFERENCE_ACTIVE_RMS) {
+            const first = this._leakChunks++ === 0;
+            if (this._leakIdle >= LEAK_IDLE_CHUNKS) this._leakStretch = 0;
+            this._leakIdle = 0;
+            const onset = this._leakStretch++ < LEAK_ONSET_CHUNKS;
+            this._leakRef = first ? referenceRms : this._leakRef + LEAK_SMOOTH * (referenceRms - this._leakRef);
+            this._leakMic = first ? rms : this._leakMic + LEAK_SMOOTH * (rms - this._leakMic);
+            this._leakFastMic = first ? rms : this._leakFastMic + LEAK_FAST * (rms - this._leakFastMic);
+            const share = this._leakMic / Math.max(this._leakRef, 1e-6);
+            this._leakShare = first ? share : Math.min(share, this._leakShare * (onset ? LEAK_ONSET_RISE : LEAK_RISE) + 1e-5);
+            // While a stretch begins the leak's level is not known yet: speech is held and counted, but not confirmed (below).
+            leakOnset = onset;
+            aboveLeak = this._leakFastMic >= LEAK_FACTOR * this._leakShare * this._leakRef;
+        } else if (this._leakIdle < LEAK_IDLE_CHUNKS) this._leakIdle++;
         const independentCandidate =
             playbackActive
             && voiceLike
             && rms >= humanFloorRms
+            && (aboveLeak || leakOnset)                               // not merely the playback leaking into a headset microphone
             && !echoEvidence
             && !echoDominant;
         const adaptEchoPath =
@@ -647,7 +676,9 @@ export class EchoGuard {
                 }
             } else if (humanCandidate && !this._doubleTalkActive) {
                 holdFrame();
-                this._doubleTalkSamples += n;
+                // While a stretch of playback begins the leak's level is still being learned: the frame is kept (nothing of an
+                // onset is lost) but does not count towards confirmation, so one loud moment afterwards cannot confirm a leak.
+                if (!leakOnset || modeledHumanCandidate) this._doubleTalkSamples += n;
                 this._doubleTalkGapSamples = 0;
                 const confirmed =
                     this._doubleTalkSamples >= Math.round((DOUBLE_TALK_MS / 1000) * ANALYSIS_RATE);
