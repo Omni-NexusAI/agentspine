@@ -41,9 +41,9 @@ try {
     await page.eval(`Alpine.store('rightCanvas').open('convo').then(() => 1)`);
     await page.waitFor(`!!document.querySelector('.convo-panel .convo-primary')`, 60000);
     await sleep(1500);
-    const panel = await page.eval(`(() => { const p = document.querySelector('.convo-panel'); const wrap = p.closest('.right-canvas-surface-panel'); const q = s => p.querySelector(s); return { chip: q('.convo-chip')?.textContent.trim(), buttons: [...p.querySelectorAll('.convo-controls button')].map(b => b.textContent.trim()), mute: getComputedStyle(q('.convo-mute')).display, tools: p.querySelectorAll('.convo-tools button').length, scroller: q('.convo-transcript')?.getBoundingClientRect().height, docked: !!wrap, active: wrap ? wrap.classList.contains('is-active') : null, opacity: wrap ? getComputedStyle(wrap).opacity : null, pointer: wrap ? getComputedStyle(wrap).pointerEvents : null }; })()`);
-    check('the panel renders its status, controls and Sound, settings and Studio buttons', !!panel.chip && panel.buttons.length === 5 && /Start conversation/.test(panel.buttons[0]) && panel.buttons.some(b => /Silence voice/.test(b)) && panel.buttons.some(b => /Share camera/.test(b)) && panel.buttons.some(b => /Share screen/.test(b)) && !panel.buttons.some(b => /Dictat/.test(b)) && panel.tools === 3 && panel.scroller > 50, JSON.stringify(panel));
-    check('Mute is there only while a conversation runs (none does here)', panel.mute === 'none', panel.mute);
+    const panel = await page.eval(`(() => { const p = document.querySelector('.convo-panel'); const wrap = p.closest('.right-canvas-surface-panel'); const q = s => p.querySelector(s); return { chip: q('.convo-chip')?.textContent.trim(), buttons: [...p.querySelectorAll('.convo-controls button')].map(b => b.textContent.trim()), orb: q('.convo-primary.convo-panel-orb')?.textContent.trim(), place: q('.convo-panel-orb')?.getAttribute('data-place'), layers: q('.convo-panel-orb .cf-core') ? 'full' : 'none', mute: getComputedStyle(q('.convo-mute')).opacity + ':' + q('.convo-icons').inert, tools: p.querySelectorAll('.convo-tools button').length, scroller: q('.convo-transcript')?.getBoundingClientRect().height, docked: !!wrap, active: wrap ? wrap.classList.contains('is-active') : null, opacity: wrap ? getComputedStyle(wrap).opacity : null, pointer: wrap ? getComputedStyle(wrap).pointerEvents : null }; })()`);
+    check('the panel renders its status, controls and Sound, settings and Studio buttons', !!panel.chip && panel.buttons.length === 5 && /Start conversation/.test(panel.orb) && ['ready', 'dock'].includes(panel.place) && panel.layers === 'full' && panel.buttons.some(b => /Mute microphone/.test(b)) && panel.buttons.some(b => /Float orb/.test(b)) && panel.buttons.some(b => /Silence voice/.test(b)) && panel.buttons.some(b => /Share camera/.test(b)) && panel.buttons.some(b => /Share screen/.test(b)) && !panel.buttons.some(b => /Dictat/.test(b)) && panel.tools === 3 && panel.scroller > 50, JSON.stringify(panel));
+    check('The controls stay tucked behind the orb, out of reach, until a conversation runs (none does here)', panel.mute === '0:true', panel.mute);
     if (panel.docked) check('a docked panel is visible and clickable (the host wrapper contract)', panel.active && panel.opacity === '1' && panel.pointer === 'auto');
 
     // the settings modal: tabs, no console noise, and a draft that is guarded
@@ -84,11 +84,11 @@ try {
     const closed = await page.eval(`({ dirty: Alpine.store('convoSetup').dirty, style: Alpine.store('convoSetup').config?.style, focus: document.activeElement?.getAttribute('aria-label') || document.activeElement?.tagName })`);
     check('accepting discards the draft, closes only the top modal and returns focus to the gear', !closed.dirty && closed.style !== 'smoke-test draft' && closed.focus === 'Convo settings', JSON.stringify(closed));
 
-    // contrast of the primary button in both themes (WCAG AA for text)
+    // The orb is the primary control and it is a graphic: its own colour against what is behind it, in both themes (WCAG 3:1)
     for (const theme of ['dark', 'light']) {
-        const colours = await page.eval(`(() => { document.body.classList.remove('dark-mode', 'light-mode'); document.body.classList.add('${theme}-mode'); const b = document.querySelector('.convo-panel .convo-primary'); const cs = getComputedStyle(b); return { fg: cs.color, bg: cs.backgroundColor }; })()`);
+        const colours = await page.eval(`(() => { document.body.classList.remove('dark-mode', 'light-mode'); document.body.classList.add('${theme}-mode'); const core = document.querySelector('.convo-panel .convo-primary .cf-core'); let behind = core, bg = 'rgba(0, 0, 0, 0)'; while (behind && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bg)) { behind = behind.parentElement; bg = behind ? getComputedStyle(behind).backgroundColor : 'rgb(255, 255, 255)'; } return { fg: getComputedStyle(core).color, bg }; })()`);
         const ratio = contrast(colours.fg, colours.bg);
-        check(`the primary button reads clearly in ${theme} mode`, ratio >= 4.5, `${ratio.toFixed(2)}:1`);
+        check(`the orb stands out from the panel in ${theme} mode`, ratio >= 3, `${ratio.toFixed(2)}:1 ${colours.fg} on ${colours.bg}`);
     }
     await page.eval(`(() => { document.body.classList.remove('light-mode'); document.body.classList.add('dark-mode'); return 1; })()`);
 

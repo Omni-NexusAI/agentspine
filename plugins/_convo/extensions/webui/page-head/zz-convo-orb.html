@@ -112,4 +112,80 @@ body.light-mode :is(#microphone-button,.convo-panel-orb)[data-convo=error]{--co:
   :is(#microphone-button,.convo-panel-orb)[data-convo=dictating-ptt] .co-core{transform:translate(-50%,-50%) scale(.9)!important}
   :is(#microphone-button,.convo-panel-orb)[data-convo][data-convo-press] .co-ring2{opacity:.8;border-style:dotted}      /* the press is registered, shown by shape rather than growth */
 }
+/* ---- The panel's orb and the floating orb: the standalone speech interface's orb (webui/orb.js FULL). Sizes follow the button
+   (container units), so the same layers serve the large orb on the ready page, the small one beside the controls and the floating
+   one. `:is(#convo-orb-full,…)` only lifts these rules to the weight of the shared rules above. */
+:is(#convo-orb-full,.convo-panel-orb){container-type:size;-webkit-tap-highlight-color:transparent;user-select:none}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo]{--co:#34d399;touch-action:manipulation}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=idle]{--co:#8e98a8}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=connecting],:is(#convo-orb-full,.convo-panel-orb)[data-convo=loading]{--co:#facc15}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=thinking]{--co:#f59e0b}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=listening],:is(#convo-orb-full,.convo-panel-orb)[data-convo=hearing]{--co:#22d3ee}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=speaking]{--co:#8b7dff}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=muted]{--co:#b9a58f}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo=error]{--co:#f87171}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo]:hover{filter:brightness(1.08)}
+:is(#convo-orb-full,.convo-panel-orb)[data-convo]:active{transform:scale(.97);filter:brightness(.92)}
+.cf-glow{width:100%;height:100%;background:radial-gradient(circle at center,var(--co) 0,transparent 65%);filter:blur(9cqw);opacity:.5;transition:opacity .25s,background .25s}
+.cf-ring{width:82%;height:82%;border:1.5px solid color-mix(in srgb,var(--co) 35%,transparent);opacity:.35;transition:opacity .4s ease,border-color .4s ease,transform .3s ease}
+.cf-ring2{width:94%;height:94%;border:1px solid color-mix(in srgb,var(--co) 22%,transparent);opacity:0;transition:opacity .4s ease,border-color .4s ease,transform .3s ease}
+.cf-core{display:grid;place-items:center;width:72%;height:72%;color:var(--co);
+  background:radial-gradient(circle at 35% 28%,color-mix(in srgb,var(--co) 28%,transparent),color-mix(in srgb,var(--co) 10%,transparent) 55%,color-mix(in srgb,var(--co) 5%,transparent));
+  border:2px solid color-mix(in srgb,var(--co) 40%,transparent);
+  box-shadow:0 0 12cqw color-mix(in srgb,var(--co) 22%,transparent),inset 0 0 10cqw color-mix(in srgb,var(--co) 18%,transparent);
+  transition:background .4s ease,border-color .4s ease,box-shadow .4s ease,transform .4s ease,opacity .3s ease}
+.cf-ind{position:relative;display:grid;place-items:center;width:44%;height:44%}
+.cf-ind>*{grid-area:1/1;opacity:0;transform:scale(.85);transition:opacity .25s ease,transform .25s ease;pointer-events:none}
+.cf-spin{width:52%;height:52%;box-sizing:border-box;border:max(2px,1cqw) solid currentColor;border-right-color:transparent;border-radius:50%}
+.cf-dots{display:flex;align-items:center;justify-content:center;gap:max(2px,2.6cqw)}
+.cf-dots b{width:max(3px,3.3cqw);height:max(3px,3.3cqw);border-radius:50%;background:currentColor;opacity:.3;animation:co-dot 1.25s ease-in-out infinite}
+.cf-dots b:nth-child(2){animation-delay:.16s}.cf-dots b:nth-child(3){animation-delay:.32s}
+.cf-bars{display:flex;align-items:center;justify-content:center;gap:max(1.5px,1.7cqw);height:100%}
+.cf-bars b{--h:calc(var(--convo-level)*var(--k,1));width:max(2px,1.4cqw);min-height:max(2px,1.4cqw);border-radius:1cqw;background:currentColor;height:calc(max(2px,1.4cqw) + var(--h)*13cqw);opacity:calc(.55 + .45*var(--h));transition:height .08s ease-out,opacity .08s ease-out}
+.cf-bars b:nth-child(1){--k:.5}.cf-bars b:nth-child(2){--k:.82}.cf-bars b:nth-child(3){--k:1}.cf-bars b:nth-child(4){--k:.74}.cf-bars b:nth-child(5){--k:.45}
+.cf-err{width:70%;height:70%}
+/* one indicator per state */
+.convo-panel-orb[data-convo=connecting] .cf-spin,.convo-panel-orb[data-convo=loading] .cf-spin,.convo-panel-orb[data-convo=thinking] .cf-dots,
+.convo-panel-orb[data-convo=listening] .cf-bars,.convo-panel-orb[data-convo=hearing] .cf-bars,.convo-panel-orb[data-convo^=dictating] .cf-bars,.convo-panel-orb[data-convo=dictation] .cf-bars,
+.convo-panel-orb[data-convo=error] .cf-err{opacity:1;transform:scale(1)}
+.convo-panel-orb[data-convo=connecting] .cf-spin,.convo-panel-orb[data-convo=loading] .cf-spin{animation:cf-spin .9s linear infinite}
+/* ready: the inner ring breathes; a pointer over it wakes it up a little (the microphone is still off: nothing listens on hover) */
+.convo-panel-orb[data-convo=ready] .cf-ring{animation:cf-breathe 2.4s ease-in-out infinite}
+.convo-panel-orb[data-convo=ready]:hover .cf-ring{animation-duration:1.5s}
+.convo-panel-orb[data-convo=ready]:hover .cf-glow{opacity:.75}
+.convo-panel-orb[data-convo=ready]:hover .cf-core{transform:translate(-50%,-50%) scale(1.045)}
+.convo-panel-orb[data-convo=ready]:hover .cf-ring2{opacity:.45;transform:translate(-50%,-50%) scale(1.04)}
+.convo-panel-orb[data-convo=idle] .cf-core,.convo-panel-orb[data-convo=idle] .cf-glow{opacity:.6}
+/* starting: the core throbs while the conversation is set up */
+.convo-panel-orb[data-convo=connecting] .cf-core,.convo-panel-orb[data-convo=loading] .cf-core{animation:cf-think 1.4s ease-in-out infinite}
+/* listening: a slow breath, bars at rest; hearing you: both rings follow your voice */
+.convo-panel-orb[data-convo=listening] .cf-ring{animation:cf-breathe 2s ease-in-out infinite}
+.convo-panel-orb[data-convo=listening] .cf-bars{animation:co-shimmer 2.4s ease-in-out infinite}
+.convo-panel-orb[data-convo=hearing] .cf-ring,.convo-panel-orb[data-convo^=dictating] .cf-ring{opacity:calc(.25 + .55*var(--convo-level));transform:translate(-50%,-50%) scale(calc(1 + .08*var(--convo-level)));transition:transform .08s linear,opacity .08s linear}
+.convo-panel-orb[data-convo=hearing] .cf-ring2,.convo-panel-orb[data-convo^=dictating] .cf-ring2{opacity:calc(.1 + .35*var(--convo-level));transform:translate(-50%,-50%) scale(calc(1 + .12*var(--convo-level)));transition:transform .08s linear,opacity .08s linear}
+/* speaking: no indicator; the whole orb moves with the assistant's voice */
+.convo-panel-orb[data-convo=speaking] .cf-core{transform:translate(-50%,-50%) scale(calc(1 + .09*var(--convo-level)));transition:transform .08s linear}
+.convo-panel-orb[data-convo=speaking] .cf-ring{opacity:calc(.3 + .5*var(--convo-level));transform:translate(-50%,-50%) scale(calc(1 + .05*var(--convo-level)));transition:transform .08s linear,opacity .08s linear}
+.convo-panel-orb[data-convo=speaking] .cf-ring2{opacity:calc(.15 + .55*var(--convo-level));transform:translate(-50%,-50%) scale(calc(1 + .18*var(--convo-level)));transition:transform .08s linear,opacity .08s linear}
+.convo-panel-orb[data-convo=speaking] .cf-glow{opacity:calc(.35 + .45*var(--convo-level));transition:opacity .08s linear}
+.convo-panel-orb[data-convo][data-convo-hold] .cf-ring{border-style:dashed;opacity:.8}
+.convo-panel-orb[data-convo][data-convo-hold] .cf-core{opacity:.65}
+/* muted: still, a double ring (nothing moves, so nothing looks like it listens); the mute button beside it says so in words */
+.convo-panel-orb[data-convo=muted] .cf-ring{border-width:3px;border-style:double;opacity:.8}
+.convo-panel-orb[data-convo=muted] .cf-glow{opacity:.18}
+.convo-panel-orb[data-convo=error] .cf-ring{opacity:.85}
+@keyframes cf-breathe{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.4}50%{transform:translate(-50%,-50%) scale(1.06);opacity:.15}}
+@keyframes cf-think{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.75}50%{transform:translate(-50%,-50%) scale(.96);opacity:.5}}
+@keyframes cf-spin{from{transform:scale(1) rotate(0)}to{transform:scale(1) rotate(360deg)}}
+
+/* ---- The floating orb: the same orb outside the panel, dragged anywhere in the window; one button puts it back. */
+.convo-float{position:fixed;z-index:1500;width:76px;height:76px;touch-action:none;animation:convo-float-in .28s ease}
+.convo-float[hidden]{display:none}
+.convo-float .convo-float-orb{position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:inherit;cursor:grab;touch-action:none}
+.convo-float[data-drag] .convo-float-orb{cursor:grabbing}
+.convo-float .convo-float-back{position:absolute;top:-6px;right:-6px;width:24px;height:24px;margin:0;padding:0;border-radius:50%;border:1px solid var(--color-border,#555);background:var(--color-panel,#222);color:var(--color-text,#eee);display:grid;place-items:center;cursor:pointer;opacity:0;transition:opacity .18s ease}
+.convo-float:hover .convo-float-back,.convo-float .convo-float-back:focus-visible{opacity:1}
+.convo-float .convo-float-back .material-symbols-outlined{font-size:15px}
+@keyframes convo-float-in{from{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){.convo-float{animation:none}.cf-bars b{height:max(2px,6cqw)}.cf-dots b{opacity:1}.convo-panel-orb[data-convo] .cf-core{transform:translate(-50%,-50%)!important}}
 </style>

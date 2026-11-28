@@ -85,7 +85,8 @@ test('The chip markup: the level bar is hidden from assistive technology and sho
     const reduced = css.slice(css.indexOf('@media(prefers-reduced-motion:reduce)'));
     assert.match(reduced, /\.convo-chip \.convo-dot\{animation:none\}/);
     assert.match(reduced, /\.convo-level>i\{transition:none\}/);
-    assert.match(markup, /x-text="\$store\.convo\.note \|\| \$store\.convo\.waiting \|\| /);    // what the session waits for, in words
+    assert.match(markup, /<p class="convo-hint" x-show="\$store\.convo\.hintText" x-text="\$store\.convo\.hintText"><\/p>/);
+    assert.match(await read('convo-store.js'), /get hintText\(\) \{\s*if \(this\.note \|\| this\.waiting\) return this\.note \|\| this\.waiting;/);    // what the session waits for, in words
 });
 
 async function admittedTurn(transcribe, { wanted = true, globals = {} } = {}) {

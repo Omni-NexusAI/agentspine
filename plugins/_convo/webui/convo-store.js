@@ -4,7 +4,7 @@ import { createNamespacedClient } from '/js/websocket.js';
 import { getCurrentContextId, getCurrentContext, openModal } from '/js/shortcuts.js';
 import { AudioSession } from './audio.js';
 import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
-import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
+import { announce, cueFor, emitCue, orbView, releaseOrb, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
 import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, readPicture, soundKey, soundSource } from './sound-setup.js';
 import { plainText } from './plain-text.js';
@@ -580,8 +580,106 @@ function updateOrb() {
     if (mic) syncOrb(mic, view, id === 'speaking' ? store.outputLevel : store.inputLevel);
     // The panel's own orb (its start and stop control) shows the same state with the same layers.
     if (panelOrb) { try { syncOrb(panelOrb, view, id === 'speaking' ? store.outputLevel : store.inputLevel); } catch { /* the panel is optional */ } }
+    // The floating orb, when the user let it out of the panel: the same view on an element of its own.
+    try { syncFloat(); if (floatOrb) syncOrb(floatOrb, view, id === 'speaking' ? store.outputLevel : store.inputLevel); } catch { /* the floating orb is optional */ }
 }
 let panelOrb = null;
+
+// ---- Where the panel's orb sits. It is one absolutely placed element; this gives it the box of the slot on the ready page (no
+// conversation, nothing said yet) or of the dock beside the controls. A change of place is animated by the stylesheet; a placement
+// that only follows a resize is immediate (`data-still`).
+let orbFrame = 0, orbWatch = null, orbPlace = '', orbMoveUntil = 0;
+function placeOrb() {
+    orbFrame = 0;
+    const orb = panelOrb, panel = orb?.closest?.('.convo-panel');
+    if (!panel?.getBoundingClientRect || !orb.style) return;
+    const live = store.active || store.busy;
+    const slot = live ? null : panel.querySelector('.convo-orb-slot')?.getBoundingClientRect?.();
+    const ready = !!slot && slot.width > 8 && slot.height > 8;
+    const box = ready ? slot : panel.querySelector('.convo-orb-dock')?.getBoundingClientRect?.();
+    if (!box || box.width < 8) return;                               // the panel is not laid out yet (a hidden canvas)
+    const outer = panel.getBoundingClientRect(), size = Math.round(Math.min(box.width, box.height));
+    const place = ready ? 'ready' : 'dock', now = Date.now();
+    if (place !== orbPlace) { if (orbPlace) orbMoveUntil = now + 750; orbPlace = place; }
+    if (now >= orbMoveUntil) orb.setAttribute('data-still', ''); else orb.removeAttribute('data-still');
+    orb.setAttribute('data-place', place);
+    orb.style.left = `${Math.round(box.left - outer.left + (box.width - size) / 2)}px`;
+    orb.style.top = `${Math.round(box.top - outer.top + (box.height - size) / 2)}px`;
+    orb.style.width = orb.style.height = `${size}px`;
+}
+function queuePlace() {
+    if (!panelOrb || orbFrame) return;
+    const raf = globalThis.requestAnimationFrame;
+    if (typeof raf === 'function') orbFrame = raf(placeOrb); else placeOrb();
+}
+function watchOrbPlace(orb) {
+    try { orbWatch?.disconnect(); } catch { /* already gone */ }
+    orbWatch = null; orbPlace = ''; orbMoveUntil = 0;
+    const panel = orb?.closest?.('.convo-panel'), Observer = globalThis.ResizeObserver;
+    if (!panel || typeof Observer !== 'function') return;
+    orbWatch = new Observer(queuePlace);
+    for (const part of [panel, ...['.convo-bar', '.convo-stage', '.convo-log', '.convo-empty'].map(name => panel.querySelector(name))]) if (part) orbWatch.observe(part);
+}
+
+// ---- The floating orb: the user can let the orb out of the panel while a conversation runs. It sits on the page itself (so it
+// stays when the panel is closed), is dragged anywhere in the window, stops the conversation on a click like the panel's orb, and
+// goes back with its small button. Whether it floats and where it was left are kept for this browser.
+const FLOAT_KEY = 'convo.orb.v1', FLOAT_SIZE = 76;
+function readFloat() {
+    try { const kept = JSON.parse(globalThis.localStorage?.getItem(FLOAT_KEY) || 'null'); return kept && typeof kept === 'object' ? kept : {}; } catch { return {}; }
+}
+let floatBox = null, floatOrb = null, floatAt = readFloat(), floatDragged = false;
+function saveFloat() {
+    try { globalThis.localStorage?.setItem(FLOAT_KEY, JSON.stringify({ floating: !!store.orbFloating, x: floatAt.x, y: floatAt.y })); } catch { /* kept for this page only */ }
+}
+function moveFloat(x, y) {
+    const width = globalThis.innerWidth || 0, height = globalThis.innerHeight || 0;
+    floatAt = { x: Math.round(Math.max(4, Math.min(Math.max(4, width - FLOAT_SIZE - 4), x))), y: Math.round(Math.max(4, Math.min(Math.max(4, height - FLOAT_SIZE - 4), y))) };
+    if (floatBox) { floatBox.style.left = `${floatAt.x}px`; floatBox.style.top = `${floatAt.y}px`; }
+}
+function buildFloat(doc) {
+    const box = doc.createElement('div'), orb = doc.createElement('button'), back = doc.createElement('button'), glyph = doc.createElement('span');
+    box.className = 'convo-float'; box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Convo orb');
+    orb.type = 'button'; orb.className = 'convo-panel-orb convo-float-orb';
+    back.type = 'button'; back.className = 'convo-float-back'; back.setAttribute('aria-label', 'Put the orb back in the Convo panel');
+    glyph.className = 'material-symbols-outlined'; glyph.setAttribute('aria-hidden', 'true'); glyph.textContent = 'close_fullscreen';
+    back.appendChild(glyph); box.appendChild(orb); box.appendChild(back);
+    let grab = null;
+    box.addEventListener('pointerdown', event => {
+        if (event.button > 0 || event.target?.closest?.('.convo-float-back')) return;
+        grab = { x: event.clientX, y: event.clientY, left: floatAt.x, top: floatAt.y, moved: false };
+        try { box.setPointerCapture?.(event.pointerId); } catch { /* dragging still works without capture */ }
+    });
+    box.addEventListener('pointermove', event => {
+        if (!grab) return;
+        const dx = event.clientX - grab.x, dy = event.clientY - grab.y;
+        if (!grab.moved && Math.hypot(dx, dy) < 5) return;
+        grab.moved = true; box.setAttribute('data-drag', '');
+        moveFloat(grab.left + dx, grab.top + dy);
+    });
+    const drop = () => {
+        if (!grab) return;
+        if (grab.moved) { floatDragged = true; setTimeout(() => { floatDragged = false; }, 0); saveFloat(); }
+        grab = null; box.removeAttribute('data-drag');
+    };
+    box.addEventListener('pointerup', drop); box.addEventListener('pointercancel', drop);
+    // A click that was not a drag is the orb's own action: stop the conversation.
+    orb.addEventListener('click', event => { if (floatDragged || grab?.moved) { event.preventDefault?.(); return; } if (store.active || store.busy) void store.stop(); });
+    back.addEventListener('click', () => { store.orbFloating = false; saveFloat(); updateOrb(); });
+    return { box, orb };
+}
+function syncFloat() {
+    const wanted = !!(store.orbFloating && store.enabled && (store.active || store.busy));
+    if (!wanted) { if (floatBox) { try { releaseOrb(floatOrb); floatBox.remove(); } catch { /* already gone */ } floatBox = floatOrb = null; } return; }
+    if (floatBox) return;
+    const doc = globalThis.document;
+    if (!doc?.createElement || !doc.body?.appendChild || typeof doc.createElement('div')?.addEventListener !== 'function') return;
+    ({ box: floatBox, orb: floatOrb } = buildFloat(doc));
+    doc.body.appendChild(floatBox);
+    const width = globalThis.innerWidth || 0, height = globalThis.innerHeight || 0;
+    moveFloat(Number.isFinite(floatAt.x) ? floatAt.x : width - FLOAT_SIZE - 28, Number.isFinite(floatAt.y) ? floatAt.y : height - FLOAT_SIZE - 150);
+}
+try { globalThis.addEventListener?.('resize', () => { if (floatBox) moveFloat(floatAt.x, floatAt.y); queuePlace(); }); } catch { /* no window here */ }
 
 // ---- The preview of what is shared (camera, screen): this page's own streams shown small in the panel; nothing leaves the page.
 const PREVIEW_KEY = 'convo.preview.v1';
@@ -1137,7 +1235,20 @@ export const store = createStore('convo', {
     jobChat(job) { return this.across && job ? (jobChats.get(job.id) || hostChatName(job.target)) : ''; },
     async mountPanel() { this.panelOpen = true; if (!this.active) this.target = this.idleTarget(); this.syncTargetName(); await this.refresh(); await this.history(); },
     unmountPanel() { this.panelOpen = false; },
-    bindPanelOrb(element) { panelOrb = element || null; if (panelOrb) updateOrb(); },
+    bindPanelOrb(element) { panelOrb = element || null; watchOrbPlace(panelOrb); if (panelOrb) { updateOrb(); queuePlace(); } },
+    queuePlaceOrb() { queuePlace(); },
+    // The ready page: no conversation and nothing said in this chat yet. The orb rests there, large; otherwise beside the controls.
+    get resting() { return !(this.active || this.busy) && !this.visibleEvents.length && !this.draft; },
+    // The one quiet line under the controls. Whether the microphone is on is the mute button's and the status chip's to say.
+    get hintText() {
+        if (this.note || this.waiting) return this.note || this.waiting;
+        if (this.dictating) return 'Dictating · click the composer orb to finish, Escape cancels';
+        if (this.active) return this.settings?.remote_processing ? 'Remote processing configured' : '';
+        if (this.busy || this.resting) return '';
+        return this.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Click the orb to start a conversation';
+    },
+    orbFloating: readFloat().floating === true,
+    toggleFloat() { this.orbFloating = !this.orbFloating; saveFloat(); updateOrb(); },
     // ---- the preview
     previewFlash: false, previewPlace: readPreviewPlace(),
     get previewStyle() { const place = this.previewPlace; return place ? `right:${place.right}px;bottom:${place.bottom}px` : ''; },

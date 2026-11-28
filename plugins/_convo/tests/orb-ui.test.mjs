@@ -101,6 +101,31 @@ test('A cue is an event; delivery failures are swallowed', () => {
     } finally { if (original.dispatchEvent) globalThis.dispatchEvent = original.dispatchEvent; else delete globalThis.dispatchEvent; }
 });
 
+test('The panel\'s orb is the standalone interface\'s orb: glow, two rings, core and one indicator per state, with no microphone glyph', async () => {
+    const mic = fakeMic({});
+    mic.classList = { contains: name => name === 'convo-panel-orb' };
+    syncOrb(mic, view({ active: false }), 0);
+    const layers = mic.children[0].innerHTML;
+    assert.match(layers, /^<i class="cf-glow"><\/i><i class="cf-ring"><\/i><i class="cf-ring2"><\/i><i class="cf-core"><span class="cf-ind">.*cf-spin.*cf-dots.*cf-bars.*cf-err/s);
+    assert.equal((layers.match(/<b><\/b>/g) || []).length, 8);                    // three thinking dots, five level bars
+    assert.doesNotMatch(layers, /g-mic|co-glyph|co-core/);                        // blank when ready: nothing says "microphone" on it
+    const css = await readFile(new URL('../extensions/webui/page-head/zz-convo-orb.html', import.meta.url), 'utf8');
+    // Ready breathes and wakes a little under the pointer; hearing and speaking follow the level; muted is a still double ring.
+    assert.match(css, /\.convo-panel-orb\[data-convo=ready\] \.cf-ring\{animation:cf-breathe 2\.4s ease-in-out infinite\}/);
+    assert.match(css, /\.convo-panel-orb\[data-convo=ready\]:hover \.cf-core\{transform:translate\(-50%,-50%\) scale\(1\.045\)\}/);
+    assert.match(css, /\.convo-panel-orb\[data-convo=hearing\] \.cf-ring,[^{]*\{opacity:calc\(\.25 \+ \.55\*var\(--convo-level\)\)/);
+    assert.match(css, /\.convo-panel-orb\[data-convo=speaking\] \.cf-core\{transform:translate\(-50%,-50%\) scale\(calc\(1 \+ \.09\*var\(--convo-level\)\)\)/);
+    assert.match(css, /\.convo-panel-orb\[data-convo=muted\] \.cf-ring\{border-width:3px;border-style:double/);
+    for (const [state, indicator] of [['connecting', 'cf-spin'], ['thinking', 'cf-dots'], ['listening', 'cf-bars'], ['hearing', 'cf-bars'], ['error', 'cf-err']])
+        assert.match(css, new RegExp(`\\.convo-panel-orb\\[data-convo=${state}\\] \\.${indicator}[,{]`), state);
+    assert.doesNotMatch(css, /\.convo-panel-orb\[data-convo=(ready|speaking|muted)\] \.cf-(spin|dots|bars|err)[,{]/);
+    assert.match(css, /@keyframes cf-breathe\{/);
+    // The composer's orb keeps its own compact layers.
+    const composer = fakeMic({});
+    syncOrb(composer, view({ active: false }), 0);
+    assert.match(composer.children[0].innerHTML, /co-glow.*g-mic/s);
+});
+
 test('The orb is layered onto the host button once, and attributes are written only when they change', () => {
     const mic = fakeMic({ 'aria-label': 'Microphone standby', 'aria-pressed': 'false' });
     syncOrb(mic, view({ active: false }), 0);
