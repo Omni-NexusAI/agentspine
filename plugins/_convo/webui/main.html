@@ -90,16 +90,16 @@ install();
    extensions/webui/page-head/zz-convo-orb.html). It is one absolutely placed element: convo-store.js placeOrb gives it the box of
    .convo-orb-slot (the ready page) or .convo-orb-dock (beside the controls), and the move between the two is animated here.
    `data-still` is set while it only follows a resize, so it never lags behind the layout. */
-.convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary{position:absolute;z-index:4;left:0;top:0;width:46px;height:46px;border:0;border-radius:50%;background:transparent;padding:0;margin:0;min-height:0;cursor:pointer;color:inherit;transition:left .6s cubic-bezier(.5,0,.2,1),top .6s cubic-bezier(.5,0,.2,1),width .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1),transform .18s ease,filter .18s ease,opacity .25s ease}
+.convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary{position:absolute;z-index:4;left:0;top:0;width:58px;height:58px;border:0;border-radius:50%;background:transparent;padding:0;margin:0;min-height:0;cursor:pointer;color:inherit;transition:left .6s cubic-bezier(.5,0,.2,1),top .6s cubic-bezier(.5,0,.2,1),width .6s cubic-bezier(.5,0,.2,1),height .6s cubic-bezier(.5,0,.2,1),transform .18s ease,filter .18s ease,opacity .25s ease}
 .convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary[data-still]{transition:transform .18s ease,filter .18s ease,opacity .25s ease}
 .convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary:not([data-place]){opacity:0}
 .convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary[data-away=true]{opacity:0;transform:scale(.3);pointer-events:none}
 .convo-panel :is(#convo-orb-full,.convo-panel-orb).convo-primary:disabled{opacity:.45;cursor:not-allowed}
 .convo-panel .convo-panel-orb:not([data-convo]){border:2px solid var(--color-border)}
 .convo-orb-text{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.convo-stage{align-items:center;justify-content:flex-start;flex-wrap:nowrap;gap:.6rem;min-height:46px}
+.convo-stage{align-items:center;justify-content:flex-start;flex-wrap:nowrap;gap:.7rem;min-height:58px}
 .convo-stage[data-rest=true]{height:0;min-height:0;margin-bottom:-.55rem;overflow:hidden}
-.convo-orb-dock{flex:0 0 46px;width:46px;height:46px}
+.convo-orb-dock{flex:0 0 58px;width:58px;height:58px}
 .convo-orb-slot{display:block;width:clamp(104px,36%,148px);aspect-ratio:1;margin:0 auto .9rem}
 .convo-orb-slot[data-open=false]{display:none}
 .convo-icons{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;min-width:0}
@@ -113,7 +113,7 @@ install();
 .convo-panel .convo-mute[aria-pressed=true] .material-symbols-outlined{color:#e06c6c}
 /* Before a conversation the controls are tucked behind the orb; when it starts, the orb travels to its place and they slide out
    of its right side one after another. */
-.convo-stage .convo-iconbtn{opacity:0;transform:translateX(calc(-50px - var(--i,0)*42px)) scale(.4);pointer-events:none;transition:transform .25s ease,opacity .18s ease,background-color .15s ease,border-color .15s ease}
+.convo-stage .convo-iconbtn{opacity:0;transform:translateX(calc(-62px - var(--i,0)*42px)) scale(.4);pointer-events:none;transition:transform .25s ease,opacity .18s ease,background-color .15s ease,border-color .15s ease}
 .convo-stage[data-active=true] .convo-iconbtn{opacity:1;transform:none;pointer-events:auto;transition:transform .5s cubic-bezier(.2,.9,.25,1.15) calc(.42s + var(--i,0)*.07s),opacity .3s ease calc(.42s + var(--i,0)*.07s),background-color .15s ease,border-color .15s ease}
 /* What is being shared, small, in the panel's lower corner: dragged anywhere inside the panel, opened as its own window on request.
    The frame lights up for a moment each time the assistant actually takes a picture. */
