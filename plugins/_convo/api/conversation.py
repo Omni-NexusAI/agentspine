@@ -59,6 +59,43 @@ def plan_view(m, store, target):
         return None
 
 
+def modes_view(m, s, target):
+    """The conversation's Permissions and Reasoning menus for the panel (convo_voice_modes), with what the conversation model can be asked to
+    think (convo_tools.reasoning_offer, from what the connection check measured) and the kinds of work answered "always". Never fails a read."""
+    try:
+        from urllib.parse import urlsplit
+        modes = importlib.import_module(m.__package__ + '.convo_voice_modes').of(s.store)
+        tools = importlib.import_module(m.__package__ + '.convo_tools')
+        contract = importlib.import_module(m.__package__ + '.convo_contract')
+        setup = importlib.import_module(m.__package__ + '.convo_setup')
+        config = m.settings()
+        role = config['roles']['conversation']
+        local = not role.get('remote') and contract.local_host(urlsplit(str(role.get('url') or '')).hostname or '')
+        record = tools.measured(setup.store.config_path().parent / 'data', role)
+        allowed = [{'tool': name, 'label': str(tools.CATALOG.get(name, {}).get('ask') or tools.LABEL.get(name) or name)} for name in modes.allowed()]
+        return {**modes.get(target, config), 'allowed': allowed, 'reasoning_offer': tools.reasoning_offer(record, local)}
+    except Exception:
+        return None
+
+
+MODE_ACTIONS = {'voice_mode_set', 'allowed_forget'}
+
+
+def mode_action(m, s, target, action, data):
+    """The panel's two menus (and Settings' list of remembered answers). A refusal answers with words."""
+    modes = importlib.import_module(m.__package__ + '.convo_voice_modes').of(s.store)
+    try:
+        if action == 'voice_mode_set':
+            permission, reasoning = data.get('permission'), data.get('reasoning')
+            modes.set(target, m.settings(), permission=permission if permission is not None else None,
+                      reasoning=reasoning if reasoning is not None else None)
+        else:
+            modes.forget(str(data.get('tool') or ''))
+        return {'ok': True, 'modes': modes_view(m, s, target)}
+    except ValueError as exc:
+        return {'ok': False, 'code': 'invalid', 'error': str(exc)[:200], 'modes': modes_view(m, s, target)}
+
+
 PLAN_ACTIONS = {'plan_start', 'plan_end', 'plan_save', 'plan_hand_over', 'plan_drop', 'plan_version'}
 
 
@@ -319,9 +356,12 @@ class Conversation(ApiHandler):
             for change in s.store.steers([job["id"] for job in jobs if job["status"] in ("queued", "dispatching", "running")] or ["-"]):
                 changes[change["job"]] = change["status"]          # the newest change of each task still going on
             return {"ok": True, **page, "jobs": [{**job, "change": changes[job["id"]]} if job["id"] in changes else job for job in jobs],
-                    "steering": steering_on(m), "plan": plan_view(m, s.store, target), "assistant_name": assistant_name(m.settings(), s.host, target)}
+                    "steering": steering_on(m), "plan": plan_view(m, s.store, target), "modes": modes_view(m, s, target),
+                    "assistant_name": assistant_name(m.settings(), s.host, target)}
         if action in PLAN_ACTIONS:
             return plan_action(m, s, target, action, input)
+        if action in MODE_ACTIONS:
+            return mode_action(m, s, target, action, input)
         if action in {"cancel_job", "steer_job"}:
             job = s.store.job(str(input.get("job_id", "")))
             if job["target"] != target:

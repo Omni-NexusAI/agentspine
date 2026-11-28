@@ -819,7 +819,7 @@ function showAction(event) {
     if (!id) return;
     clearAction();
     const seconds = Number(event.seconds);
-    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false, ...(event.plan_id ? { planId: String(event.plan_id), planStatus: String(event.plan_status || '') } : {}) };
+    store.pendingAction = { id, label: String(event.label || 'Go ahead?').slice(0, 80), summary: String(event.summary || '').slice(0, 300), busy: false, always: event.always === true, ...(event.plan_id ? { planId: String(event.plan_id), planStatus: String(event.plan_status || '') } : {}) };
     actionTimer = setTimeout(() => clearAction(id), Math.min(ACTION_MAX_SECONDS, seconds > 0 ? seconds : ACTION_SECONDS) * 1000);
 }
 
@@ -1001,6 +1001,14 @@ async function answerSetting(event) {
     await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
 }
 
+// ---- The Reasoning and Permissions menus (convo_voice_modes on the server) ------------------------------------------------------------
+const REASONING_LABELS = { auto: 'Auto', off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
+const PERMISSIONS = [
+    { id: 'ask', label: 'Ask when unsure', icon: 'shield', note: 'Asks before it starts, changes or saves anything it is not sure you asked for.' },
+    { id: 'plan', label: 'Plan', icon: 'edit_note', note: 'Talks and looks things up with you; asks before anything else.' },
+    { id: 'allow', label: 'Allow without asking', icon: 'bolt', note: 'Does what you ask without asking first; still asks when text from the web or a chat could have asked for it.' },
+];
+
 export const store = createStore('convo', {
     settings: null, settingsRevision: '', session: null, state: 'off', error: '', errorQuiet: false, errorShowMs: ERROR_SHOW_MS, problems: [], loading: '', unavailable: '', activity: '',
     muted: false, talking: false, mutedOver: '',   // the user's mute; push-to-talk held while muted; what the assistant does while muted (the chip)
@@ -1019,6 +1027,7 @@ export const store = createStore('convo', {
     screenShared: false, screenOffered: false, // "Share screen": the same for a screen, window or tab chosen in the browser's own picker
     work: '', workName: '', workDebounceMs: 300, // the conversation across chats: the chat work goes to by default ('' = none) and its title
     pendingAction: null,                         // what Convo asks before going ahead ({id, label, summary, busy}): one card, Run or Dismiss
+    modes: null, menu: '', modesBusy: false, modesNote: '',
     plan: null, planOpen: false, planText: '', planDirty: false, planBase: 0, planFrom: '', planBusy: false, planNote: '', planClash: false, planLost: [], planEarlierOpen: false, planVersionsOpen: false,   // planning mode (below)
     links: [], uiWaitMs: UI_WAIT_MS,             // "Open <title>" link cards from the open tool (at most three); how long a host call may take
     busyRetryMs: [250, 500, 1000, 1500, 2000],   // how long a completed turn may wait for a free server before it is reported as not answered
@@ -1559,7 +1568,7 @@ export const store = createStore('convo', {
                     jobChats.set(String(event.job_id), event.chat.slice(0, 80));
                     while (jobChats.size > 64) jobChats.delete(jobChats.keys().next().value);
                 }
-                if (event.type === 'job.queued' || event.type === 'job.steered' || event.type === 'plan.changed' || (event.type === 'state' && event.state === 'listening')) void this.history();
+                if (event.type === 'job.queued' || event.type === 'job.steered' || event.type === 'plan.changed' || event.type === 'modes.changed' || (event.type === 'state' && event.state === 'listening')) void this.history();
             });
             const response = await request('start', { target: chat, mode: this.mode, page: pageId(), device: deviceName(),
                 ...(takeover ? { takeover: String(takeover) } : {}) }, ownedClient);
@@ -1772,12 +1781,13 @@ export const store = createStore('convo', {
     // The pending-action card's buttons: Run (`run: true`) or Dismiss. The card goes once the server took the answer, and also
     // when the server says the question is no longer open (`stale`: answered by voice, replaced or expired meanwhile); any other
     // failed send leaves it for another press (it still expires by itself).
-    async answerAction(run) {
+    // `always`: Run, and this kind of action is no longer asked about (the server keeps it; the Permissions menu can take it back).
+    async answerAction(run, always = false) {
         const action = this.pendingAction;
         if (!action || action.busy) return false;
         this.pendingAction = { ...action, busy: true };
         try {
-            await request('action', { ...identity(), id: action.id, run: !!run });
+            await request('action', { ...identity(), id: action.id, run: !!run, ...(run && always ? { always: true } : {}) });
             clearAction(action.id); settled('action');
             return true;
         } catch (error) {
@@ -1904,6 +1914,7 @@ export const store = createStore('convo', {
             this.jobs = result.jobs;
             this.steeringOn = result.steering === true;
             if (mark === planMark) this.takePlan(result.plan);              // (one asked for before a change of the plan answers with what was)
+            if (result.modes !== undefined && !this.modesBusy) this.modes = result.modes && typeof result.modes === 'object' ? result.modes : null;
             if (typeof result.assistant_name === 'string' && result.assistant_name.trim()) this.assistantName = result.assistant_name.trim().slice(0, 64);
             if (fresh.length) {
                 settleDraft(fresh);
@@ -1997,6 +2008,86 @@ export const store = createStore('convo', {
     // next one; when another plan or chat takes its place it is saved to its own plan, or kept here to be copied (`planLost`). Every text that
     // was replaced can be looked at and put back (`planVersions`).
     get planning() { return !!this.plan?.on; },
+    get reasoningLabel() { return REASONING_LABELS[this.modes?.reasoning] || 'Auto'; },
+    get reasoningOffer() { return this.modes?.reasoning_offer || { measured: false, can: false, graded: false }; },
+    get reasoningItems() {
+        const now = this.modes?.reasoning || 'auto', offer = this.reasoningOffer, cannot = offer.measured && !offer.can;
+        return [
+            { id: 'auto', label: 'Auto', note: cannot ? 'Answers at once: this model does not think before answering.' : 'Answers at once, and thinks first when a question needs it.' },
+            { id: 'off', label: 'Off', note: 'Always answers at once, without thinking first.' },
+            ...['low', 'medium', 'high'].map(id => ({ id, label: REASONING_LABELS[id], disabled: cannot, note: cannot ? 'This model does not think before answering.' : '' })),
+        ].map(item => ({ ...item, on: item.id === now, disabled: !!item.disabled }));
+    },
+    get reasoningNote() {
+        const offer = this.reasoningOffer;
+        if (!this.modes) return '';
+        if (!offer.measured) return 'Not checked yet: Convo learns what this model takes at its next connection check. Until then Low, Medium and High may change nothing.';
+        if (offer.can && !offer.graded) return 'This model has thinking on or off only: Low, Medium and High all turn it on.';
+        return 'Thinking makes the first words come later. Applies from the next answer.';
+    },
+    get permissionNow() { return this.planning ? 'plan' : (this.modes?.permission === 'allow' ? 'allow' : 'ask'); },
+    get permissionLabel() { return PERMISSIONS.find(item => item.id === this.permissionNow).label; },
+    get permissionIcon() { return PERMISSIONS.find(item => item.id === this.permissionNow).icon; },
+    get permissionItems() { return PERMISSIONS.map(item => ({ ...item, on: item.id === this.permissionNow })); },
+    toggleMenu(name) {
+        this.menu = this.menu === name ? '' : name;
+        this.modesNote = '';
+        if (this.menu && this.target) void this.history();              // what the menu shows is up to date when it opens
+    },
+    closeMenu(event) {
+        if (!this.menu) return;
+        const name = this.menu;
+        this.menu = '';
+        event?.stopPropagation?.();
+        try { globalThis.document?.querySelector?.(`.convo-menu-btn[data-menu="${name}"]`)?.focus?.(); } catch { /* the button is gone */ }
+    },
+    async modeCall(action, payload = {}) {
+        const target = this.target;
+        if (!target || this.modesBusy) return null;
+        this.modesBusy = true;
+        try {
+            const result = await callJsonApi(endpoint, { action, target, ...payload });
+            if (this.target !== target) return null;
+            if (result?.modes !== undefined) this.modes = result.modes;
+            if (result?.ok === false) { this.modesNote = String(result.error || 'That could not be changed.').slice(0, 200); return result; }
+            settled('modes');
+            return result;
+        } catch (error) { failSource('modes', error); return null; }
+        finally { this.modesBusy = false; }
+    },
+    async setReasoning(level) {
+        const item = this.reasoningItems.find(entry => entry.id === level);
+        if (!item || item.disabled) return false;
+        const result = await this.modeCall('voice_mode_set', { reasoning: level });
+        if (!result?.ok) return false;
+        this.menu = '';
+        if (!this.panelOpen) announce('Reasoning: ' + REASONING_LABELS[level] + '.');
+        return true;
+    },
+    // Plan is planning mode (its own plan and floor); Ask and Allow are kept for the conversation, and choosing either ends planning (the plan is kept).
+    async setPermission(id) {
+        if (!PERMISSIONS.some(item => item.id === id)) return false;
+        if (id === 'plan') {
+            const done = this.planning || await this.togglePlanning();
+            if (done) this.menu = '';
+            return !!done;
+        }
+        if (this.planning && !(await this.togglePlanning())) return false;
+        const result = await this.modeCall('voice_mode_set', { permission: id });
+        if (!result?.ok) return false;
+        this.menu = '';
+        return true;
+    },
+    async newPlan() {
+        if (this.planDirty && !(await this.savePlan())) return false;
+        const result = await this.planCall('plan_start', { new: true });
+        if (result?.ok) this.menu = '';
+        return !!result?.ok;
+    },
+    async forgetAllowed(tool) {
+        const result = await this.modeCall('allowed_forget', { tool: String(tool || '') });
+        return !!result?.ok;
+    },
     get planState() { return planState(this.plan); },
     get planWaiting() {
         const count = this.planning ? this.plan.waiting?.length || 0 : 0;

@@ -33,6 +33,7 @@ READ_SECONDS = 6.0         # the isolated yes / no reading of an answer may take
 # eight wordings (.runtime/convo-live-test/sweep_confirm_20261122.py), so the model that hears the user reads it, alone.
 READER = ("You are given one short utterance from a person who was just asked whether something should go ahead. Decide what "
           "they answered, in any language. Reply with exactly one word and nothing else: YES if they agree or say to go ahead; "
+          "ALWAYS if they agree and also say that they need not be asked about this kind of thing again; "
           "CHANGE if they agree but want it done differently (a condition, a correction, an addition, another place or time); "
           "NO if they refuse, decline or say not now; OTHER if they say anything else, ask something, or it is unclear.")
 # The same isolation for another question: did the user, in the utterance being answered, ask for this kind of work themself? Used
@@ -269,7 +270,7 @@ async def show(rt, sid, state, session, record, silent=False):
             await resolve(rt, sid, state, state.get('session') or session, 'expired')
     record['timer'] = asyncio.ensure_future(expire())
     await rt._send(sid, state, session, record['turn'], 'action.pending', id=record['id'], name=record['name'], label=record['label'],
-                   summary=record['summary'], seconds=int(PENDING_SECONDS),
+                   summary=record['summary'], seconds=int(PENDING_SECONDS), always=rt._helper('convo_voice_modes').VoiceModes.remembers(record['name']),
                    **({'plan_id': record['about'], 'plan_status': record['stands']} if record.get('about') else {}))
 
 
@@ -368,7 +369,8 @@ def parse_reading(text):
     """The reader's one word as 'yes', 'no' or 'other'; anything else (nothing, several words, another word) is 'unread'. This
     reads a control word Convo itself asked for, like [SILENT] and [WAIT]: it is not a match on the user's words."""
     words = ''.join(letter if letter.isalpha() else ' ' for letter in str(text or '')).split()
-    return {'YES': 'yes', 'NO': 'no', 'OTHER': 'other', 'CHANGE': 'change'}.get(words[0].upper(), 'unread') if len(words) == 1 else 'unread'
+    return ({'YES': 'yes', 'ALWAYS': 'always', 'NO': 'no', 'OTHER': 'other', 'CHANGE': 'change'}.get(words[0].upper(), 'unread')
+            if len(words) == 1 else 'unread')
 
 
 # What a reply that called no tool left open (2026-11-25: "let me check what I can do", then nothing; "I can open Settings for you
@@ -481,7 +483,8 @@ async def belongs(rt, state, audio, transcript):
 
 
 async def reading(rt, state, audio, transcript, system=None, *, history=None, seconds=None):
-    """The user's answer to the pending question: 'yes', 'change', 'no', 'other', or 'unread' when it could not be read (then the question
+    """The user's answer to the pending question: 'yes', 'always' (yes, and never ask about this kind again), 'change', 'no', 'other',
+    or 'unread' when it could not be read (then the question
     stays open and only the panel's Run button confirms). One isolated request to the conversation model: READER as its whole
     instruction, the utterance itself (its audio for a model that hears, else its recognized text), an empty history and no
     tools. Bounded by READ_SECONDS; never raises. (`system`, `history` and `seconds` are for the other one-word readings.)"""
@@ -780,7 +783,9 @@ def _words(text):
 
 
 # ── Convo's own settings by voice ─────────────────────────────────────────────────
-# A fixed, safe subset. For this conversation only (the page does it): the microphone, the assistant's voice, the camera. Saved
+# A fixed, safe subset. For this conversation only (the page does it): the microphone, the assistant's voice, the camera; and kept
+# with the conversation (convo_voice_modes): how much the model thinks before it answers (reasoning). Its permission mode never: what
+# a voice or a page says must not loosen it, so it changes only in the panel. Saved
 # (convo_setup.patch, the same validated path as the settings page): answer length, spoken task updates and the developer options.
 # Never by voice: what the voice agent may do, consents, keys, addresses, providers, models and the speech gate.
 ON_WORDS = ('on', 'yes', 'true', 'enable', 'enabled', 'start', 'unmute', 'unmuted', 'show', 'share')
@@ -801,9 +806,29 @@ def switch(value):
     return True if on and not off else False if off and not on else None
 
 
+REASONING_WORDS = {'auto': 'Auto: you think only when a question needs it', 'off': 'off: you answer at once, without thinking first',
+                   'low': 'low', 'medium': 'medium', 'high': 'high'}
+
+
 async def _setting(rt, sid, state, session, turn, args):
     """Carry out one change of the voice agent's own settings. Returns (worked, what is now true, in words for the model)."""
     name, value = args['setting'], str(args.get('value') or '').strip()
+    if name == 'reasoning':
+        level = _named(value, tuple(REASONING_WORDS))
+        if not level:
+            return False, 'it must be one of: auto, off, low, medium, high'
+        try:
+            rt._modes_store(state).set(session['target'], state['config'], reasoning=level)
+        except Exception:
+            return False, 'it could not be kept'
+        try:
+            await rt._send(sid, state, session, turn, 'modes.changed', reasoning=level)
+        except Exception:
+            pass
+        offer = rt._helper('convo_tools').reasoning_offer(state.get('measured'), rt._local_model(state))
+        if level in ('low', 'medium', 'high') and offer['measured'] and not offer['can']:
+            return True, 'Reasoning is set to %s, but this conversation model does not think before answering, so nothing changes.' % level
+        return True, 'Reasoning is now %s, from your next answer on.' % REASONING_WORDS[level]
     if name in SESSION_SETTINGS:
         wanted = switch(value)
         if wanted is None:
@@ -978,6 +1003,9 @@ async def read(rt, sid, state, session, turn, name, args, config, more=False):
     if name in ('web_search', 'memory_read', 'recall_conversation'):
         instruction, ok, raw = await rt._direct(s, session, {"name": name}, args, config, more=more)
         return instruction, ok, raw, {}
+    if name == 'think':
+        level = args.get('level') if args.get('level') in tools.LEVELS else 'medium'
+        return tools.think_now(level), True, 'thought it through (%s)' % level, {'think': level}
     try:
         if name == 'listen_back':
             if not config["roles"]["conversation"]["capabilities"].get("audio_input"):

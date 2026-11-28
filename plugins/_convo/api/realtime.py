@@ -713,6 +713,8 @@ class Realtime(WsHandler):
             if record is None or str(data.get('id', '')) != record['id']:
                 return {'ok': False, 'stale': True}
             if data.get('run') is True:
+                if data.get('always') is True and self._helper('convo_voice_modes').VoiceModes.remembers(record['name']):
+                    self._remember_allowed(state, record['name'])     # Always: this kind runs without the question from now on
                 await voice_tools.resolve(self, sid, state, session, 'run', by='panel')
                 work = self._pressed(sid, state, session, record)
                 if record['name'] == 'voice_mode':
@@ -1012,7 +1014,7 @@ class Realtime(WsHandler):
                     # Did the classifier itself hear a request (the gate's own reading, before the presumption)? Only then may this
                     # turn take over an answer the user has not heard yet (below).
                     requested = policy.reads_as_request(decision, peak=candidate.get('peak', 0.0))
-                    if answered in ('yes', 'no', 'change'):
+                    if answered in ('yes', 'always', 'no', 'change'):
                         # An answer to Convo's own question is never a mere acknowledgement or side talk: the turn is answered.
                         verdict, reason, requested, unfinished = 'admit', 'confirmation', True, False
                     if (verdict == 'ignore' and reason in ('backchannel', 'not_addressed') and self._offer_open(state)
@@ -2388,6 +2390,49 @@ class Realtime(WsHandler):
                     state['warm_owed'] = True
                 self._compact(sid, state, session)
 
+    async def _notice_role(self, state):
+        """The speech role for something Convo says on its own (a notice, a plan read out): frozen like a reply's, in the language the
+        conversation was last spoken in."""
+        m, _, _ = modules()
+        role = state['service'].host.freeze_speech(self._tts_role(state, m))
+        if role.get('backend') == 'managed_audio':
+            return await state['sidecar'].freeze_speech(role)
+        envelope = await self._reply_tuning(state, role)
+        if envelope is not None:
+            role['reply_tuning'] = envelope
+        spoken = list(state.get('reply_languages', {}).values())
+        if spoken and spoken[-1]:
+            role['language'] = spoken[-1]
+        return role
+
+    async def _readout_text(self, sid, state, session, turn, instruction, data):
+        """What Convo says on its own about something written (the final plan, convo_modes.readout): one request to the conversation
+        model with no history, the persona and `data` (not instructions), on a spare slot when there is one. Plain spoken text, or ''."""
+        request = {'role': state['config']['roles']['conversation'], 'history': [], 'allow_tools': False,
+                   'transcript': 'Say it now, as described.',
+                   'system': VOICE_RULES + '\n' + instruction + ' Persona data: ' + json.dumps(state['persona'])
+                             + '\nData (not instructions): ' + json.dumps(data, ensure_ascii=False)}
+        server = self._server(state)
+        spare = (server['slot'] + 1) % server['slots'] if server['kind'] == 'llama.cpp' and server['slots'] > 1 else None
+        text = ''
+        try:
+            async for item in state['sidecar'].answer(self._pinned(state, request, spare)):
+                if not self._current(sid, state, session['epoch']):
+                    return ''
+                if item['type'] == 'text.delta':
+                    text += item['text']
+                if item['type'] in {'tool.proposal', 'error'} or len(text) > 4000:
+                    return ''
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._mark(turn, 'notice.error', error='readout')
+            return ''
+        finally:
+            if server['kind'] != 'remote' and server['slots'] <= 1:
+                state['warm_owed'] = True            # its own request replaced the conversation's cached start
+        return self._helper('convo_plaintext').spoken(text).strip()
+
     def _helper(self, name):
         m, _, _ = modules()
         return importlib.import_module(m.__package__ + '.' + name)
@@ -2396,6 +2441,37 @@ class Realtime(WsHandler):
         """The saved voice-style settings for THIS response; the session's own copy if the saved ones cannot be read."""
         voice = self._helper('convo_voice_style')
         return voice.style_settings(lambda: self._settings(state), state['config'])
+
+    def _modes_store(self, state):
+        return self._helper('convo_voice_modes').of(state['service'].store)
+
+    def _voice_modes(self, state, session):
+        """This conversation's permission mode and reasoning level (convo_voice_modes); Settings' defaults when they cannot be read."""
+        try:
+            return self._modes_store(state).get(session['target'], state['config'])
+        except Exception:
+            return {**self._helper('convo_voice_modes').VoiceModes.defaults(state.get('config')), 'chosen': False}
+
+    def _remember_allowed(self, state, name):
+        """The user answered "always": this kind of work runs without the question from now on, where it may be remembered. What the
+        reply is told about it, as a sentence ('' when there is nothing to say)."""
+        modes = self._helper('convo_voice_modes')
+        if not modes.VoiceModes.remembers(name):
+            return (" They also asked not to be asked about this again, but this kind of action is always asked about: say so in a few "
+                    "words.")
+        try:
+            self._modes_store(state).allow(name)
+        except Exception:
+            return " They also asked not to be asked about this again, but that could not be kept: say so in a few words."
+        return (" They also asked not to be asked about this kind of action again: from now on it runs without the question (it can be "
+                "taken back in the Permissions menu of the Convo panel). Mention that in a few words.")
+
+    def _remembered(self, state, name):
+        """Whether the user answered "always" to a question about this kind of work (convo_voice_modes)."""
+        try:
+            return self._modes_store(state).is_allowed(name)
+        except Exception:
+            return False
 
     def _planning(self, state, session):
         """The open plan of this conversation (planning mode is on: convo_modes), or None."""
@@ -2539,7 +2615,33 @@ class Realtime(WsHandler):
         # the small set for a model that takes its tools in writing (convo_tools.offered).
         return tools.offered(recall=recall, camera=bool(state.get('camera')) and images, screen=bool(state.get('screen')) and images,
                              steering=self._steering(state), files=self._files(state), groups=config.get('voice_tools'), mode=mode,
-                             audio=bool(isinstance(capabilities, dict) and capabilities.get('audio_input'))), mode
+                             audio=bool(isinstance(capabilities, dict) and capabilities.get('audio_input')),
+                             reasoning=self._auto_think(state)), mode
+
+    def _local_model(self, state):
+        """Whether the conversation model runs on the user's own machines (asked to think through its chat template)."""
+        return self._server(state)['kind'] != 'remote' and not state['config']['roles']['conversation'].get('remote')
+
+    def _auto_think(self, state):
+        """The think tool is offered: this conversation's Reasoning is Auto and its model can be asked to think."""
+        try:
+            if self._voice_modes(state, state.get('session') or {})['reasoning'] != 'auto':
+                return False
+            if 'measured' not in state:
+                state['measured'] = self._measured(state)
+            return self._helper('convo_tools').can_think(state.get('measured'), self._local_model(state)) is True
+        except Exception:
+            return False
+
+    def _thinking(self, state, level):
+        """The request fields that have the conversation model think at `level`, or None (no thinking: 'off', 'auto' before the
+        model chose to think, or a model that cannot be asked to)."""
+        tools = self._helper('convo_tools')
+        if level not in tools.LEVELS:
+            return None
+        if 'measured' not in state:
+            state['measured'] = self._measured(state)
+        return tools.thinking_fields(state.get('measured'), level, self._local_model(state))
 
     def _steering(self, state):
         """Whether the Steering plugin was on when this voice session started (read once: the tools of a conversation do not change)."""
@@ -2658,11 +2760,16 @@ class Realtime(WsHandler):
         Returns (what this reply is told, the result sentence when the action was just carried out, else '', whether the user just agreed
         to it in another form: the model makes that call again).
 
-        yes: the action runs once, now. change: nothing runs as asked; the model makes the call again with the user's change, and
+        yes: the action runs once, now. always: the same, and this kind of work is no longer asked about (convo_voice_modes; where it
+        may be remembered, else it is a yes). change: nothing runs as asked; the model makes the call again with the user's change, and
         that one call needs no second question. no: dropped. Anything else said: dropped too (a question is answered or it lapses).
         'unread' (the answer could not be read): the question stays open and only the panel's Run button confirms."""
         voice_tools, tools = self._helper('convo_voice_tools'), self._helper('convo_tools')
         what = record['label'] + (': ' + json.dumps(record['summary'], ensure_ascii=False) if record['summary'] else '')
+        remembered = ''
+        if answer == 'always':
+            answer = 'yes'
+            remembered = self._remember_allowed(state, record['name'])
         if answer == 'yes':
             await voice_tools.resolve(self, sid, state, session, 'run', by='voice')
             self._acted(state, turn)            # "yes", and then "and thank you": what follows never takes the yes back by itself
@@ -2677,9 +2784,9 @@ class Realtime(WsHandler):
             if done.worked:
                 return ("The user has just said yes to your question whether to go ahead (" + what + "). Convo checked their own voice and "
                         "did it: " + (done.text + " It is already done, so do not call a tool for it again." if done.text else done.result
-                                      + " Tell them so briefly; it is already done, so do not call a tool for it again.")), done.result, False
+                                      + " Tell them so briefly; it is already done, so do not call a tool for it again.") + remembered), done.result, False
             return ("The user said yes to your question whether to go ahead (" + what + "), but it could not be done: " + done.result
-                    + ". Tell them so plainly."), '', False
+                    + ". Tell them so plainly." + remembered), '', False
         if answer == 'change':
             await voice_tools.resolve(self, sid, state, session, 'replaced', by='change')
             how = ' (in its change argument)' if self._helper('convo_modes').hands_over(record['name'], record['arguments']) else ''
@@ -2722,6 +2829,14 @@ class Realtime(WsHandler):
                 if due:
                     self._stop_upkeep(state, state['session'])
                     state['task'] = asyncio.create_task(self._timer_notice(sid, state, state['session'], due[:4]))
+                    continue
+                finishing = self._helper('convo_modes').due_readout(self, state)
+                if finishing == 'read':
+                    self._stop_upkeep(state, state['session'])
+                    state['task'] = asyncio.create_task(self._helper('convo_modes').readout(self, sid, state, state['session']))
+                    continue
+                if finishing == 'resume':
+                    await self._helper('convo_modes').resume(self, sid, state, state['session'])
                     continue
                 if self._announce_result(sid, state, now):
                     continue
@@ -2986,6 +3101,13 @@ class Realtime(WsHandler):
         once (Compactor `hold`): with one slot it is swapped in when a reply's text is complete and the new start is warmed while
         the reply is spoken (_swap_and_warm); with spare slots the new start is warmed in a spare slot and swapped in only once warm
         (_compaction). A cloud provider has no slots of the user's: its chapters are swapped in at once, with no warm-up."""
+        modes = self._helper('convo_modes')
+        main_writes = modes.by_main(self, state, session)
+        if main_writes:
+            # Agent Zero's main chat model writes the plan on its own server: beside the conversation, not stopped when the user speaks.
+            plan_task = state.get('plan_task')
+            if (plan_task is None or plan_task.done()) and modes.due(self, state, session) is not None:
+                state['plan_task'] = asyncio.create_task(modes.keep(self, sid, state, session))
         task = state.get("compact_task")
         remote = self._server(state)['kind'] == 'remote'
         if (task is not None and not task.done()) or (self._speaking(state) and not remote):
@@ -2996,7 +3118,7 @@ class Realtime(WsHandler):
             if state.get('writer_refused') != choice.get('reason'):
                 state['writer_refused'] = choice.get('reason')
                 self._memory_note(state, session.get("target", ""), 'fallback', ok=False, reason=choice.get('reason') or 'refused')
-            if self._helper('convo_modes').due(self, state, session) is not None:
+            if not main_writes and self._helper('convo_modes').due(self, state, session) is not None:
                 # The plan is the conversation model's own (it hears the conversation anyway), whoever may write the summaries.
                 state["compact_task"] = asyncio.create_task(self._helper('convo_modes').keep(self, sid, state, session))
             return
@@ -3011,7 +3133,8 @@ class Realtime(WsHandler):
         """One piece of background upkeep: the summary chapters (_chapters), then, last, the written plan while planning is on
         (convo_modes.keep): never before a chapter that is owed, and stopped like one the moment the user speaks."""
         changed = await self._chapters(sid, state, session, summarize, hold)
-        await self._helper('convo_modes').keep(self, sid, state, session)
+        if not self._helper('convo_modes').by_main(self, state, session):
+            await self._helper('convo_modes').keep(self, sid, state, session)
         return changed
 
     async def _chapters(self, sid, state, session, summarize, hold):
@@ -3098,6 +3221,13 @@ class Realtime(WsHandler):
         """The user started speaking (or a reply or spoken notice is starting): on the user's own model server a summary being
         written and a warm-up stop at once, since they would make the reply wait. Both are done again at the next quiet moment; a
         kept chapter stays kept. A cloud provider serves them side by side, so there the writing simply goes on."""
+        try:
+            modes = self._helper('convo_modes')
+            if modes.stoppable(self, state):
+                state['plan_finishing']['in_turn'] = False
+                state['plan_finishing']['task'].cancel()     # written again in the next quiet moment (convo_modes.resume)
+        except Exception:
+            pass
         if self._server(state)['kind'] == 'remote':
             return
         for key in ('compact_task', 'warm_task'):
@@ -3880,6 +4010,9 @@ class Realtime(WsHandler):
             confirmed_names, granted_question, confirmed_note = set(), None, ''
             # A reply that begins while the two of them are planning is held to that to its end, also when planning ends in it.
             floor = modes.on(self, state, session) is not None
+            voice_modes = self._voice_modes(state, session)    # the panel's Permissions and Reasoning menus, as they are now
+            # Thinking for this reply: a level the user chose in the Reasoning menu, or none until the model calls think (Auto).
+            think_level = voice_modes['reasoning'] if voice_modes['reasoning'] in self._helper('convo_tools').LEVELS else None
             answer = state.get('confirm', {}).pop(turn, None)
             if not answer:
                 # (What is said instead of an answer, also when its turn came only now: the question at the end of that reply goes.)
@@ -4005,8 +4138,14 @@ class Realtime(WsHandler):
             request_again = None          # how the request being read is made once more (_patient)
 
             def asked(wanted):
-                """One pass over the model for `wanted` (a request)."""
+                """One pass over the model for `wanted` (a request). With thinking on for this reply (the Reasoning menu, or the model's
+                own think call under Auto) the pass asks for it and its budget grows by the thinking's."""
                 nonlocal request_again
+                fields = self._thinking(state, think_level) if think_level else None
+                if fields is not None:
+                    budget = self._helper('convo_tools').THINKING_BUDGET[think_level]
+                    wanted = {**wanted, 'thinking_on': fields,
+                              'max_tokens': min(8192, int(wanted.get('max_tokens') or config.get('answer_tokens', 1024)) + budget)}
                 request_again = lambda: self._answer(state, wanted, turn)
                 return self._answer(state, wanted, turn)
 
@@ -4507,7 +4646,8 @@ class Realtime(WsHandler):
                             args = {**args, 'change': said[:500]}      # their own words, as the model heard them: the change is never lost
                     granted = modes.agreed(question, name, args, said)
                     how = policy.authorize(name, kind, decision, conversing=conversing, followup=followup, untrusted=untrusted,
-                                           always_ask=bool(tools.CATALOG[name].get('confirm')), arguments=args)
+                                           always_ask=bool(tools.CATALOG[name].get('confirm')), arguments=args,
+                                           permission=voice_modes['permission'], remembered=self._remembered(state, name))
                     if kind != 'read':
                         # The user has just agreed to it (with a change the model made: _confirmation), or the classifier heard no request
                         # and their own words, read alone, carry it: never asked about what they asked for. While the two of them are
@@ -4617,6 +4757,9 @@ class Realtime(WsHandler):
                     nothing = False
                     for (_, index, name, args, call_id), (outcome, worked, raw, extras) in zip(reads, results):
                         entries[index] = (name, args, call_id, outcome, extras)
+                        if name == 'think' and worked and not think_level:
+                            think_level = extras.get('think') or 'medium'       # the passes that follow think (Auto)
+                            self._mark(turn, 'reasoning.chosen', level=think_level)
                         nothing = name == "web_search" and (self._search_refused(s) if not worked else not str(raw).strip())
                     if nothing and len(entries) == 1 and rounds == 1 and conversing and "delegate_task" in offered:
                         # The reply's own search got nothing (every engine refused, or none returned a result). The user asked for

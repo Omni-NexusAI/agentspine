@@ -167,6 +167,17 @@ DEFAULTS = {
     # Looking at the files of the chat's project or work folder (convo_files; read-only): "local" = when the conversation model runs on
     # your own machines, "on" = always (their text goes to the conversation model wherever it runs), "off" = never.
     "project_files": "local",
+    # The panel's Permissions menu (convo_voice_modes): what a new conversation starts with. "ask" = asks before work it is not sure
+    # you asked for (the built-in rule); "allow" = runs what the model calls in a conversation you started without asking, except
+    # when someone else's text (a web page, a chat) is in the request. Planning is a mode of its own on top (convo_modes).
+    "permission_default": "ask",
+    # The panel's Reasoning menu: how much the conversation model thinks before it answers, for a new conversation. "auto" = no
+    # thinking unless the model judges a question needs it (the think tool); "off", "low", "medium", "high" = every reply.
+    "reasoning_default": "auto",
+    # Who writes the plan while planning (convo_plan_writer): "auto" = Agent Zero's main chat model when it runs on your own
+    # machines or main_plan_consent allows it, else the conversation model; "main" / "conversation" = always that one.
+    "plan_writer": "auto",
+    "main_plan_consent": False,      # consent for a main chat model outside your network to receive the planning conversation
     # Who writes the summary chapters (convo_summarizer): "conversation" (the conversation model, from its own cached start) or
     # "utility" (Agent Zero's utility model: only when it runs on your own machines, or with utility_summary_consent).
     "summary_writer": "conversation",
@@ -398,6 +409,12 @@ def validate_settings(value):
         raise ContractError("voice_tools must hold one true/false switch for each of: " + ", ".join(DEFAULTS["voice_tools"]))
     if not isinstance(result["project_files"], str) or result["project_files"] not in ("local", "on", "off"):
         raise ContractError("project_files must be one of: local, on, off")
+    for key, allowed in (("permission_default", ("ask", "allow")), ("reasoning_default", ("auto", "off", "low", "medium", "high")),
+                         ("plan_writer", ("auto", "main", "conversation"))):
+        if not isinstance(result[key], str) or result[key] not in allowed:
+            raise ContractError(key + " must be one of: " + ", ".join(allowed))
+    if type(result["main_plan_consent"]) is not bool:
+        raise ContractError("main_plan_consent must be boolean")
     if not isinstance(result["summary_writer"], str) or result["summary_writer"] not in ("conversation", "utility"):
         raise ContractError("summary_writer must be one of: conversation, utility")
     if type(result["utility_summary_consent"]) is not bool:

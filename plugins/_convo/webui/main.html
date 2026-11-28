@@ -3,7 +3,7 @@ import { store, install } from '/plugins/_convo/webui/convo-store.js';
 install();
 </script></head><body><div x-data><template x-if="$store.convo"><section class="convo-panel" x-init="$store.convo.mountPanel()" x-destroy="$store.convo.unmountPanel()">
   <header class="convo-bar">
-    <div class="convo-heading"><h2>Convo</h2><span class="convo-chip" :data-state="$store.convo.chipState" role="status" aria-live="polite"><span class="convo-dot" aria-hidden="true"></span><span x-text="$store.convo.statusLabel"></span><span class="convo-level" aria-hidden="true" x-show="$store.convo.live === 'hearing'" :style="'--level:' + $store.convo.liveLevel"><i></i></span></span><span class="convo-chip" data-state="planning" x-show="$store.convo.planning"><span class="convo-dot" aria-hidden="true"></span><span>Planning</span></span></div>
+    <div class="convo-heading"><h2>Convo</h2><span class="convo-chip" :data-state="$store.convo.chipState" role="status" aria-live="polite"><span class="convo-dot" aria-hidden="true"></span><span x-text="$store.convo.statusLabel"></span><span class="convo-level" aria-hidden="true" x-show="$store.convo.live === 'hearing'" :style="'--level:' + $store.convo.liveLevel"><i></i></span></span></div>
     <div class="convo-tools">
       <button type="button" class="button convo-iconbtn convo-sound-button" @click="$store.convoSound?.toggle()" :aria-expanded="$store.convoSound?.open ? 'true' : 'false'" aria-controls="convo-sound-drawer" aria-label="Sound settings"><span class="material-symbols-outlined" aria-hidden="true">tune</span><span class="convo-iconlabel">Sound</span></button>
       <button type="button" class="button convo-iconbtn convo-studio-button" @click="$store.convo.openStudio()" aria-label="Open Voice Studio"><span class="material-symbols-outlined" aria-hidden="true">graphic_eq</span><span class="convo-iconlabel">Voice Studio</span></button>
@@ -26,7 +26,28 @@ install();
   <div class="convo-update" role="status" x-show="$store.convo.updateAvailable"><span>Convo was updated — Reload to use the new version</span><button type="button" class="button convo-link" @click="$store.convo.reloadPage()">Reload</button></div>
   <div class="convo-update convo-owner" role="status" x-show="$store.convo.ownerElsewhere || $store.convo.reconnecting || $store.convo.movedTo"><span x-text="$store.convo.reconnecting ? 'Connection lost — reconnecting to the conversation…' : $store.convo.ownerElsewhere ? $store.convo.ownerText : 'Voice moved to ' + $store.convo.movedTo + '.'"></span><button type="button" class="button convo-link" x-show="$store.convo.ownerElsewhere && !$store.convo.active && !$store.convo.busy" @click="$store.convo.takeOver()">Take over here</button></div>
   <div class="convo-drawer" id="convo-sound-drawer" x-show="$store.convoSound?.open"><x-component path="/plugins/_convo/webui/sound-panel.html"></x-component><x-component path="/plugins/_convo/webui/synthesis-controls.html"></x-component></div>
-  <div class="convo-target"><span class="convo-target-name"><span x-text="$store.convo.targetPrefix"></span><strong x-text="$store.convo.targetLabel"></strong></span></div>
+  <div class="convo-target"><span class="convo-target-name"><span x-text="$store.convo.targetPrefix"></span><strong x-text="$store.convo.targetLabel"></strong></span>
+    <div class="convo-modes" x-show="$store.convo.target" role="group" aria-label="How Convo answers" @keydown.escape="$store.convo.closeMenu($event)">
+      <div class="convo-menu-anchor" @click.outside="$store.convo.menu === 'reasoning' && $store.convo.closeMenu()">
+        <button type="button" class="btn-icon-action convo-menu-btn" data-menu="reasoning" @click="$store.convo.toggleMenu('reasoning')" :aria-expanded="$store.convo.menu === 'reasoning' ? 'true' : 'false'" aria-haspopup="menu" aria-controls="convo-reasoning-menu" :aria-label="'Reasoning: ' + $store.convo.reasoningLabel" title="How much the conversation model thinks before it answers"><span class="material-symbols-outlined" aria-hidden="true">psychology</span><span class="convo-menu-label" x-text="$store.convo.reasoningLabel"></span><span class="material-symbols-outlined convo-menu-chevron" aria-hidden="true" x-text="$store.convo.menu === 'reasoning' ? 'expand_less' : 'expand_more'"></span></button>
+        <div class="convo-menu" id="convo-reasoning-menu" role="menu" aria-label="Reasoning" x-show="$store.convo.menu === 'reasoning'" x-transition.opacity>
+          <div class="convo-menu-head">Reasoning</div>
+          <template x-for="item in $store.convo.reasoningItems" :key="item.id"><button type="button" role="menuitemradio" class="convo-menu-item" :class="{ active: item.on }" :aria-checked="item.on ? 'true' : 'false'" :aria-disabled="item.disabled ? 'true' : 'false'" :disabled="$store.convo.modesBusy" @click="$store.convo.setReasoning(item.id)"><span class="convo-menu-name"><span class="material-symbols-outlined convo-menu-check" aria-hidden="true" x-text="item.on ? 'check' : ''"></span><span x-text="item.label"></span></span><span class="convo-menu-note" x-show="item.note" x-text="item.note"></span></button></template>
+          <p class="convo-menu-foot" x-show="$store.convo.reasoningNote" x-text="$store.convo.reasoningNote"></p>
+        </div>
+      </div>
+      <div class="convo-menu-anchor" @click.outside="$store.convo.menu === 'permission' && $store.convo.closeMenu()">
+        <button type="button" class="btn-icon-action convo-menu-btn" data-menu="permission" @click="$store.convo.toggleMenu('permission')" :aria-expanded="$store.convo.menu === 'permission' ? 'true' : 'false'" aria-haspopup="menu" aria-controls="convo-permission-menu" :aria-label="'Permissions: ' + $store.convo.permissionLabel" title="What Convo may start, change or save without asking"><span class="material-symbols-outlined" aria-hidden="true" x-text="$store.convo.permissionIcon"></span><span class="convo-menu-label" x-text="$store.convo.permissionLabel"></span><span class="material-symbols-outlined convo-menu-chevron" aria-hidden="true" x-text="$store.convo.menu === 'permission' ? 'expand_less' : 'expand_more'"></span></button>
+        <div class="convo-menu convo-menu-end" id="convo-permission-menu" role="menu" aria-label="Permissions" x-show="$store.convo.menu === 'permission'" x-transition.opacity>
+          <div class="convo-menu-head">Permissions</div>
+          <template x-for="item in $store.convo.permissionItems" :key="item.id"><button type="button" role="menuitemradio" class="convo-menu-item" :class="{ active: item.on }" :aria-checked="item.on ? 'true' : 'false'" :disabled="$store.convo.modesBusy || $store.convo.planBusy" @click="$store.convo.setPermission(item.id)"><span class="convo-menu-name"><span class="material-symbols-outlined convo-menu-check" aria-hidden="true" x-text="item.on ? 'check' : ''"></span><span x-text="item.label"></span></span><span class="convo-menu-note" x-text="item.note"></span></button></template>
+          <template x-if="$store.convo.planning"><button type="button" role="menuitem" class="convo-menu-item convo-menu-extra" :disabled="$store.convo.planBusy" @click="$store.convo.newPlan()"><span class="convo-menu-name"><span class="material-symbols-outlined convo-menu-check" aria-hidden="true">add</span><span>Start a new plan</span></span><span class="convo-menu-note">The plan in hand is kept.</span></button></template>
+          <template x-if="($store.convo.modes?.allowed || []).length"><div class="convo-menu-allowed"><div class="convo-menu-head">Not asked about any more</div><template x-for="item in $store.convo.modes.allowed" :key="item.tool"><div class="convo-menu-row"><span x-text="item.label"></span><button type="button" class="btn-icon-action convo-menu-forget" :disabled="$store.convo.modesBusy" @click="$store.convo.forgetAllowed(item.tool)" :aria-label="'Ask again before: ' + item.label" title="Ask again"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div></template></div></template>
+          <p class="convo-menu-foot" x-show="$store.convo.modesNote" x-text="$store.convo.modesNote" role="status"></p>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="convo-preview" x-show="$store.convo.cameraShared || $store.convo.screenShared" :data-flash="$store.convo.previewFlash ? 'true' : 'false'" :style="$store.convo.previewStyle" @pointerdown="$store.convo.previewGrab($event, $el)" role="group" aria-label="What is being shared">
     <video class="convo-preview-video" muted playsinline autoplay x-effect="$store.convo.attachPreview($el, $store.convo.cameraShared, $store.convo.screenShared)"></video>
     <span class="convo-preview-tag" x-text="$store.convo.cameraShared && $store.convo.screenShared ? 'Camera · screen shared too' : $store.convo.screenShared ? 'Sharing screen' : 'Camera'"></span>
@@ -41,7 +62,7 @@ install();
   <div class="convo-error-line" x-show="$store.convo.error"><p class="convo-error" :role="$store.convo.errorQuiet ? null : 'alert'" x-text="$store.convo.error"></p><button type="button" class="button convo-icon convo-dismiss" @click="$store.convo.dismissError()" aria-label="Dismiss this message"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></div>
   <div class="convo-ask" role="group" aria-label="Convo asks before it goes ahead" x-show="$store.convo.pendingAction">
     <div class="convo-ask-text" role="status"><strong x-text="$store.convo.pendingAction?.label || ''"></strong><p x-show="$store.convo.pendingAction?.summary" x-text="$store.convo.pendingAction?.summary || ''"></p></div>
-    <div class="convo-ask-buttons"><button type="button" class="button convo-primary" :disabled="$store.convo.pendingAction?.busy === true" @click="$store.convo.answerAction(true)" :aria-label="'Run: ' + ($store.convo.pendingAction?.label || '')">Run</button><button type="button" class="button" :disabled="$store.convo.pendingAction?.busy === true" @click="$store.convo.answerAction(false)" :aria-label="'Dismiss: ' + ($store.convo.pendingAction?.label || '')">Dismiss</button></div>
+    <div class="convo-ask-buttons"><button type="button" class="button convo-primary" :disabled="$store.convo.pendingAction?.busy === true" @click="$store.convo.answerAction(true)" :aria-label="'Run: ' + ($store.convo.pendingAction?.label || '')">Run</button><button type="button" class="button" x-show="$store.convo.pendingAction?.always" :disabled="$store.convo.pendingAction?.busy === true" @click="$store.convo.answerAction(true, true)" :aria-label="'Run, and do not ask again: ' + ($store.convo.pendingAction?.label || '')" title="Runs it, and this kind of action is no longer asked about (the Permissions menu can take that back)">Always</button><button type="button" class="button" :disabled="$store.convo.pendingAction?.busy === true" @click="$store.convo.answerAction(false)" :aria-label="'Dismiss: ' + ($store.convo.pendingAction?.label || '')">Dismiss</button></div>
   </div>
   <ul class="convo-links" x-show="$store.convo.links.length" aria-label="Links to open"><template x-for="link in $store.convo.links" :key="link.id"><li><a class="button convo-link-open" :href="link.url" target="_blank" rel="noopener noreferrer" @click="$store.convo.linkTapped(link.id)"><span class="material-symbols-outlined" aria-hidden="true">open_in_new</span><span x-text="'Open ' + link.title"></span></a><button type="button" class="button convo-icon" @click="$store.convo.closeLink(link.id)" :aria-label="'Dismiss the link to ' + link.title"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></li></template></ul>
   <template x-for="item in $store.convo.planLost" :key="item.key"><div class="convo-plan-lost" role="status"><span x-text="'Your unsaved edit of ' + (item.topic ? '“' + item.topic + '”' : 'the plan') + ' could not be saved to it.'"></span><span class="convo-ask-buttons"><button type="button" class="button" @click="$store.convo.copyLost(item)">Copy it</button><button type="button" class="button" @click="$store.convo.dropLost(item)">Let it go</button></span></div></template>
@@ -106,6 +127,25 @@ install();
 .convo-panel .convo-icon .material-symbols-outlined{font-size:1.25rem}
 .convo-target{display:flex;align-items:center;justify-content:space-between;gap:.5rem;font-size:.8rem}
 .convo-target-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo-modes{display:flex;align-items:center;gap:.15rem;flex-shrink:0}
+.convo-menu-anchor{position:relative;display:flex;align-items:center}
+.convo-panel .convo-menu-btn{width:auto;height:auto;gap:4px;padding:var(--spacing-xs,.25rem) var(--spacing-sm,.5rem);border:none;font-size:.75rem;white-space:nowrap;color:var(--color-text);opacity:.85}
+.convo-panel .convo-menu-btn:hover{border:none;opacity:1}
+.convo-panel .convo-menu-btn .material-symbols-outlined{font-size:16px}.convo-panel .convo-menu-btn .convo-menu-chevron{font-size:.75rem}
+.convo-menu-label{max-width:min(11rem,30vw);overflow:hidden;text-overflow:ellipsis}
+.convo-menu{position:absolute;top:calc(100% + 6px);left:0;min-width:15rem;max-width:min(20rem,80vw);background:var(--color-panel);border:1px solid var(--color-border);border-radius:8px;padding:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:30;display:flex;flex-direction:column;gap:1px}
+.convo-menu.convo-menu-end{left:auto;right:0}
+.convo-menu-head{font-size:.7rem;opacity:.6;padding:4px 10px 2px}
+.convo-panel .convo-menu-item{display:flex;flex-direction:column;align-items:stretch;gap:1px;width:100%;text-align:left;border:0;border-radius:6px;background:transparent;color:inherit;padding:6px 10px;font-size:.8rem;cursor:pointer}
+.convo-panel .convo-menu-item:hover{background:var(--color-background-hover,rgba(255,255,255,.06))}
+.convo-panel .convo-menu-item.active{background:color-mix(in srgb,var(--color-highlight,#888) 12%,transparent)}
+.convo-panel .convo-menu-item[aria-disabled=true]{opacity:.55;cursor:default}
+.convo-menu-name{display:flex;align-items:center;gap:.35rem}.convo-panel .convo-menu-check{font-size:15px;width:15px}
+.convo-menu-note{font-size:.72rem;opacity:.7;padding-left:calc(15px + .35rem)}
+.convo-menu-foot{font-size:.72rem;opacity:.75;margin:4px 10px 2px;line-height:1.35}
+.convo-menu-allowed{border-top:1px solid var(--color-border);margin-top:4px;padding-top:2px}
+.convo-menu-row{display:flex;align-items:center;justify-content:space-between;gap:.5rem;font-size:.78rem;padding:2px 4px 2px 10px}
+.convo-panel .convo-menu-forget{width:1.4rem;height:1.4rem;border:none}
 .convo-panel .convo-link{min-height:30px;padding:.15rem .6rem;font-size:.75rem}
 .convo-controls{display:flex;flex-wrap:wrap;gap:.5rem}
 /* The orb is the start and stop control: the standalone interface's orb (webui/orb.js FULL; its layers are styled in
@@ -163,7 +203,6 @@ install();
 .convo-ask-text strong{display:block;font-size:.85rem}.convo-ask-text p{margin:.2rem 0 0;font-size:.82rem;line-height:1.45;overflow-wrap:anywhere;white-space:pre-wrap}
 .convo-ask-buttons{display:flex;flex-wrap:wrap;gap:.5rem}
 .convo-chip[data-state=planning] .convo-dot{background:#c8aa72;opacity:1}
-.convo-panel .convo-plan-button{display:inline-flex;align-items:center}.convo-panel .convo-plan-button[aria-pressed=true]{border-color:var(--color-text);background:var(--color-highlight,var(--color-panel))}
 .convo-plan{display:flex;flex-direction:column;border:1px solid var(--color-border);border-left:3px solid #c8aa72;border-radius:8px;background:var(--color-panel)}
 .convo-panel .convo-plan-head{display:flex;align-items:center;gap:.5rem;width:100%;border:0;background:transparent;color:inherit;text-align:left;font-size:.85rem;padding:.35rem .7rem}
 .convo-plan-state{flex-shrink:0;opacity:.7;font-size:.78rem}.convo-plan-head strong{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

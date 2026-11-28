@@ -105,6 +105,10 @@ export const defaults = {
   "task_chat": "new",
   "voice_tools": {"web": true, "memory": true, "tasks": true, "system": true, "timers": true, "chats": true, "senses": true, "interface": true},
   "project_files": "local",
+  "permission_default": "ask",
+  "reasoning_default": "auto",
+  "plan_writer": "auto",
+  "main_plan_consent": false,
   "policy_gate": {
     "respond_min": 0.3,
     "ambient_respond_min": 0.9,

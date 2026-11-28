@@ -39,8 +39,9 @@ export const CARD_PATHS = {
     'roles.conversation.capabilities.cancellation': 'Supports cancellation', 'roles.conversation.capabilities.tool_calls': 'Supports tool calls',
     'compaction.context_tokens': 'Context window', 'compaction.trigger': 'Summarise older conversation at',
     'summary_writer': 'Who writes the summaries', 'utility_summary_consent': 'Allow a utility model outside your network',
+    'plan_writer': 'Who writes the plans', 'main_plan_consent': 'Allow a main chat model outside your network',
 };
-const ROWS = ['conversation_provider', 'conversation_key_route', 'summary_writer'];
+const ROWS = ['conversation_provider', 'conversation_key_route', 'summary_writer', 'plan_writer'];
 
 // The address a conversation role is reached at (helpers/convo_model_catalog.resolve_url). `compatibleBase` is Agent Zero's
 // address for an OpenAI-compatible provider Convo has no entry for ('' = such a provider cannot be used).

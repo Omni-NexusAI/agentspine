@@ -359,7 +359,8 @@ def set_authorizer(function):
     _AUTHORIZER = function
 
 
-def authorize(tool, kind, decision, *, conversing, followup=False, untrusted=False, always_ask=False, arguments=None):
+def authorize(tool, kind, decision, *, conversing, followup=False, untrusted=False, always_ask=False, arguments=None, permission='ask',
+              remembered=False):
     """What it takes to run a tool the conversation model called: 'run', 'confirm' (ask the user first; nothing starts until
     their yes) or 'refuse'. Decided by what the tool does (convo_tools kinds), not by what happens to be in the conversation:
 
@@ -372,7 +373,10 @@ def authorize(tool, kind, decision, *, conversing, followup=False, untrusted=Fal
       plainly made is therefore never refused and never asked about twice. When that evidence is missing, Convo asks instead
       of refusing: always for a tool that asks by design (`always_ask`: saving to long-term memory), when someone else's text is
       in the request (`untrusted`), and when the classifier heard no request at all (the model acting on its own initiative).
-      Outside a conversation the user started there is nobody to ask: it is refused."""
+      Outside a conversation the user started there is nobody to ask: it is refused.
+    - The user's own choice (convo_voice_modes): in a conversation they started, `permission` "allow", or a `remembered` "always" for
+      this kind of work, runs it without the question, as long as no one else's text is in the request (`untrusted`); with such text
+      the rule above decides, so nothing from outside starts anything by itself. Planning's floor comes after this (convo_modes)."""
     if kind == 'read':
         return 'run'
     if kind not in ('quick', 'work') or followup:
@@ -381,6 +385,8 @@ def authorize(tool, kind, decision, *, conversing, followup=False, untrusted=Fal
         default = 'run' if conversing or verified(decision) else 'refuse'
     elif not conversing:
         default = 'run' if verified(decision) and not always_ask else 'refuse'
+    elif (permission == 'allow' or remembered) and not untrusted:
+        default = 'run'
     elif always_ask:
         default = 'confirm'
     elif verified(decision):

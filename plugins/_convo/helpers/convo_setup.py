@@ -219,6 +219,8 @@ def read():
     checks += _hook_rows(lambda saved: [measured_row(saved)], config, 'conversation_measured', 'Tools and images (measured)')
     from .convo_summarizer import readiness_rows as summary_rows
     checks += _hook_rows(summary_rows, config, 'summary_writer', 'Summaries')
+    from .convo_plan_writer import readiness_rows as plan_rows
+    checks += _hook_rows(plan_rows, config, 'plan_writer', 'Plans')
     checks += _hook_rows(speech_rows, config, 'speech_provider', 'Speech provider')
     checks += _hook_rows(convo_classifier_catalog.readiness_rows, config, 'classifier_provider', 'Classifier provider')
     checks += _hook_rows(decider_rows, config, 'decider', 'Classifier')
@@ -548,7 +550,7 @@ def image_verdict(status, data):
     return False if status in (400, 413, 415, 422, 500, 501) else None
 
 
-THINKING_WORDS = {'off': 'thinks before answering, and is asked not to for voice replies',
+THINKING_WORDS = {'off': 'can think before answering; voice replies ask it to only when the Reasoning menu says so',
                   'on': 'thinks before answering and this provider does not let that be turned off (replies start later)'}
 
 
@@ -581,6 +583,51 @@ async def probe_thinking(url, base, headers):
     return {'thinking': 'on', 'thinking_off': None}
 
 
+# A question small enough to cost little and hard enough that a model asked to think does (a one-word answer often skips it).
+REASONING_PROBE = 'What is 17 times 23? Reply with the number only.'
+
+
+async def probe_reasoning(url, base, headers, found, local):
+    """How the model is asked to think, for the Reasoning menu (convo_tools.thinking_fields), from a few small requests made only by a
+    connection check. A local server: does its chat template turn thinking on ({'thinking_on': the template fields}, else
+    {'thinking': 'none'})? Elsewhere: which field takes a level ({'effort': 'reasoning_effort' | 'reasoning.effort'}) and, for a model that
+    does not think by default, what turns it on ({'thinking_on': fields}). Only reasoning that comes apart from the answer counts: reasoning
+    written into the answer itself would be spoken. What was asked and not found is recorded as None, so an earlier verdict does not
+    outlive the model; {} when the server did not answer at all (nothing on record changes). Never raises."""
+    from . import convo_tools
+    body = {**base, 'max_tokens': 600, 'messages': [{'role': 'user', 'content': REASONING_PROBE}]}
+    try:
+        if local:
+            status, data = await _post(url + '/chat/completions', {**body, 'chat_template_kwargs': {'enable_thinking': True}}, headers)
+            if status != 200:
+                return {}
+            if _reasoned(data):
+                return {'thinking': 'off', 'thinking_on': {'chat_template_kwargs': {'enable_thinking': True}}, 'effort': None}
+            return {'thinking': 'none', 'thinking_on': None, 'effort': None}
+        thinks, answered = found.get('thinking') in ('off', 'on'), False
+        learned = {'effort': None, 'thinking_on': None}
+        for field, fields in (('reasoning_effort', {'reasoning_effort': 'high'}), ('reasoning.effort', {'reasoning': {'effort': 'high'}})):
+            status, data = await _post(url + '/chat/completions', {**body, **fields}, headers)
+            answered = answered or status == 200
+            if status == 200 and _reasoned(data):
+                learned['effort'] = field
+                if not thinks:
+                    learned['thinking'] = 'off'                         # it thinks when asked, not by default
+                break
+        if not thinks and learned['effort'] is None:
+            for fields in convo_tools.THINKING_ON:
+                if 'chat_template_kwargs' in fields:
+                    continue                                         # (a local server's way, never sent to a provider)
+                status, data = await _post(url + '/chat/completions', {**body, **fields}, headers)
+                answered = answered or status == 200
+                if status == 200 and _reasoned(data):
+                    learned.update(thinking='off', thinking_on=fields)
+                    break
+        return learned if answered else {}
+    except Exception:
+        return {}
+
+
 def measured_text(record, declared=False):
     """The probe's verdict in words, for the card and the readiness row."""
     if not record or not any(key in record for key in ('tool_mode', 'image_input', 'audio_input')):
@@ -590,7 +637,9 @@ def measured_text(record, declared=False):
         parts.append('Takes your speech as audio' if record['audio_input'] is True
                      else 'Refused audio (Convo sends it Agent Zero’s speech-to-text transcript instead)')
     if record.get('thinking') in THINKING_WORDS:
-        parts.append(THINKING_WORDS[record['thinking']])
+        parts.append(THINKING_WORDS[record['thinking']] + (' (with levels)' if record.get('effort') else ''))
+    elif record.get('thinking') == 'none':
+        parts.append('does not think before answering (the Reasoning menu has no effect)')
     if record.get('tool_mode') in TOOL_WORDS:
         words = TOOL_WORDS[record['tool_mode']]
         parts.append(words[0].upper() + words[1:])
@@ -680,6 +729,9 @@ async def probe_capabilities(role, url, headers):
         if 'chat_template_kwargs' not in base:
             # A provider outside your machines: whether the model thinks before answering, and how it is asked not to.
             found.update(await probe_thinking(url, base, headers))
+        # How it is asked to think, for the Reasoning menu: its chat template on your own server, a level field elsewhere.
+        found.update(await probe_reasoning(url, {k: v for k, v in base.items() if k != 'chat_template_kwargs'}, headers, found,
+                                           'chat_template_kwargs' in base))
     except Exception:
         pass
     if not found:

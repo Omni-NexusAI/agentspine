@@ -17,7 +17,7 @@ test('A pending action shows one card with its label and summary; nothing is sen
     await f.store.start();
     assert.equal(f.store.pendingAction, null);
     f.handlers['convo.event'](pending());
-    assert.deepEqual(plain(f.store.pendingAction), { id: 'a1', label: 'Hand over a task', summary: 'Tidy the downloads folder and list what was moved.', busy: false });
+    assert.deepEqual(plain(f.store.pendingAction), { id: 'a1', label: 'Hand over a task', summary: 'Tidy the downloads folder and list what was moved.', busy: false, always: false });
     assert.deepEqual(sent(f), []);
     await f.store.stop();
 });
@@ -97,7 +97,7 @@ test('The card expires after its seconds, a newer question replaces it, and stop
     assert.equal(f.store.pendingAction, null);
     f.handlers['convo.event'](pending({ id: 'old', seconds: 0.03 }));
     f.handlers['convo.event'](pending({ id: 'new', label: 'Save to memory', summary: 'The door code changed.', seconds: 30 }));
-    assert.deepEqual(plain(f.store.pendingAction), { id: 'new', label: 'Save to memory', summary: 'The door code changed.', busy: false });
+    assert.deepEqual(plain(f.store.pendingAction), { id: 'new', label: 'Save to memory', summary: 'The door code changed.', busy: false, always: false });
     await tick(80);
     assert.equal(f.store.pendingAction?.id, 'new');                                       // the replaced card's timer does not take the new one
     await f.store.stop();
@@ -144,11 +144,14 @@ test('The panel renders the card with real buttons, accessible names and a polit
     assert.match(card, /x-text="\$store\.convo\.pendingAction\?\.summary \|\| ''"/);
     assert.doesNotMatch(card, /x-html|role="alert"|aria-live="assertive"/);               // text only, never assertive
     const buttons = [...card.matchAll(/<button type="button"[^>]*>([^<]*)<\/button>/g)];
-    assert.deepEqual(buttons.map(match => match[1]), ['Run', 'Dismiss']);
+    assert.deepEqual(buttons.map(match => match[1]), ['Run', 'Always', 'Dismiss']);
     assert.match(buttons[0][0], /@click="\$store\.convo\.answerAction\(true\)"/);
-    assert.match(buttons[1][0], /@click="\$store\.convo\.answerAction\(false\)"/);
+    assert.match(buttons[1][0], /x-show="\$store\.convo\.pendingAction\?\.always"/);      // only for a kind of work that may be remembered
+    assert.match(buttons[1][0], /@click="\$store\.convo\.answerAction\(true, true\)"/);
+    assert.match(buttons[2][0], /@click="\$store\.convo\.answerAction\(false\)"/);
     assert.match(buttons[0][0], /:aria-label="'Run: ' \+ /);                              // the name starts with the visible word
-    assert.match(buttons[1][0], /:aria-label="'Dismiss: ' \+ /);
+    assert.match(buttons[1][0], /:aria-label="'Run, and do not ask again: ' \+ /);
+    assert.match(buttons[2][0], /:aria-label="'Dismiss: ' \+ /);
     for (const [button] of buttons) assert.match(button, /:disabled="\$store\.convo\.pendingAction\?\.busy === true"/);
     const style = html.slice(html.indexOf('<style>'));
     const rule = style.match(/\.convo-ask\{[^}]*\}/)?.[0] || '';

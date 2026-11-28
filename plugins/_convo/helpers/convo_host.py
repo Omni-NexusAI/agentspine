@@ -322,6 +322,38 @@ class Host:
         except Exception:
             return {}
 
+    def main_model(self, target=''):
+        """Agent Zero's main chat model for this chat as {provider, name, api_base, base} (convo_plan_writer decides whether it may write
+        plans), or {} when it cannot be read. No key, nothing else; `base` resolved as for utility_model."""
+        try:
+            from plugins._model_config.helpers.model_config import get_chat_model_config
+            agent = None
+            if target:
+                try:
+                    agent = self.context(target).agent0
+                except Exception:
+                    agent = None
+            found = get_chat_model_config(agent) or {}
+            result = {key: str(found.get(key) or '') for key in ('provider', 'name', 'api_base')}
+            provider = {}
+            try:
+                from helpers.providers import get_provider_config
+                from models import ModelType
+                provider = get_provider_config(ModelType.CHAT, result['provider']) or {}
+            except Exception:
+                provider = {}
+            result['base'] = resolve_base(found, provider)
+            return result
+        except Exception:
+            return {}
+
+    async def write_with_main(self, target, system, message):
+        """One request to this chat's main chat model, beside the conversation (convo_plan_writer): no tools, no chat log entry, nothing
+        stored. Returns its text."""
+        model = self.context(target).agent0.get_chat_model()
+        response, _reasoning = await model.unified_call(system_message=system, user_message=message, rate_limiter_callback=None)
+        return str(response or '')
+
     @staticmethod
     def persona_fingerprint(source, style):
         return hashlib.sha256(encoded([source, style]).encode()).hexdigest()

@@ -1504,8 +1504,8 @@ class Ending(Talk):
             h.plan_delay, h.proposals = 10.0, []
             await h.handler.process('convo.action', {**h.ids(), 'id': record['id'], 'run': True}, 'browser')
             await h.advance(1)
-            await h.candidate('u', h.audio('next'), final=True)
-            await h.advance(20)
+            await h.candidate('u', h.audio('next'), final=True)            # (stops the writing on their own server; it is written again)
+            await h.advance(40)
             await h.settle()
             return record['label'], h.jobs(), h.plans.shown('a'), h.state.get('pending'), [p['message'] for _, p in h.events('notice') if p.get('kind') == 'activity']
         label, jobs, plan, pending, notices = self.play(scenario, planned='a garden shed', proposals=[self.HAND])
@@ -1620,11 +1620,12 @@ class Ending(Talk):
                 h.plans.begin('a', 'the holiday', new=True)                            # in the panel, while the final text is being written
                 await h.advance(20)
                 await h.settle()
-                return h.answers[1]['tool_turn']['result'], h.plans.open('a')['topic'], [h.plans.held(job) for job in h.jobs()][0], [p['on'] for _, p in h.events('plan.changed')][-1]
+                return (h.answers[1]['tool_turn']['result'], h.plans.open('a')['topic'], [h.plans.held(job) for job in h.jobs()][0],
+                        [p['on'] for _, p in h.events('plan.changed')][-1], h.journal('plan.ready'), h.state.get('pending'))
             with self.subTest(what):
-                told, planning_now, held, on = self.play(scenario, planned='a garden shed', proposals=[END])
-                self.assertEqual((planning_now, held, on), ('the holiday', True, True))
-                self.assertIn('nother plan is being worked on now', told)
+                told, planning_now, held, on, ready, pending = self.play(scenario, planned='a garden shed', proposals=[END])
+                self.assertEqual((planning_now, held, on, ready, pending), ('the holiday', True, True, [], None))
+                self.assertIn('being written', told)                                   # (slower than the reply waits)
                 self.assertNotIn('lanning is over', told)
                 self.assertNotIn('starts now', told)                                   # what waits still waits
 
@@ -2281,22 +2282,29 @@ class Ending(Talk):
         self.assertIn('could not be done: that chat is gone', late)                    # told plainly, in the reply to the yes
         self.assertIn('Writing the final plan…', activity)
 
-    def test_speaking_while_the_final_plan_is_written_leaves_planning_on(self):
+    def test_a_slow_final_plan_does_not_hold_the_conversation_and_is_read_out_later(self):
+        # The reply that ends planning waits for the final text only briefly (FINAL_WAIT); the user goes on talking meanwhile, which stops
+        # the conversation model's writing on their own server, and it is written again and read out in the next quiet moment, with the
+        # question at its end. Nothing starts without the yes.
         for how in (END, self.HAND):
             async def scenario(h):
                 h.asked_for, h.plan_delay = 'YES', 30.0
                 await h.candidate('t', h.audio('ask'), final=True)
                 await h.until(6)
-                writing = len(h.kept)
+                writing, told = len(h.kept), h.answers[1]['tool_turn']['result']
                 h.proposals, h.plan_delay = [], .5
                 await h.candidate('u', h.audio('next'), final=True)
                 await h.settle()
                 await h.advance(90)
-                return writing, h.plans.open('a'), h.state.get('pending'), h.jobs()
+                pending = h.state.get('pending') or {}
+                return (writing, told, h.plans.shown('a')['status'], (pending.get('name'), pending.get('label'), pending.get('last')), h.jobs(),
+                        [r['kind'] for r in h.journal('plan.ready')])
             with self.subTest(how['arguments']):
-                writing, plan, pending, jobs = self.play(scenario, planned='x', proposals=[how])
-                self.assertEqual((writing, pending, jobs), (1, None, []))              # nothing was agreed to yet, and nothing becomes of it
-                self.assertIsNotNone(plan)
+                writing, told, status, question, jobs, ready = self.play(scenario, planned='x', proposals=[how])
+                self.assertGreaterEqual(writing, 1)
+                self.assertIn('being written', told)
+                self.assertIn('go on with the conversation', told)
+                self.assertEqual((status, question, jobs, ready), ('kept', ('voice_mode', 'Hand over the plan', True), [], ['plan.ready']))
 
     def test_ending_planning_that_is_not_on_is_harmless(self):
         async def scenario(h):
