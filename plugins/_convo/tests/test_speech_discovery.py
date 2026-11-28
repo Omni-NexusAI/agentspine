@@ -50,10 +50,16 @@ class FakeServer:
         if answer is None:
             return httpx.Response(404, json={'detail': 'Not Found'})
         status, body = answer
+        if isinstance(body, str):
+            return httpx.Response(status, content=body.encode(), headers={'content-type': 'text/html; charset=utf-8'})
         return httpx.Response(status, content=body) if isinstance(body, bytes) else httpx.Response(status, json=body)
 
     def paths(self):
-        return [request.url.path for request in self.requests]
+        """The API routes asked, in order (the one look at the server's own page, `/`, is checked on its own)."""
+        return [request.url.path for request in self.requests if request.url.path != '/']
+
+    def page_requests(self):
+        return [request for request in self.requests if request.url.path == '/']
 
 
 class SpeechDiscoveryTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
@@ -68,9 +74,28 @@ class SpeechDiscoveryTests(SetupHarness, unittest.IsolatedAsyncioTestCase):
     def assert_read_only(self, server):
         for request in server.requests:
             self.assertEqual((request.method, request.content), ('GET', b''), str(request.url))
+            if request.url.path == '/':
+                self.assertNotIn('authorization', request.headers)          # the look at the server's own page never carries a key
+                continue
             self.assertIn(request.url.path.removeprefix('/v1'), self.setup.speech_discovery.READ_ROUTES, str(request.url))
             for word in LIFECYCLE_WORDS:
                 self.assertNotIn(word, request.url.path.lower(), str(request.url))
+
+    async def test_the_servers_own_voice_studio_page_is_found_with_one_read_only_look_and_named_for_the_browser(self):
+        server = self.serve({**AUDIOCPP, '/': (200, '<!doctype html><html><head><title>Voice Studio</title></head><body></body></html>')})
+        result = await self.setup.discover('tts', {**AUDIOCPP_DRAFT, 'url': 'http://host.docker.internal:8890/v1'}, check=True)
+        self.assertEqual(result['studio'], {'url': 'http://host.docker.internal:8890/', 'browser_url': 'http://localhost:8890/'})
+        self.assertEqual(len(server.page_requests()), 1)
+        self.assert_read_only(server)
+        # A server whose address shows no page, a page that is not HTML, and an address outside the user's network: no Studio.
+        for routes, url in (({**AUDIOCPP}, 'http://127.0.0.1:8890/v1'), ({**AUDIOCPP, '/': (200, {'service': 'api'})}, 'http://127.0.0.1:8890/v1'),
+                            ({**AUDIOCPP, '/': (302, '<html>')}, 'http://127.0.0.1:8890/v1')):
+            server = self.serve(routes)
+            result = await self.setup.discover('tts', {**AUDIOCPP_DRAFT, 'url': url}, check=True)
+            self.assertNotIn('studio', result)
+        module = self.setup.speech_discovery
+        self.assertIsNone(await module._studio_page('https://speech.example.com/v1'))     # never asked of a public address
+        self.assertIsNone(await module._studio_page('ftp://127.0.0.1/v1'))
 
     async def test_your_audiocpp_server_is_read_route_by_route_and_never_told_to_switch_load_or_unload(self):
         server = self.serve(AUDIOCPP)

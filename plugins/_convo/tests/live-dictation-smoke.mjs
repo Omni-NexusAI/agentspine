@@ -115,7 +115,7 @@ try {
     // 2. The Convo card agrees, and its own choice applies at once without a "changed elsewhere" banner.
     await page.eval(`(() => { void Alpine.store('convo').openSettingsModal(); return 1; })()`);
     await page.waitFor(`!!document.querySelector('.convo-tabs')`, 60000);
-    await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Voice & Audio').click()`);
+    await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Audio & Video').click()`);
     await page.waitFor(`!!(${CARD})`, 20000);
     await sleep(800);
     check('the Convo card shows the same choice', await page.eval(`(${CARD}).value`) === 'continuous');

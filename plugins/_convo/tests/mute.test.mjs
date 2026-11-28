@@ -346,12 +346,25 @@ test('Muted, a finished task’s notice still arrives; a test clip and a raw rec
 
 test('The panel: Mute beside Start and Stop, only during a conversation, and no Dictate button; dictation still says so and can be ended', async () => {
     const html = await readFile(new URL('../webui/main.html', import.meta.url), 'utf8');
-    const controls = html.slice(html.indexOf('<div class="convo-controls">'), html.indexOf('<p class="convo-hint"'));
-    assert.match(controls, /<button type="button" class="button convo-mute" x-show="\$store\.convo\.active" @click="\$store\.convo\.toggleMute\(\)" :aria-pressed="\$store\.convo\.muted \? 'true' : 'false'"/);
-    assert.match(controls, /x-text="\$store\.convo\.muted \? 'Unmute' : 'Mute'"/);
-    assert.ok(controls.indexOf('convo-primary') < controls.indexOf('convo-mute') && controls.indexOf('convo-mute') < controls.indexOf('convo-camera'));
+    const controls = html.slice(html.indexOf('<div class="convo-controls convo-stage"'), html.indexOf('<p class="convo-hint"'));
+    assert.match(controls, /<button type="button" class="button convo-iconbtn convo-mute" style="--i:0" @click="\$store\.convo\.toggleMute\(\)" :aria-pressed="\$store\.convo\.muted \? 'true' : 'false'"/);
+    // The controls exist only for a conversation: tucked behind the orb and out of reach (inert) until one runs.
+    assert.match(controls, /<div class="convo-icons" role="group" aria-label="Conversation controls" :inert="!\(\$store\.convo\.active \|\| \$store\.convo\.busy\)">/);
+    assert.match(html, /\.convo-stage \.convo-iconbtn\{opacity:0;transform:translateX\([^}]*pointer-events:none/);
+    assert.match(html, /\.convo-stage\[data-active=true\] \.convo-iconbtn\{opacity:1;transform:none;pointer-events:auto/);
+    // Muted is red, with the struck-through microphone: seen at a glance, and never by colour alone.
+    assert.match(html, /\.convo-panel \.convo-mute\[aria-pressed=true\]\{border-color:#e06c6c/);
+    assert.match(controls, /x-text="\$store\.convo\.muted \? 'mic_off' : 'mic'"/);
+    // The orb is Start and Stop; the icons beside it are the microphone, the assistant's voice, the camera and the screen, in that order.
+    assert.ok(controls.indexOf('convo-mute') < controls.indexOf('convo-voice') && controls.indexOf('convo-voice') < controls.indexOf('convo-iconbtn convo-camera')
+        && controls.indexOf('convo-iconbtn convo-camera') < controls.indexOf('convo-iconbtn convo-screen'));
+    assert.match(controls, /class="button convo-iconbtn convo-voice" style="--i:1" @click="\$store\.convo\.toggleVoice\(\)" :aria-pressed="\$store\.convo\.voiceMuted \? 'true' : 'false'"/);
+    for (const name of ['convo-mute', 'convo-voice', 'convo-camera', 'convo-screen'])               // every icon has a name without its label showing
+        assert.match(controls, new RegExp(`class="button convo-iconbtn ${name}"[^>]*:aria-label=`), name);
+    assert.match(controls, /x-text="\$store\.convo\.muted \? 'Microphone muted' : 'Mute microphone'"/);
+    assert.ok(html.indexOf('convo-primary convo-panel-orb') < html.indexOf('convo-iconbtn convo-mute') && controls.indexOf('convo-mute') < controls.indexOf('convo-camera'));
     assert.doesNotMatch(html, /toggleDictation|>Dictate<|'Dictate'/);
-    assert.match(html, /Dictating · click the composer orb to finish, Escape cancels/);
+    assert.match(await readFile(new URL('../webui/convo-store.js', import.meta.url), 'utf8'), /Dictating · click the composer orb to finish, Escape cancels/);
     assert.match(html, /\.convo-chip\[data-state=muted\] \.convo-dot\{background:transparent;border:/);      // a hollow dot: not colour alone
     const f = await rig();
     await f.store.start();

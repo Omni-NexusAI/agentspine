@@ -25,7 +25,9 @@ HOLD_LIMIT = 240          # characters held back while a leading bracketed state
 CLOSERS = {'[': ']', '(': ')'}
 INSTRUCTION = ('After the USER and LANGUAGE lines you may write one control word instead of an answer: [SILENT] when nothing should be said: '
                'you were asked not to respond, or there were no words meant for you (noise, someone talking to someone else, media, '
-               'your own voice); [WAIT] when the user\'s thought is clearly unfinished and they are about to go on (for example they '
+               'your own voice). In a conversation the user started you are the only listener: when they talk about you ("the '
+               'assistant", "it", your name) or think aloud, that is still said to you, so answer it; '
+               '[WAIT] when the user\'s thought is clearly unfinished and they are about to go on (for example they '
                'said "I need to..." and stopped). A few words of reason may follow it on the same line. Nobody hears a control word. '
                'A request to do something is never [SILENT], however short it is: do it (with a tool when it needs one) and '
                'answer; never write that something was done after a control word. '

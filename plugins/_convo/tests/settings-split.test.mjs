@@ -7,7 +7,7 @@ import { COMPONENT, ENTRY_POINTS, readWebui, settingsFiles, settingsMarkup } fro
 
 const fixture = name => readFile(new URL('./fixtures/' + name, import.meta.url), 'utf8');
 const CARDS = ['settings-banner.html', 'conversation-model-field.html', 'classifier-model-field.html', 'speech-output-field.html',
-               'runtime-field.html', 'hotkeys-field.html', 'speech-voice-field.html', 'sound-panel.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
+               'hotkeys-field.html', 'speech-voice-field.html', 'sound-panel.html', 'dictation-field.html'];   // tuning-controls.html is embedded by the diagnostics panel
 
 test('Both entry points embed the one shell, and the shell composes every card exactly once', async () => {
     for (const entry of ENTRY_POINTS) assert.match(await readWebui(entry), /<x-component path="\/plugins\/_convo\/webui\/settings-controls\.html">/, entry);
@@ -39,19 +39,22 @@ test('The host composes nested components through the same observer at every lev
 test('A card lays out exactly as before: its wrapper takes no box, and the sections are still the shell\'s direct stacks', async () => {
     const shell = await readWebui('settings-controls.html');
     assert.match(shell, /\.convo-settings x-component\{display:contents\}/);
-    for (const section of ['Connections', 'Conversation', 'Voice & Audio'])
+    for (const section of ['Connections', 'Conversation', 'Audio & Video'])
         assert.match(shell, new RegExp(`\\n  <div x-show="\\$store\\.convoSetup\\.section === '${section}'" class="convo-stack">`), section);
     assert.match(shell, /<section class="convo-settings"[^>]*>[\s\S]*<footer class="convo-actions">[\s\S]*<\/footer>\n<\/section><\/template>/);   // the footer the modals hide
 });
 
-test('The Developer row sits outside the sections, binds both modes and opens diagnostics only when that store exists', async () => {
+test('The Advanced tab holds the developer switches and opens diagnostics only when that store exists', async () => {
     const shell = await readWebui('settings-controls.html');
-    const row = shell.slice(shell.indexOf('<section class="convo-developer"'), shell.indexOf('</section>', shell.indexOf('<section class="convo-developer"')));
-    assert.ok(shell.indexOf('<section class="convo-developer"') > shell.indexOf("section === 'Voice & Audio'"));
-    assert.doesNotMatch(shell, /section === 'Advanced'|tuning-controls\.html/);         // the tunables moved to the diagnostics panel
-    assert.doesNotMatch(row.split('\n')[0], /convo-stack/);                               // the live smoke counts each tab's one visible stack
-    assert.match(row, /<input type="checkbox" x-model="\$store\.convoSetup\.config\.developer_mode">Developer diagnostics</);
-    assert.match(row, /<input type="checkbox" x-model="\$store\.convoSetup\.config\.ai_link_development_mode">AI Link development mode</);
+    const start = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Advanced'" class="convo-stack">`);
+    const row = shell.slice(start, shell.indexOf('<p role="alert"', start));
+    assert.ok(start > shell.indexOf("section === 'Audio & Video'"));                      // the last tab
+    assert.doesNotMatch(shell, /convo-developer|tuning-controls\.html|class="convo-check"/); // no Developer row, no tunables, no plain checkboxes
+    const toggle = (key, title) => new RegExp('<div class="field-title">' + title + '</div>.*?<label class="toggle"><input type="checkbox" x-model="\\$store\\.convoSetup\\.config\\.' + key + '" aria-label="' + title + '"><span class="toggler"></span></label>');
+    assert.match(row, toggle('developer_mode', 'Developer mode'));
+    assert.match(row, toggle('ai_link_development_mode', 'AI Link development mode'));
+    assert.match(row, toggle('show_diagnostic_events', 'Show diagnostic events in the history'));
+    assert.match(row, toggle('show_rejected_responses', 'Show replies that were never delivered'));
     assert.match(row, /<button type="button" class="button" x-show="\$store\.convoDiagnostics\?\.available" @click="\$store\.convoDiagnostics\?\.open\(\)">Open diagnostics<\/button>/);
     const tuning = await readWebui('tuning-controls.html');
     assert.doesNotMatch(tuning, /developer_mode|ai_link_development_mode/);              // moved, not duplicated

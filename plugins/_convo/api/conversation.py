@@ -145,7 +145,7 @@ class Conversation(ApiHandler):
                 return {'ok': False, 'error': str(exc)[:300]}
             except Exception as exc:
                 return {'ok': False, 'error': net.describe(exc, contract.endpoint(role))[:300]}
-        if action in {'setup_read', 'setup_save', 'setup_patch', 'discover', 'connection_test', 'key_rebind', 'tls_accept', 'tls_forget',
+        if action in {'setup_read', 'setup_save', 'setup_patch', 'discover', 'connection_test', 'key_rebind', 'key_reveal', 'tls_accept', 'tls_forget',
                       'import_preview', 'import_apply', 'runtime_start', 'runtime_stop'}:
             setup = importlib.import_module(m.__package__ + '.convo_setup')
             try:
@@ -162,6 +162,7 @@ class Conversation(ApiHandler):
                 if action in {'discover', 'connection_test'}:
                     return await setup.discover(input.get('role'), input.get('provider'), check=action == 'connection_test', draft_key=input.get('draft_key'))
                 if action == 'key_rebind': return setup.key_rebind(input.get('role'), input.get('provider'))
+                if action == 'key_reveal': return setup.key_reveal(input.get('role'))
                 if action == 'tls_accept': return setup.tls_accept(input.get('url'))
                 if action == 'tls_forget': return setup.tls_forget(input.get('url'))
                 if action == 'import_preview': return setup.preview(input.get('document'))

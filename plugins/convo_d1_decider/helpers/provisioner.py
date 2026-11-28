@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 # The source this module was loaded from: api/provision.py reloads the module when the file on disk differs (a scoped update while
 # the host keeps running), so an update never leaves the previous code serving decisions.
 SOURCE_STAMP = Path(__file__).stat().st_mtime_ns
-PINNED = {'decision.py': '87aaa5295647f7e91b0a02079192a633f7722e124f1f315a284cfa4fc862cb14',
+PINNED = {'decision.py': '021885f3dfa4f9674e3f2ab3211e37d321d6b75143c97afec7496e90693635e0',
           'media_decision.py': '22088754870e22f963df477c7a49ba056abff73ce81aff847e4fcaacd108f3b6'}    # System One canonical files, 2026-10-15
 DEFAULT_URL = 'http://host.docker.internal:9931'
 # This machine and Convo's containers by name; with loopback, private-network and tailnet addresses, one-label machine names and

@@ -113,7 +113,7 @@ test('Agent Zero’s provider-change hook gets the role as a model slot: name is
     assert.deepEqual(seen, [['convo_conversation_model', '', { provider: 'openrouter', name: 'typed-before', api_base: '', ctx_length: 16384 }]]);
     const role = f.store.config.roles.conversation;
     assert.deepEqual([role.provider, role.model, f.store.config.compaction.context_tokens, 'kwargs' in role], ['openrouter', 'remembered/openrouter', 32768, false]);
-    assert.deepEqual(Object.keys(plain(f.store.ui.conversation.edited)).sort(), ['compaction.context_tokens', 'roles.conversation.api_base', 'roles.conversation.model', 'roles.conversation.provider']);
+    assert.deepEqual(Object.keys(plain(f.store.ui.conversation.edited)).sort(), ['compaction.context_tokens', 'roles.conversation.model', 'roles.conversation.provider', 'roles.conversation.remote']);   // an outside provider carries its consent
     // The classifier card keeps its own slot and its own context window.
     f.store.classifierSetProvider('openai');
     await settle();

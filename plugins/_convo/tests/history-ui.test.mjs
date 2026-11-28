@@ -146,7 +146,7 @@ test('Active background tasks and the retarget offer are derived from real state
     assert.equal(f.store.canRetarget, false);                                    // the selected chat is the target
     f.select('b'); await f.store.refresh();
     f.store.target = 'a';                                                         // an active session stays on its chat
-    assert.equal(f.store.canRetarget, true);
+    assert.equal(f.store.canRetarget, false);                                    // and nothing has to be pressed: its work follows the open chat
 });
 
 test('Bookkeeping is hidden, delivered speech and real activity are shown, and nothing is invented', async () => {

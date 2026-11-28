@@ -257,6 +257,306 @@ class Rounds(Loop):
                 self.assertEqual(errors, ['The model asked for something that changes things at a point where only look-ups run. Nothing was done.'])
                 self.assertIn(('tool.followup_refused', name, 'followup'), self.marks())
 
+    def test_convos_own_readings_do_not_close_the_reply_to_actions(self):
+        """The system check and the clock are Convo's own readings, not someone else's text: a hand-over or a timer the user asked
+        for may follow them in the same reply (2026-11-25: a graphics-card question the check could not answer was never handed
+        over). A web result in the same reply still closes it."""
+        self.assertEqual([name for name in tools.CATALOG if tools.own_reading(name)], ['system_status', 'world_time'])
+        self.assertFalse(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'world_time', 'result': 'y'}]}]))
+        self.assertTrue(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'web_search', 'result': 'y'}]}]))
+
+        async def scenario(h):
+            await self.ask(h)
+            return h.jobs(), self.tool_journal(h), self.errors(h)
+        with patch.object(importlib.import_module('plugins._convo.helpers.convo_actions'), 'system_status', lambda about, **kw: 'No graphics card can be seen from here.'):
+            jobs, journal, errors = self.play(scenario, proposals=[call('system_status', about='machine'), DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+            self.assertEqual((len(jobs), errors), (1, []))                                  # handed over after the check, in the same reply
+            self.assertNotIn(('tool.refused', 'delegate_task', 'followup'), journal)
+            metrics.LOG.reset()
+            jobs, journal, errors = self.play(scenario, proposals=[call('system_status', about='machine'), WEB_SEARCH, DELEGATE_TASK],
+                                              classifier={'ask': script(DELEGATE, .2)})
+            self.assertEqual(jobs, [])                                                      # a page was read meanwhile: nothing starts
+            self.assertEqual(journal[-1], ('tool.refused', 'delegate_task', 'followup'))
+
+
+class Promises(Loop):
+    """A reply that announces an action and calls no tool (2026-11-25: "let me check what I can do", then nothing), and a reply
+    that offers one ("I can open Settings if you'd like", then "do it" was dropped). What the reply left open is read by an
+    isolated request with no history; the scripted word stands for the model's reading, so this tests what Convo does with it."""
+    SAID = [('USER: a request\nLANGUAGE: English\nLet me look into that.', .1)]
+
+    def run_reply(self, said, kept=None, classifier=None, proposals=None, **options):
+        async def scenario(h):
+            h.said, h.kept = said, kept
+            await self.ask(h)
+            return types.SimpleNamespace(said_read=h.said_read, answers=h.answers, offer=h.state.get('offer'), spoken=self.spoken(h), errors=self.errors(h),
+                                         timers=voice_tools.timers(h.service).pending(voice_tools.TIMER_SCOPE))
+        return self.play(scenario, model_deltas=self.SAID, proposals=proposals if proposals is not None else [None, None],
+                         classifier=classifier or {'ask': script(SPEAK, .2), 'next': script(SPEAK_PLAIN, .2)}, **options)
+
+    def test_a_promise_is_kept_the_model_is_asked_once_more_and_its_call_runs(self):
+        h = self.run_reply('YES', {'proposals': [TIMER]})
+        self.assertEqual(len(h.said_read), 1)
+        read = h.said_read[0]
+        self.assertEqual((read['history'], read['allow_tools'], read['audio']), ([], False, None))          # isolated: only the sentence
+        self.assertIn('Let me look into that.', read['transcript'])
+        self.assertIn(('reply.promise', None, None), self.marks(prefix='reply.'))
+        again = h.answers[1]
+        self.assertIn('You have just said to the user: "Let me look into that."', again['system'])
+        self.assertIn("handing it to the chat's agent", again['system'])
+        self.assertTrue(again['allow_tools'])
+        self.assertEqual(len(h.timers), 1)                                                                 # the promised action ran
+        self.assertNotIn('You have just said to the user', h.answers[2]['system'])                         # the result is answered as usual
+        self.assertEqual(h.errors, [])
+
+    def test_a_promise_the_model_cannot_keep_is_said_plainly_and_asked_only_once(self):
+        h = self.run_reply(['YES', 'YES'], {'deltas': [('I cannot do that myself.', .1)]})
+        self.assertEqual((len(h.said_read), len(h.answers)), (1, 2))                                        # read once per reply, never in a loop
+        self.assertIn('I cannot do that myself.', ' '.join(str(item) for item in h.spoken))
+
+    def test_an_answer_that_promised_nothing_is_left_alone(self):
+        for word in ('NO', 'maybe later', ''):
+            with self.subTest(word):
+                metrics.LOG.reset()
+                h = self.run_reply(word, {'proposals': [TIMER]})
+                self.assertEqual((len(h.answers), h.offer, h.timers), (1, None, []))
+
+    def test_a_reply_that_called_a_tool_is_not_read(self):
+        h = self.run_reply('YES', {'proposals': [TIMER]}, proposals=[MEMORY])
+        self.assertEqual(h.said_read, [])
+
+    def test_on_a_single_slot_local_server_the_reading_is_skipped(self):
+        async def scenario(h):
+            h.said = 'YES'
+            return await voice_tools.left_open(types.SimpleNamespace(_server=lambda state: {'kind': 'llama.cpp', 'slots': 1}), h.state, 'Let me check.'), h.said_read
+        self.assertEqual(self.play(scenario), ('', []))
+
+    def test_after_an_offer_a_short_yes_is_answered_instead_of_being_dropped_as_an_acknowledgement(self):
+        backchannel = {'speech': 'silent', 'action': 'none', 'confidence': .95, 'explicit_request': False, 'context_note': 'Acknowledgement'}
+
+        async def scenario(h):
+            h.said = ['OTHER', 'NO']
+            await self.ask(h)                                       # the reply offers something
+            offer = dict(h.state.get('offer') or {})
+            await h.candidate('u', h.audio('next'), final=True)     # "do it": the classifier takes it for an acknowledgement
+            await h.settle()
+            return offer, len(h.answers), [m for m in self.marks('u', prefix='') if m[0].startswith('policy') or m[0].startswith('candidate')]
+        offer, answers, _ = self.play(scenario, model_deltas=self.SAID, proposals=[None, None],
+                                      classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)})
+        self.assertEqual(offer.get('turn'), 't')
+        self.assertEqual(answers, 2)                                # the short reply reached the conversation model
+        # Without an offer the same short reply stays unanswered.
+        async def plain(h):
+            await self.ask(h)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            return len(h.answers)
+        self.assertEqual(self.play(plain, model_deltas=self.SAID, proposals=[None, None],
+                                   classifier={'ask': script(SPEAK, .2), 'next': script(backchannel, .2)}), 1)
+
+
+class Results(Loop):
+    """A handed-over task's result is announced by the server (2026-11-25: the page decided, after four quiet seconds, and the
+    announcement was written without the conversation in view): at once when the user is idle, after their turn when they are
+    talking, and as a short interjection that hands the floor back when they have kept talking for long."""
+    ENDED = 'A task the user handed over earlier has ended'
+
+    @staticmethod
+    def finish(h):
+        job = h.jobs()[0]['id']
+        for expected, status in (('queued', 'dispatching'), ('dispatching', 'running'), ('running', 'completed')):
+            h.store.transition(job, expected, status, 'The report is in the documents folder.' if status == 'completed' else '')
+        h.proposals = [None]                       # from here on the scripted model only speaks
+        return job
+
+    def notices(self, h):
+        return [answer for answer in h.answers if self.ENDED in str(answer.get('system'))]
+
+    def play_task(self, scenario):
+        return self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2), 'next': script(SPEAK_PLAIN, .2)}, default=SPEAK_PLAIN)
+
+    def test_idle_the_result_is_announced_by_itself_with_the_conversation_in_view(self):
+        async def scenario(h):
+            await self.ask(h)
+            self.finish(h)
+            await h.advance(25)
+            await h.settle()
+            return self.notices(h), [m for m in self.marks(prefix='notice.')]
+        notices, _ = self.play_task(scenario)
+        self.assertEqual(len(notices), 1)                                          # once, without the page asking
+        system = notices[0]['system']
+        self.assertIn('The conversation so far, for reference only', system)
+        self.assertIn('User: "a request"', system)
+        self.assertNotIn('hand the floor back', system)
+        self.assertEqual((notices[0]['history'], notices[0]['allow_tools']), ([], False))
+
+    def test_while_the_user_is_speaking_it_waits_and_comes_after_their_turn(self):
+        async def scenario(h):
+            await self.ask(h)
+            self.finish(h)
+            await h.candidate('u', h.audio('next'), final=False)                   # they are in the middle of saying something
+            await h.advance(3)
+            during = len(self.notices(h))
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            await h.advance(25)
+            await h.settle()
+            return during, len(self.notices(h)), len(h.answers)
+        during, after, _ = self.play_task(scenario)
+        self.assertEqual((during, after), (0, 1))
+
+    def test_the_page_saying_speech_began_holds_it_back_before_any_audio_arrives(self):
+        async def scenario(h):
+            now = asyncio.get_running_loop().time()
+            quiet = h.handler._speaking(h.state)
+            h.state['speech_started'] = now
+            started = h.handler._speaking(h.state)
+            h.state['speech_started'] = now - h.module.SPEECH_START_HOLD - .1
+            return quiet, started, h.handler._speaking(h.state)
+        self.assertEqual(self.play(scenario), (False, True, False))
+
+    def test_after_a_long_wait_while_the_user_kept_talking_it_is_an_interjection_that_hands_the_floor_back(self):
+        async def scenario(h):
+            await self.ask(h)
+            job = self.finish(h)
+            now = asyncio.get_running_loop().time()
+            h.state['results_at'] = {job: now - h.module.RESULT_PATIENCE - 1}       # it arrived a while ago...
+            h.state['spoke_at'] = now - 1                                           # ...and they were speaking until a moment ago
+            announced = h.handler._announce_result('browser', h.state, now)
+            await h.settle()
+            again = h.handler._announce_result('browser', h.state, asyncio.get_running_loop().time())
+            return announced, again, self.notices(h)
+        announced, again, notices = self.play_task(scenario)
+        self.assertEqual((announced, again, len(notices)), (True, False, 1))        # announced once, never twice
+        self.assertIn('hand the floor back', notices[0]['system'])
+        self.assertIn('very short lead-in', notices[0]['system'])
+
+    def test_a_result_that_arrived_long_ago_while_nobody_spoke_is_a_plain_announcement(self):
+        async def scenario(h):
+            await self.ask(h)
+            job = self.finish(h)
+            now = asyncio.get_running_loop().time()
+            h.state['results_at'] = {job: now - 60}
+            h.state['spoke_at'] = now - 30
+            h.handler._announce_result('browser', h.state, now)
+            await h.settle()
+            return self.notices(h)
+        self.assertNotIn('hand the floor back', self.play_task(scenario)[0]['system'])
+
+
+class Courtesy(Loop):
+    """After a substantive answer heard to its end, a short "thanks" may get a few words back; the model decides, Convo rations."""
+    ANSWER = [('USER: a question\nLANGUAGE: English\nThe capital of Portugal is Lisbon, on the river Tagus near the Atlantic coast.', .1)]
+    THANKS = {'speech': 'silent', 'action': 'none', 'confidence': .95, 'explicit_request': False, 'context_note': 'Acknowledgement'}
+
+    def run_thanks(self, first=None, heard=True, again=False):
+        async def scenario(h):
+            await self.ask(h)
+            if heard:
+                # What the user heard of the reply (the harness's page reports no playback): the whole of it.
+                turn = h.store.context(h.session['target'])['turns'][-1]
+                h.store.delivered(h.state['session']['id'], 'browser', h.state['session']['epoch'], turn['id'], 'p1', (first or self.ANSWER)[0][0].split('\n')[-1])
+            due = h.handler._courtesy_due(h.state, h.session)
+            before = len(h.answers)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            thanked = h.answers[before:]
+            second = None
+            if again:
+                more = len(h.answers)
+                await h.candidate('v', h.audio('next'), final=True)
+                await h.settle()
+                second = len(h.answers) - more
+            return due, thanked, second
+        # The classifier's reading of the second utterance as an acknowledgement (a typed decision model says so; the scripted
+        # stand-in only says "not for the assistant", which is never answered out of courtesy).
+        policy = importlib.import_module('plugins._convo.helpers.convo_policy')
+        original = policy.conversation_verdict
+
+        def verdict(decision, **kwargs):
+            found = original(decision, **kwargs)
+            return ('ignore', 'backchannel') if found == ('ignore', 'not_addressed') else found
+        with patch.object(policy, 'conversation_verdict', verdict):
+            return self.play(scenario, model_deltas=first or self.ANSWER, proposals=[None, None],
+                             classifier={'ask': script(SPEAK, .2), 'next': script(self.THANKS, .2)})
+
+    def test_speech_that_was_simply_not_for_the_assistant_is_never_answered_out_of_courtesy(self):
+        async def scenario(h):
+            await self.ask(h)
+            turn = h.store.context(h.session['target'])['turns'][-1]
+            h.store.delivered(h.state['session']['id'], 'browser', h.state['session']['epoch'], turn['id'], 'p1', self.ANSWER[0][0].split('\n')[-1])
+            before = len(h.answers)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            return len(h.answers) - before
+        self.assertEqual(self.play(scenario, model_deltas=self.ANSWER, proposals=[None, None],
+                                   classifier={'ask': script(SPEAK, .2), 'next': script(self.THANKS, .2)}), 0)
+
+    def test_a_thanks_after_a_full_answer_reaches_the_model_with_the_choice_to_say_a_few_words_or_nothing(self):
+        due, thanked, _ = self.run_thanks()
+        self.assertTrue(due)
+        self.assertEqual(len(thanked), 1)
+        self.assertIn('You may answer with a few words', thanked[0]['system'])
+        self.assertIn('or write [SILENT]', thanked[0]['system'])
+
+    def test_never_twice_in_a_row_and_not_within_the_pause(self):
+        due, thanked, second = self.run_thanks(again=True)
+        self.assertEqual((len(thanked), second), (1, 0))                    # the second "thanks" right after stays unanswered
+
+    def test_not_after_a_short_reply_or_one_that_was_not_heard_to_its_end(self):
+        short = [('USER: a question\nLANGUAGE: English\nYes, sir.', .1)]
+        due, thanked, _ = self.run_thanks(first=short)
+        self.assertEqual((due, thanked), (False, []))
+        due, thanked, _ = self.run_thanks(heard=False)
+        self.assertEqual((due, thanked), (False, []))
+
+
+class OwnVoiceResume(Loop):
+    """Through a loud headset the microphone caught the assistant's own words and cut its reply off (2026-11-25, twice in a row).
+    The echo is recognised by the server (Realtime._own_voice); the reply then carries on from what was heard."""
+    FIRST_REPLY = [('USER: a question\nLANGUAGE: English\nYour first question was about the weather in Lisbon today.', .1)]
+    ECHO = [('USER: Your first question was about the weather\nLANGUAGE: English\nYes?', .1)]
+
+    def run_echo(self, interrupted=True, resumed=(('and it is mild and sunny there.', .1),)):
+        async def scenario(h):
+            await self.ask(h)
+            if interrupted:
+                h.store.interrupted(h.session['id'], 'browser', 't', 'Your first question was about the weather in Lisbon today.')   # cut off while it played
+            h.model_deltas, h.resumed = self.ECHO, list(resumed)
+            await h.candidate('u', h.audio('next'), final=True)
+            await h.settle()
+            turns = {item['id']: item['content'] for item in h.store.context(h.session['target'])['turns']}
+            return h.answers, turns, self.spoken(h), self.marks('u', prefix='turn.')
+        return self.play(scenario, model_deltas=self.FIRST_REPLY, proposals=[None, None])
+
+    def test_the_cut_off_reply_carries_on_from_what_was_heard(self):
+        answers, turns, spoken, marks = self.run_echo()
+        again = answers[-1]
+        self.assertIn('They heard it up to: "Your first question was about the weather in Lisbon today."', again['system'])
+        self.assertEqual((again['audio'], again['allow_tools']), (None, False))                     # no echo audio, nothing started
+        self.assertIn(('turn.own_voice_resume', None, None), marks)
+        self.assertIn('and it is mild and sunny there.', ' '.join(str(item) for item in spoken))
+        self.assertNotIn('Your first question was about the weather', str(turns['u'].get('transcript')))   # the echo is not the user's words
+        self.assertFalse(turns['u'].get('held'))
+
+    def test_with_nothing_left_to_say_or_no_reply_cut_off_it_stays_silent_as_before(self):
+        answers, turns, spoken, marks = self.run_echo(resumed=())
+        self.assertEqual((turns['u'].get('held'), turns['u'].get('assistant', '')), ('silent', ''))
+        metrics.LOG.reset()
+        answers, turns, spoken, marks = self.run_echo(interrupted=False)
+        self.assertNotIn(('turn.own_voice_resume', None, None), marks)
+        self.assertEqual(turns['u'].get('held'), 'silent')
+
+    def test_what_was_heard_of_the_cut_reply(self):
+        async def scenario(h):
+            return h.module.Realtime._cut_reply
+        cut = self.play(scenario)
+        turns = [{'id': 'a', 'content': {'assistant': 'One  two.', 'interrupted': True}}, {'id': 'b', 'content': {}}]
+        self.assertEqual(cut({'turns': turns}, 'b'), 'One two.')
+        self.assertEqual(cut({'turns': [{'id': 'a', 'content': {'assistant': 'Done.'}}, {'id': 'b', 'content': {}}]}, 'b'), '')
+        self.assertEqual(cut({'turns': []}, 'b'), '')
+        self.assertEqual(cut(None, 'b'), '')
+
 
 def refuses(h, answered=()):
     """Make the scripted host's search fail as it does when every engine asked refuses this computer (convo_host.Host.direct)."""
@@ -547,6 +847,210 @@ class Actions(Loop):
                                           config={'roles': {'tts': {'provider': 'openai_tts'}}}))
 
 
+class ChatsFollowYou(Loop):
+    """A chat's own conversation carries on when the user opens another chat; only its work follows them (2026-11-25)."""
+    def test_work_goes_to_the_chat_the_user_has_open_and_the_model_is_told(self):
+        async def scenario(h):
+            opened = await h.handler.process('convo.work', {**h.ids(), 'chat': 'b'}, 'browser')
+            await self.ask(h)
+            return opened, [job['target'] for job in h.jobs()], h.answers[0]['system'], h.state['session']['target']
+        opened, targets, system, conversation = self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+        self.assertEqual((opened['ok'], opened['work'], targets, conversation), (True, 'b', ['b'], 'a'))     # the conversation stays where it is
+        self.assertIn('The user has another chat open now:', system)
+
+    def test_back_in_its_own_chat_work_goes_there_again_and_an_unknown_chat_is_ignored(self):
+        async def scenario(h):
+            await h.handler.process('convo.work', {**h.ids(), 'chat': 'b'}, 'browser')
+            await h.handler.process('convo.work', {**h.ids(), 'chat': 'a'}, 'browser')
+            ignored = await h.handler.process('convo.work', {**h.ids(), 'chat': 'no-such-chat'}, 'browser')
+            await self.ask(h)
+            return ignored['work'], [job['target'] for job in h.jobs()], h.answers[0]['system']
+        ignored, targets, system = self.play(scenario, proposals=[DELEGATE_TASK], classifier={'ask': script(DELEGATE, .2)})
+        self.assertEqual((ignored, targets), ('', ['a']))
+        self.assertNotIn('The user has another chat open now:', system)
+
+
+class OwedAnswers(Loop):
+    """Two things at once: the user speaks on while a look-up is still running. The look-up carries on and its answer is owed; what
+    they said next is answered at once; the owed answer comes in the next quiet moment, unless they withdrew that request."""
+    def overlap(self, still='YES', lookup_seconds=10):
+        async def scenario(h):
+            h.still = still
+            original = h.host.direct
+
+            async def slow(target, name, args):
+                await asyncio.sleep(lookup_seconds)
+                return await original(target, name, args)
+            h.host.direct = slow
+            await h.candidate('t', h.audio('ask'), final=True)          # "look that up": a search starts
+            await h.advance(2)
+            searching = len(h.host.directs) if hasattr(h.host, 'directs') else 0
+            h.proposals = [None]                                        # what they say next needs no tool
+            await h.candidate('u', h.audio('next'), final=True)         # they speak on while it is still searching
+            await h.advance(3)
+            owed_during = [dict(item, at=0) for item in h.state.get('owed', [])]
+            second = [answer for answer in h.answers if answer.get('audio') is not None][-1]
+            await h.advance(40)
+            await h.settle()
+            return types.SimpleNamespace(owed_during=owed_during, second_system=second['system'], directs=h.host.directs, owed_answers=h.owed_answers,
+                                         still_read=h.still_read, spoken=[str(item) for item in self.spoken(h)], left=h.state.get('owed'),
+                                         marks=self.marks('t', prefix='owed.'), answers=len(h.answers))
+        return self.play(scenario, proposals=[WEB_SEARCH], classifier={'ask': script(SPEAK, .2), 'next': script(SPEAK, .2)})
+
+    def test_the_look_up_carries_on_both_are_answered_and_nothing_is_looked_up_twice(self):
+        r = self.overlap()
+        self.assertEqual([item['turn'] for item in r.owed_during], ['t'])                  # owed while they were being answered
+        self.assertIn('Still being looked up from before', r.second_system)                # the new request is told so...
+        self.assertIn('Do not look that up again', r.second_system)
+        self.assertEqual([name for _, name, _ in r.directs], ['web_search'])               # ...and nothing is looked up twice
+        self.assertEqual(len(r.owed_answers), 1)                                           # the owed answer is given, once
+        system = r.owed_answers[0]['system']
+        self.assertIn('Look-up results:', system)
+        self.assertIn('opening with a few words that say which earlier request this is about', system)
+        self.assertTrue(any('About your earlier question' in text for text in r.spoken))
+        self.assertEqual(r.left, [])
+        self.assertIn(('owed.kept', None, None), r.marks)
+
+    def test_a_request_the_user_withdrew_meanwhile_stays_unsaid(self):
+        r = self.overlap(still='NO')
+        self.assertEqual((len(r.still_read), len(r.owed_answers)), (1, 0))
+        self.assertFalse(any('About your earlier question' in text for text in r.spoken))
+        self.assertIn(('owed.withdrawn', None, None), r.marks)
+        self.assertIn('Earlier request:', r.still_read[0]['transcript'])
+        self.assertEqual((r.still_read[0]['history'], r.still_read[0]['allow_tools']), ([], False))
+
+    def test_at_most_two_are_owed_and_one_switch_restores_the_earlier_behaviour(self):
+        async def scenario(h):
+            for turn in ('a', 'b', 'c'):
+                h.handler._owe(h.state, turn, ['web_search'])
+            kept = [item['turn'] for item in h.state['owed']]
+            with patch.object(h.module, 'OWED_ANSWERS', False):
+                h.state['owed'] = []
+                h.handler._owe(h.state, 'd', ['web_search'])
+                off = list(h.state['owed'])
+            return kept, off, h.module.OWED_LIMIT
+        self.assertEqual(self.play(scenario), (['b', 'c'], [], 2))
+
+
+class ParallelWork(Loop):
+    """Separate work for the chat's agent starts at once in a chat of its own instead of waiting behind what is running; work that
+    builds on it waits in line, as before. The relation is the model's reading; this tests what Convo does with it."""
+    def hand_over(self, relation=None, busy=True, chat=None, open_tasks=0):
+        async def scenario(h):
+            made = []
+            h.host.new_chat = lambda title='', like='': (made.append((title, like)) or {'id': 'made-%d' % len(made), 'name': title})
+            with patch.object(h.handler, '_chat_idle', lambda service, chat: not busy), \
+                    patch.object(voice_tools, '_open_tasks', lambda service, session: open_tasks):
+                await self.ask(h)
+            return made, [job['target'] for job in h.jobs()], result_of(h.answers[1]) if len(h.answers) > 1 else ''
+        arguments = {'task': 'Summarise the meeting notes'}
+        if relation: arguments['relation'] = relation
+        if chat: arguments['chat'] = chat
+        return self.play(scenario, proposals=[call('delegate_task', **arguments)], classifier={'ask': script(DELEGATE, .2)})
+
+    def test_separate_work_gets_its_own_chat_named_after_the_task_when_the_chat_is_busy(self):
+        made, targets, told = self.hand_over('separate')
+        self.assertEqual(len(made), 1)
+        self.assertIn('Summarise the meeting notes', made[0][0])
+        self.assertEqual((made[0][1], targets), ('a', ['made-1']))                # in the same project as the chat it would have waited in
+        self.assertIn('starts right away', told)
+        self.assertIn('a new chat', told)
+
+    def test_work_that_builds_on_what_is_running_or_says_nothing_waits_in_line_as_before(self):
+        for relation in ('after', None):
+            with self.subTest(relation):
+                made, targets, told = self.hand_over(relation)
+                self.assertEqual((made, targets), ([], ['a']))
+                self.assertIn('behind its current work', told)
+
+    def test_an_idle_chat_a_named_chat_and_the_limit_keep_the_task_where_it_was_going(self):
+        made, targets, told = self.hand_over('separate', busy=False)
+        self.assertEqual((made, targets), ([], ['a']))                              # nothing is running: no new chat is needed
+        made, targets, _ = self.hand_over('separate', open_tasks=voice_tools.PARALLEL_TASKS)
+        self.assertEqual((made, targets), ([], ['a']))                              # four already: this one waits
+        self.assertEqual(tools.validate('delegate_task', {'task': 't', 'relation': 'sideways'}), {'task': 't'})   # an unknown relation is left out
+
+
+class SettingsByVoice(Loop):
+    """The voice agent's own settings by voice: a fixed, safe subset. Three live in the page for this conversation (the microphone,
+    the assistant's voice, the camera); five are saved through the same validated path as the settings page."""
+    def change(self, arguments, answer=lambda payload: ('convo.ui_result', {'ok': True, 'detail': ''}), classifier=None, patched=None):
+        async def scenario(h):
+            browser(h, 'ui.setting', answer)
+            calls = []
+
+            def patch_settings(changes):
+                calls.append(changes)
+                if patched is not None:
+                    return patched(changes)
+                return {'ok': True}
+            with patch.object(importlib.import_module('plugins._convo.helpers.convo_setup'), 'patch', patch_settings):
+                await self.ask(h)
+            return (h.answers, [p for _, p in h.events('ui.setting')], calls, self.kept(h), h.state.get('pending'),
+                    {key: h.state['config'].get(key) for key in ('response_detail', 'developer_mode', 'spoken_updates')})
+        return self.play(scenario, proposals=[call('change_setting', **arguments)], classifier=classifier or {'ask': script(DELEGATE, .2)})
+
+    def test_the_microphone_the_voice_and_the_camera_are_changed_by_the_page_for_this_conversation(self):
+        cases = (({'setting': 'microphone', 'value': 'off'}, ('microphone', False), 'The microphone is muted. The user unmutes it with the microphone button.'),
+                 ({'setting': 'microphone', 'value': 'Unmute it'}, ('microphone', True), 'The microphone is on.'),
+                 ({'setting': 'voice', 'value': 'silent'}, ('voice', False), 'Your voice is silent from now on; your replies still appear as text.'),
+                 ({'setting': 'voice', 'value': 'on'}, ('voice', True), 'Your voice is on again.'),
+                 ({'setting': 'camera', 'value': 'start'}, ('camera', True), 'The camera is shared.'),
+                 ({'setting': 'camera', 'value': 'stop'}, ('camera', False), 'The camera is no longer shared.'))
+        for arguments, sent, sentence in cases:
+            with self.subTest(arguments):
+                answers, requests, saved, kept, pending, _ = self.change(arguments)
+                self.assertEqual([(r['setting'], r['on']) for r in requests], [sent])
+                self.assertEqual(result_of(answers[1]), tools.done('setting change', sentence))
+                self.assertEqual((saved, kept[0]['ok'], pending), ([], True, None))        # nothing is written to the settings
+
+    def test_what_the_page_could_not_do_is_said_and_an_unclear_value_changes_nothing(self):
+        answers, requests, _, kept, _, _ = self.change({'setting': 'camera', 'value': 'on'},
+                                                       lambda payload: ('convo.ui_result', {'ok': False, 'detail': 'The camera could not be started.'}))
+        self.assertEqual(kept[0]['ok'], False)
+        self.assertIn('The camera could not be started.', result_of(answers[1]))
+        answers, requests, saved, kept, _, _ = self.change({'setting': 'microphone', 'value': 'maybe'})
+        self.assertEqual((requests, saved, kept[0]['ok']), ([], [], False))
+        self.assertIn('whether to turn it on or off was not said', result_of(answers[1]))
+
+    def test_saved_settings_go_through_the_settings_own_validated_path_and_this_conversation_follows(self):
+        answers, requests, saved, kept, _, config = self.change({'setting': 'answer_length', 'value': 'Concise, please'})
+        self.assertEqual((requests, saved), ([], [[{'path': 'response_detail', 'base': 'balanced', 'value': 'concise'}]]))
+        self.assertEqual(result_of(answers[1]), tools.done('setting change', 'Answer length is now concise, saved in the voice settings.'))
+        self.assertEqual(config['response_detail'], 'concise')
+        answers, _, saved, _, _, config = self.change({'setting': 'developer_mode', 'value': 'on'})
+        self.assertEqual((saved, config['developer_mode']), ([[{'path': 'developer_mode', 'base': False, 'value': True}]], True))
+        answers, _, saved, kept, _, _ = self.change({'setting': 'spoken_updates', 'value': 'completion'})         # already so: nothing is written
+        self.assertEqual((saved, kept[0]['ok']), ([], True))
+        self.assertIn('was already completion', result_of(answers[1]))
+        answers, _, saved, kept, _, config = self.change({'setting': 'answer_length', 'value': 'enormous'})
+        self.assertEqual((saved, kept[0]['ok'], config['response_detail']), ([], False, 'balanced'))
+        self.assertIn('it must be one of: concise, balanced, detailed', result_of(answers[1]))
+
+    def test_a_refused_or_conflicting_write_is_said_and_the_conversation_keeps_its_value(self):
+        def refuse(changes):
+            raise ValueError('End the voice conversation before changing this.')
+        answers, _, _, kept, _, config = self.change({'setting': 'answer_length', 'value': 'detailed'}, patched=refuse)
+        self.assertEqual((kept[0]['ok'], config['response_detail']), (False, 'balanced'))
+        self.assertIn('End the voice conversation before changing this.', result_of(answers[1]))
+        answers, _, _, kept, _, config = self.change({'setting': 'answer_length', 'value': 'detailed'}, patched=lambda changes: {'conflicts': [{'path': 'response_detail'}]})
+        self.assertEqual((kept[0]['ok'], config['response_detail']), (False, 'balanced'))
+
+    def test_only_the_listed_settings_exist_and_it_is_work_that_needs_the_users_request(self):
+        self.assertEqual(list(tools.CATALOG['change_setting']['arguments']['setting']['enum']),
+                         ['microphone', 'voice', 'camera', 'answer_length', 'spoken_updates', 'developer_mode', 'diagnostic_events', 'rejected_replies'])
+        self.assertEqual(set(voice_tools.SAVED_SETTINGS) | set(voice_tools.SESSION_SETTINGS), set(tools.CATALOG['change_setting']['arguments']['setting']['enum']))
+        for path, _ in voice_tools.SAVED_SETTINGS.values():                       # never a permission, a consent, a key, an address or a model
+            self.assertIn(path, ('response_detail', 'spoken_updates', 'developer_mode', 'show_diagnostic_events', 'show_rejected_responses'))
+        # It is "work" (convo_policy.authorize): never in a tool's follow-up, and outside a conversation the user started only on
+        # the classifier's confident request. Whether the user themself asked is read like for a hand-over (ASKED_FOR).
+        self.assertEqual((tools.kind('change_setting'), 'change_setting' in voice_tools.ASKED_FOR), ('work', True))
+        policy = importlib.import_module('plugins._convo.helpers.convo_policy')
+        self.assertEqual(policy.authorize('change_setting', 'work', None, conversing=True, followup=True), 'refuse')
+        for value, expected in (('on', True), ('OFF', False), ('turn it on', True), ('please mute', False), ('on and off', None), ('', None), (None, None), ('purple', None)):
+            self.assertIs(voice_tools.switch(value), expected, value)
+
+
 def browser(h, kind, answer):
     """A stand-in page: when the server sends `kind`, `answer(payload)` gives the message the page sends back (None: no answer)."""
     original = h.handler.emit_to
@@ -578,6 +1082,32 @@ class Opening(Loop):
                 self.assertEqual([(r['what'], r['target'], r['title'], r['turn_id']) for r in requests], [(what, '', '', 't')])
                 self.assertEqual(result_of(follow), tools.done('opening', sentence))
                 self.assertEqual((kept[0]['name'], kept[0]['ok'], errors, waiting), ('open', True, [], {}))
+
+    def test_the_voice_agents_own_places_are_opened_and_closed_by_name(self):
+        """"Go to voice settings", "open the sound controls", "close the diagnostics" (2026-11-25: the first got "let me check" and
+        then nothing). A fixed list of places; the model's wording for a tab or a place is read by meaning, never passed on."""
+        cases = (({'what': 'voice_settings'}, ('voice_settings', ''), 'The voice settings are open.'),
+                 ({'what': 'voice_settings', 'target': 'the Audio tab'}, ('voice_settings', 'audio'), 'The voice settings are open.'),
+                 ({'what': 'voice_settings', 'target': 'somewhere odd'}, ('voice_settings', ''), 'The voice settings are open.'),
+                 ({'what': 'sound'}, ('sound', ''), 'The sound controls are open.'),
+                 ({'what': 'voice_studio', 'target': 'x'}, ('voice_studio', ''), 'Voice Studio is open.'),
+                 ({'what': 'diagnostics'}, ('diagnostics', ''), 'The diagnostics are open.'),
+                 ({'what': 'close', 'target': 'Voice Studio'}, ('close', 'voice_studio'), 'It is closed.'),
+                 ({'what': 'close', 'target': 'the voice-settings'}, ('close', 'voice_settings'), 'It is closed.'),
+                 ({'what': 'close', 'target': 'sound controls'}, ('close', 'sound'), 'It is closed.'))
+        for arguments, sent, sentence in cases:
+            with self.subTest(arguments):
+                follow, requests, kept, errors, _, waiting = self.open(arguments)
+                self.assertEqual([(r['what'], r['target']) for r in requests], [sent])
+                self.assertEqual(result_of(follow), tools.done('opening', sentence))
+                self.assertEqual((kept[0]['ok'], errors, waiting), (True, [], {}))
+        follow, requests, kept, _, _, _ = self.open({'what': 'close', 'target': 'the window'})        # no known place: nothing is sent
+        self.assertEqual((requests, kept[0]['ok']), ([], False))
+        self.assertIn('which place to close was not said', result_of(follow))
+        for text, names, expected in (('Audio & Video', voice_tools.SETTINGS_TABS, 'audio'), ('ADVANCED tab', voice_tools.SETTINGS_TABS, 'advanced'),
+                                      ('voice studio', voice_tools.CLOSABLE, 'voice_studio'), ('voicestudio', voice_tools.CLOSABLE, 'voice_studio'),
+                                      ('', voice_tools.CLOSABLE, ''), (None, voice_tools.CLOSABLE, ''), ('rm -rf', voice_tools.CLOSABLE, '')):
+            self.assertEqual(voice_tools._named(text, names), expected, text)
 
     def test_the_pages_own_words_are_passed_on_bounded(self):
         follow, _, _, _, _, _ = self.open({'what': 'page', 'target': 'example.org/news'},

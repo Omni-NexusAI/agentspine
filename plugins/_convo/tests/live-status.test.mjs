@@ -85,7 +85,8 @@ test('The chip markup: the level bar is hidden from assistive technology and sho
     const reduced = css.slice(css.indexOf('@media(prefers-reduced-motion:reduce)'));
     assert.match(reduced, /\.convo-chip \.convo-dot\{animation:none\}/);
     assert.match(reduced, /\.convo-level>i\{transition:none\}/);
-    assert.match(markup, /x-text="\$store\.convo\.note \|\| \$store\.convo\.waiting \|\| /);    // what the session waits for, in words
+    assert.match(markup, /<p class="convo-hint" x-show="\$store\.convo\.hintText" x-text="\$store\.convo\.hintText"><\/p>/);
+    assert.match(await read('convo-store.js'), /get hintText\(\) \{\s*if \(this\.note \|\| this\.waiting\) return this\.note \|\| this\.waiting;/);    // what the session waits for, in words
 });
 
 async function admittedTurn(transcribe, { wanted = true, globals = {} } = {}) {
@@ -193,7 +194,7 @@ test('A text-only conversation model\'s turn asks Convo\'s Whisper worker on the
 
 test('The setting says what it does now, and the unreachable direct-turn path is gone', async () => {
     const settings = await read('settings-controls.html');
-    assert.match(settings, /<input type="checkbox" x-model="\$store\.convoSetup\.config\.transcription_enabled">Remember what you said \(Whisper transcripts\)<\/label>\s*<p class="convo-hint">[^<]*the conversation model sees your words in later turns/);
+    assert.match(settings, /<div class="field-title">Remember what you said \(Whisper transcripts\)<\/div>.*?x-model="\$store\.convoSetup\.config\.transcription_enabled"[^>]*><span class="toggler"><\/span><\/label><\/div><\/div>\s*<p class="convo-hint">[^<]*the conversation model sees your words in later turns/);
     assert.doesNotMatch(settings, /Show parallel Whisper transcripts/);
     const store = await read('convo-store.js');
     assert.doesNotMatch(store, /request\('turn'/);                                  // a direct-audio turn always goes through the candidate path

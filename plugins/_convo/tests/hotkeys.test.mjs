@@ -289,7 +289,7 @@ test('The card: one row per action with a recording button, a Reset and its note
     assert.match(html, /<p class="convo-hotkey-note" role="status"/);
     assert.match(html, /x-destroy="\$store\.convoSetup\?\.hotkeyCancel\(\)"/);                  // closing Settings ends a recording
     const shell = await readFile(new URL('../webui/settings-controls.html', import.meta.url), 'utf8');
-    const section = shell.slice(shell.indexOf("section === 'Conversation'"), shell.indexOf("section === 'Voice & Audio'"));
+    const section = shell.slice(shell.indexOf("section === 'Conversation'"), shell.indexOf("section === 'Audio & Video'"));
     assert.match(section, /hotkeys-field\.html/);
     assert.doesNotMatch(await settingsMarkup(), /Focused-app shortcut/);                        // the older setting is a row of this card now
 });

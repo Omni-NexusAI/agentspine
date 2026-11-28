@@ -299,7 +299,7 @@ test('While audio is paused the orb\'s tap resumes it instead of stopping; a sec
     await f.store.toggle();                                              // running again: an ordinary tap stops
     assert.equal(f.store.active, false);
     const html = await readFile(new URL('../webui/main.html', import.meta.url), 'utf8');
-    assert.match(html, /class="button convo-primary" @click="\$store\.convo\.active \|\| \$store\.convo\.busy \? \$store\.convo\.stop\(\) : \$store\.convo\.toggle\(\)"/);
+    assert.match(html, /class="convo-primary convo-panel-orb"[^>]* @click="\$store\.convo\.active \|\| \$store\.convo\.busy \? \$store\.convo\.stop\(\) : \$store\.convo\.toggle\(\)"/);
 });
 
 test('A playback failure shows as an error that clears itself once the next phrase plays; other errors stay', async () => {

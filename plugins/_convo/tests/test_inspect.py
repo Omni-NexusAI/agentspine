@@ -301,8 +301,8 @@ class Probe(SetupHarness, unittest.IsolatedAsyncioTestCase):
         self.http.return_value = {'data': [{'id': 'local-model'}]}
         self.tools_module = importlib.import_module(self.setup.__package__ + '.convo_tools')
 
-    def answers(self, tool, image):
-        self.post.side_effect = [tool, image]
+    def answers(self, tool, image, *audio):
+        self.post.side_effect = [tool, image, *audio]
 
     @staticmethod
     def reply(content='', calls=None):
@@ -333,7 +333,7 @@ class Probe(SetupHarness, unittest.IsolatedAsyncioTestCase):
         found = await self.probe()
         self.assertEqual((found['tool_mode'], found['image_input']), ('text', False))
         self.assertIn('writes tool calls as text', found['message'].lower())
-        self.assertIn('Native tools are on anyway', found['message'])          # the harness's model declares tool calls
+        self.assertNotIn('anyway', found['message'])                           # a declared box no longer outvotes the measurement
         self.assertIn('does not accept images', found['message'])
 
     async def test_tools_ignored_and_an_image_not_seen(self):
@@ -343,7 +343,44 @@ class Probe(SetupHarness, unittest.IsolatedAsyncioTestCase):
         role = self.setup.read()['config']['roles']['conversation']
         record = self.tools_module.measured(self.path.parent / 'data', role)
         self.assertEqual(self.tools_module.tool_mode({'tool_calls': False}, record), 'text')
-        self.assertEqual(self.tools_module.tool_mode({'tool_calls': True}, record), 'native')      # the declared override
+        self.assertEqual(self.tools_module.tool_mode({'tool_calls': True}, record), 'text')        # the measurement decides
+        self.assertEqual(self.tools_module.tool_mode({'tool_calls': True}, record, override=True), 'native')   # developer mode: yours
+        self.assertEqual(self.tools_module.tool_mode({'tool_calls': False}, record, override=True), 'text')
+        self.assertEqual(self.tools_module.tool_mode({'tool_calls': True}, {}), 'native')          # nothing measured: as declared
+        self.assertEqual(self.tools_module.tool_mode({'tool_calls': False}, {}), 'text')
+
+    async def test_a_clip_the_model_answers_is_recorded_as_audio_accepted(self):
+        self.answers(self.reply('It is about noon.'), self.reply('Red'), self.reply('OK'))
+        found = await self.probe()
+        self.assertIs(found['audio_input'], True)
+        self.assertIn('Takes your speech as audio', found['message'])
+        part = self.post.await_args_list[2].args[1]['messages'][1]['content'][1]
+        self.assertEqual((part['type'], part['input_audio']['format']), ('input_audio', 'wav'))
+        role = self.setup.read()['config']['roles']['conversation']
+        self.assertIs(self.tools_module.measured(self.path.parent / 'data', role)['audio_input'], True)
+        row = next(item for item in self.setup.read()['readiness'] if item['id'] == 'conversation_measured')
+        self.assertIs(row['measured']['audio_input'], True)
+
+    async def test_a_clip_refused_by_a_server_that_answers_otherwise_is_recorded_as_refused(self):
+        for status in (400, 415, 422):
+            self.answers(self.reply('It is about noon.'), self.reply('Red'), (status, None))
+            found = await self.probe()
+            self.assertIs(found['audio_input'], False, status)
+            self.assertIn('Refused audio', found['message'])
+
+    async def test_no_clear_answer_about_audio_changes_nothing_on_record(self):
+        # A key, a quota or an outage says nothing about audio; neither does a refusal from a server that answered nothing else.
+        for audio in ((401, None), (429, None), (500, None), (200, {'unexpected': True})):
+            self.answers(self.reply('It is about noon.'), self.reply('Red'), self.reply('OK'))
+            await self.probe()                                                  # on record: accepted
+            self.answers(self.reply('It is about noon.'), self.reply('Red'), audio)
+            found = await self.probe()
+            self.assertNotIn('audio_input', found, audio[0])
+            role = self.setup.read()['config']['roles']['conversation']
+            self.assertIs(self.tools_module.measured(self.path.parent / 'data', role)['audio_input'], True)
+        self.post.side_effect = [(400, None), (400, None), (400, None), (400, None)]     # forced, auto, image, audio: all refused
+        found = await self.probe()
+        self.assertNotIn('audio_input', found)
 
     async def test_a_server_refusing_a_forced_choice_is_asked_once_with_auto(self):
         self.post.side_effect = [(400, None), self.reply(calls=[{'function': {'name': 'get_time'}}]), self.reply('red.')]

@@ -30,7 +30,10 @@ FIELDS = {'sequence': int, 'final': bool, 'disposition': str, 'speech': str, 'ac
           # it was chosen, and the path the phrase took; names and numbers only, never words
           'language': str, 'why': str, 'profile': str, 'seed': int, 'path': str,
           # how a web search went (tool.search): the ladder's steps, requests sent, engines that answered and refused (counts)
-          'steps': str, 'asked': int, 'answered': int, 'refused': int, 'cached': bool}
+          'steps': str, 'asked': int, 'answered': int, 'refused': int, 'cached': bool,
+          # the browser's echo-guard verdict sent with a piece of speech (candidate.received): state names and numbers, never audio
+          'guard_mode': str, 'guard_state': str, 'guard_path': str, 'guard_reject': str, 'guard_correlation': float,
+          'guard_lag_ms': float, 'guard_independent_ms': float, 'guard_echo_ms': float, 'guard_playing': bool, 'guard_native_aec': bool}
 TURNS, MARKS = 200, 48
 PROBE_MARKS = 24       # a turn's probe marks; the rest of MARKS stays free for the completed turn
 END_MARKS = 16         # room above MARKS for the marks that end a turn

@@ -583,9 +583,12 @@ async def probe_thinking(url, base, headers):
 
 def measured_text(record, declared=False):
     """The probe's verdict in words, for the card and the readiness row."""
-    if not record or ('tool_mode' not in record and 'image_input' not in record):
-        return 'Not measured yet: Test connection checks whether this model calls tools and accepts images.'
+    if not record or not any(key in record for key in ('tool_mode', 'image_input', 'audio_input')):
+        return 'Not checked yet: the connection check measures whether this model takes audio, calls tools and accepts images.'
     parts = []
+    if 'audio_input' in record:
+        parts.append('Takes your speech as audio' if record['audio_input'] is True
+                     else 'Refused audio (Convo sends it Agent Zero’s speech-to-text transcript instead)')
     if record.get('thinking') in THINKING_WORDS:
         parts.append(THINKING_WORDS[record['thinking']])
     if record.get('tool_mode') in TOOL_WORDS:
@@ -594,9 +597,7 @@ def measured_text(record, declared=False):
     if 'image_input' in record:
         parts.append('accepts images' if record['image_input'] is True else 'does not accept images (the camera tool is not offered)')
     text = '; '.join(parts) + '.'
-    if declared and record.get('tool_mode') != 'native':
-        text += ' Native tools are on anyway, because “Supports tool calls” is declared.'
-    elif record.get('tool_mode') == 'text':
+    if record.get('tool_mode') == 'text':
         text += ' Convo describes the tools in its instructions and reads the written calls.'
     return text
 
@@ -609,7 +610,7 @@ def measured_row(config):
     declared = bool((role.get('capabilities') or {}).get('tool_calls'))
     return {'id': 'conversation_measured', 'label': 'Tools and images (measured)', 'state': 'ready' if record else 'unverified',
             'detail': measured_text(record, declared),
-            'measured': {key: record[key] for key in ('tool_mode', 'image_input', 'measured_at') if key in record}}
+            'measured': {key: record[key] for key in ('tool_mode', 'image_input', 'audio_input', 'measured_at') if key in record}}
 
 
 def _keep_measured(role, found):
@@ -625,13 +626,24 @@ def _keep_measured(role, found):
     return store.transaction(store.config_path().parent / 'data' / convo_tools.MEASURED, update)
 
 
+def audio_verdict(status, data, answered):
+    """True: the model answered a request carrying a short synthetic clip. False: the server refused that request (400, 415, 422)
+    although it answered an ordinary one in the same check, so the refusal is about the audio. None: no clear answer (a key, a
+    quota, an outage, an unreadable reply), which never changes what is on record."""
+    from .convo_model_catalog import _reply
+    if status == 200:
+        return True if _reply(data) is not None else None
+    return False if answered and status in (400, 415, 422) else None
+
+
 async def probe_capabilities(role, url, headers):
-    """Two small requests to the conversation model (only from Test connection): does it call a forced tool natively, write the
-    call as text or ignore it; does it see a tiny test image. Keeps the verdict; never raises; no model text is echoed."""
+    """A few small requests to the conversation model (only from a connection check): does it call a forced tool natively, write
+    the call as text or ignore it; does it see a tiny test image; does it take a short synthetic audio clip. Keeps the verdict;
+    never raises; no model text is echoed."""
     from .convo_contract import local_host
     from .convo_model_catalog import _voice_active
     if _voice_active():
-        return {'state': 'skipped', 'message': 'Tools and images were not measured: end the Convo voice session first.'}
+        return {'state': 'skipped', 'message': 'Audio, tools and images were not measured: end the Convo voice session first.'}
     base = {'model': role.get('model') or '', 'temperature': 0, 'stream': False}
     if local_host(urlsplit(url).hostname or ''):
         base['chat_template_kwargs'] = {'enable_thinking': False}     # never sent to a cloud provider
@@ -643,6 +655,7 @@ async def probe_capabilities(role, url, headers):
         if status in (400, 422):
             # Some servers refuse a forced choice but take tools: ask once more with the model choosing.
             status, data = await _post(url + '/chat/completions', {**body, 'tool_choice': 'auto'}, headers)
+        answered = status == 200
         verdict = tool_verdict(status, data)
         if verdict is None and status in (400, 422):
             verdict = 'ignored'                                        # the server refuses tools outright
@@ -650,21 +663,32 @@ async def probe_capabilities(role, url, headers):
             found['tool_mode'] = verdict
         body = {**base, 'max_tokens': 16, 'messages': [{'role': 'user', 'content': [
             {'type': 'text', 'text': PROBE_IMAGE_TEXT}, {'type': 'image_url', 'image_url': {'url': PROBE_IMAGE}}]}]}
-        seen = image_verdict(*await _post(url + '/chat/completions', body, headers))
+        status, data = await _post(url + '/chat/completions', body, headers)
+        answered = answered or status == 200
+        seen = image_verdict(status, data)
         if seen is not None:
             found['image_input'] = seen
+        from .convo_model_catalog import _clip
+        body = {**base, 'max_tokens': 16, 'messages': [
+            {'role': 'system', 'content': 'This is an automatic audio connection check.'},
+            {'role': 'user', 'content': [
+                {'type': 'text', 'text': 'The audio is a short synthetic test tone. Reply with the single word OK.'},
+                {'type': 'input_audio', 'input_audio': {'data': _clip(), 'format': 'wav'}}]}]}
+        heard = audio_verdict(*await _post(url + '/chat/completions', body, headers), answered)
+        if heard is not None:
+            found['audio_input'] = heard
         if 'chat_template_kwargs' not in base:
             # A provider outside your machines: whether the model thinks before answering, and how it is asked not to.
             found.update(await probe_thinking(url, base, headers))
     except Exception:
         pass
     if not found:
-        return {'state': 'unavailable', 'message': 'Tools and images could not be measured (the model did not answer the check). Nothing was changed.'}
+        return {'state': 'unavailable', 'message': 'Audio, tools and images could not be measured (the model did not answer the check). Nothing was changed.'}
     try:
         _keep_measured(role, found)
     except Exception:
         return {'state': 'unverified', **found, 'message': measured_text(found) + ' (The result could not be kept.)'}
-    return {'state': 'ready', **found, 'message': measured_text(found, bool((role.get('capabilities') or {}).get('tool_calls')))}
+    return {'state': 'ready', **found, 'message': measured_text(found)}
 
 
 async def discover(name, provider=None, check=False, draft_key=None):
@@ -749,6 +773,30 @@ def key_rebind(name, provider=None):
         values[_key_name(name) + '_URL'] = address
         _save_secrets(manager, values)
     return read()
+
+
+def _login_set():
+    """Whether Agent Zero asks for a login (then only a signed-in person reaches this page)."""
+    try:
+        from helpers import login
+        return bool(login.is_login_required())
+    except Exception:
+        return False
+
+
+def key_reveal(name):
+    """The eye on a key field: Convo's own saved key for one card, on this explicit request only. With an Agent Zero login set it
+    is the whole key. Without one, anyone who can open the page could ask, so only its last four characters are returned
+    (enough to tell which key it is), and nothing at all for a short key. Never an environment-variable key and never one of
+    Agent Zero's own keys: neither is stored here. The key is not logged and not kept in any response but this one."""
+    if name not in ROLES:
+        raise ValueError('Unknown model role')
+    with store.lock():
+        key = dict(_secrets().load_secrets()).get(_key_name(name), '')
+    if not isinstance(key, str) or not key:
+        raise ValueError('Convo has no saved key for this card.')
+    whole = _login_set()
+    return {'ok': True, 'whole': whole, 'key': key if whole else '', 'ending': '' if whole or len(key) < 12 else key[-4:]}
 
 
 def _https_address(url):

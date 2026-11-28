@@ -52,7 +52,7 @@ class Catalog(unittest.TestCase):
                                   'decision_cloud': ['jev'], 'chat': ['openai', 'openrouter', 'google'], 'other': ['other']})
         self.assertEqual(data['providers']['llama_cpp'], {'label': 'llama.cpp', 'group': 'decision_local', 'kinds': ['decision', 'chat'],
                          'base': 'http://host.docker.internal:8080/v1', 'host_key': 'llama_cpp', 'verified': True, 'text_only': False,
-                         'note': 'llama-server serves d1 models on /v1/systemone'})
+                         'note': 'Serves decision models on the System One route (/v1/systemone)'})
         expected = {'lm_studio': ('LM Studio', 'http://host.docker.internal:1234/v1'), 'unsloth_studio': ('Unsloth Studio', ''),
                     'ollama': ('Ollama', 'http://host.docker.internal:11434/v1'), 'vllm': ('vLLM', 'http://host.docker.internal:8000/v1'),
                     'omlx': ('oMLX', 'http://host.docker.internal:8000/v1')}

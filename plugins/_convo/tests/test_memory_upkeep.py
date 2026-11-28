@@ -262,6 +262,8 @@ class OneSlot(unittest.TestCase):
 
 class SpareSlots(unittest.TestCase):
     def test_the_new_start_is_warmed_in_a_spare_slot_and_swapped_in_only_once_warm(self):
+        # These count the model's requests: the separate reading of what a reply left open (left_open) is not part of them.
+        self.enterContext(__import__('unittest.mock').mock.patch('plugins._convo.helpers.convo_voice_tools.left_open', new=__import__('unittest.mock').mock.AsyncMock(return_value='')))
         async def scenario():
             h = await session(server={'kind': 'llama.cpp', 'slots': 2, 'slot': 0}, replied=True, warm_delay=.5)
             try:

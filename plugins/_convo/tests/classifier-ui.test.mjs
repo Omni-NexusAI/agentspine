@@ -158,7 +158,7 @@ test('A provider added to Agent Zero later appears at once; an OpenAI-compatible
     // Agent Zero's key for that provider id, as the server routes it (convo_classifier_catalog.host_key); a server on your network
     // is asked for its own models by Convo's discovery (with that key), not by Agent Zero's search.
     assert.deepEqual([f.store.classifierProviderInfo().compatible, f.store.classifierHostKey(), f.store.classifierUsesHostKey(), f.store.classifierSearchesHost()], [true, 'late_router', true, false]);
-    assert.equal(f.store.classifierRemoteShown(), false);                                            // a private network address: no consent needed
+    assert.equal(f.store.classifierRemoteNeeded(), false);                                           // a private network address: no consent needed
     f.host.chatProviders = [...f.host.chatProviders, { value: 'Bad-Id', label: 'Bad id' }];
     f.host.chatProviderDetails = { ...f.host.chatProviderDetails, 'Bad-Id': { litellm_provider: 'openai', api_base: 'http://10.0.0.9/v1' } };
     assert.equal(f.store.classifierProviderOptions().find(option => option.id === 'Bad-Id')?.disabled, true);   // an id the contract refuses
@@ -213,33 +213,28 @@ test('Keys: Agent Zero’s key store for a provider it holds keys for, Convo’s
     assert.match(f.store.classifierConvoKeyHint(), /Leave blank to keep the saved key; it is saved with your changes\./);
 });
 
-test('Remote processing: this machine and private networks need no consent; a public address asks for it and Check refuses it before sending', async () => {
+test('Remote processing: the address is the consent. This machine and private networks need none; an outside address says so in one line and carries it', async () => {
     const f = await rig({ config: { 'roles.classifier.provider': 'llama_cpp' } });
-    assert.equal(f.store.classifierRemoteShown(), false);
+    assert.equal(f.store.classifierRemoteNeeded(), false);
     f.role().api_base = 'http://192.168.1.20:8080/v1';
-    assert.deepEqual([f.store.classifierRemoteShown(), f.store.classifierRemoteText()], [false, '192.168.1.20 is on this machine or your network (LAN or Tailscale); consent is not needed for it.']);
+    assert.deepEqual([f.store.classifierRemoteNeeded(), f.store.classifierRemoteNote(), f.store.classifierRemoteSync(), f.role().remote], [false, '', false, false]);
     f.store.classifierSetProvider('openai');
-    assert.deepEqual([f.store.classifierRemoteShown(), f.store.classifierRemoteText()], [true, 'Required: your speech is sent to api.openai.com.']);
-    assert.match(f.store.classifierBaseProblem(), /needs remote-processing consent/);
-    assert.equal(await f.store.classifierCheck(), false);
-    assert.equal(f.sent('classifier_check').length, 0);
-    assert.match(f.store.classifierCheckView().message, /^Refused: Sending your speech to api\.openai\.com needs remote-processing consent/);
-    f.role().remote = true;
+    assert.deepEqual([f.store.classifierRemoteNeeded(), f.role().remote], [true, true]);                 // no switch: choosing it is the consent
+    assert.equal(f.store.classifierRemoteNote(), 'api.openai.com is outside this computer and your network: your speech is sent there. Choosing this address is your consent.');
     assert.equal(f.store.classifierBaseProblem(), '');
     f.role().api_base = 'http://api.example.com/v1';
     assert.match(f.store.classifierBaseProblem(), /must use https/);
     f.role().api_base = '';
     await f.store.classifierCheck();                                                                 // the server checks with the SAVED consent
-    assert.deepEqual([f.sent('classifier_check').length, f.store.classifierCheckView().message], [0, 'Save first: Check server uses the saved remote-processing consent.']);
+    assert.deepEqual([f.sent('classifier_check').length, f.store.classifierCheckView().message], [0, 'Save first: an address outside your network is checked once it is saved.']);
     assert.equal(await f.store.save(), true);
     await f.store.classifierCheck();
     assert.deepEqual(f.sent('classifier_check').at(-1), { action: 'classifier_check', provider: 'openai', api_base: '', model: '', kind: 'auto' });
-    f.role().remote = false;                                                                         // consent withdrawn in the draft: nothing is sent
-    await f.store.classifierCheck();
-    assert.equal(f.sent('classifier_check').length, 1);
-    f.role().remote = false;
-    f.store.classifierSetProvider('llama_cpp');
-    assert.equal(f.store.classifierRemoteShown(), false);
+    f.store.classifierSetProvider('llama_cpp');                                                      // back on this machine: the flag goes with the address
+    assert.deepEqual([f.store.classifierRemoteNeeded(), f.role().remote, f.store.classifierRemoteNote()], [false, false, '']);
+    f.role().remote = true;                                                                          // a flag left on with the SAVED address is not touched:
+    f.store.classifierSetProvider('openai');                                                         // opening the settings never makes an edit by itself
+    assert.deepEqual([f.store.classifierRemoteSync(), f.role().remote], [false, true]);
 });
 
 test('A separate decider saved before this card shows as llama.cpp, a decision model at its address, and the draft changes only when edited', async () => {
@@ -384,15 +379,16 @@ test('The card renders on its own, with the Conversation card’s structure and 
     assert.match(html, /^<html><head><script type="module">import \{ store \} from '\/plugins\/_convo\/webui\/setup-store\.js';<\/script><\/head><body>/);
     assert.match(html, /<fieldset class="convo-card convo-model-card convo-classifier-card" x-data="\{ role: 'classifier' \}" x-init="\$store\.convoSetup\.classifierInit\(\)">/);
     assert.match(html, /<legend x-text="\$store\.convoSetup\.label\(role\)"><\/legend>/);
-    assert.match(html, /<span>Decides whether speech is meant for Convo and whether to answer\. A decision model \(System One style\) or a chat model that accepts audio\.<\/span>/);
+    assert.match(html, /<span>Decides whether speech is meant for the assistant and whether to answer: a decision model, or a chat model that accepts audio\.<\/span>/);
     for (const name of ['field', 'field-label', 'field-title', 'field-description', 'field-control', 'toggle', 'toggler', 'model-search-btn', 'model-search-results', 'model-search-item', 'advanced-section', 'advanced-toggle', 'advanced-body', 'masked-text-input', 'convo-model-note', 'convo-model-fields'])
         assert.match(html, new RegExp(`class="[^"]*\\b${name}\\b`), name);
     const own = section(html, 'data-convo-classifier="own"', 'data-convo-classifier="system-one"');
     const titles = [...own.matchAll(/class="field-title"[^>]*>([^<]+)</g)].map(match => match[1]);
-    assert.deepEqual(titles, ['Provider', 'API base URL', 'Server URL', 'Model name', 'API key', 'API key', 'Context window (tokens)', 'Accepts audio input', 'Allow remote processing',
+    assert.deepEqual(titles, ['Provider', 'API base URL', 'Server URL', 'Model name', 'API key', 'API key', 'Context window (tokens)', 'Accepts audio input',
                               'API base URL', 'Key source', 'Classifier type', 'Credential environment reference',
                               'Allow remote processing']);   // Agent Zero's order; then Advanced; then System One's decider's consent (shown only when it matters)
-    assert.ok(own.indexOf('class="advanced-section') > own.indexOf('Allow remote processing'));
+    assert.ok(own.indexOf('class="advanced-section') > own.indexOf('data-convo-field="classifier-remote-note"') && own.indexOf('data-convo-field="classifier-remote-note"') > 0);
+    assert.ok(own.includes(`<div class="field" x-id="['convo-classifier-audio']" x-show="$store.convoSetup.config.developer_mode === true">`));   // worked out, so developer mode only
     assert.ok(html.indexOf('Use System One’s decider</div>') > html.indexOf('data-convo-classifier="system-one"'));   // the toggle is underneath
     assert.equal((own.match(/<select\b/g) || []).length, 3);                                        // provider, key source, type: one provider list
     assert.match(own, /<template x-for="group in \$store\.convoSetup\.classifierProviderGroups\(\)" :key="group\.id"><optgroup :label="group\.label">/);

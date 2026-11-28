@@ -636,27 +636,31 @@ test('Closing the editor saves a change still inside its 350 ms at once, and onl
     await f.store.conversationFlush();
     await f.clock.advance(1000);
     assert.equal(f.sent('setup_patch').length, 1);
-    f.store.conversationSetProvider('google', true);                              // held: no remote consent yet
+    f.store.conversationSetProvider('google', true);                              // an outside provider carries its own consent: no switch, saved with it
     await f.store.conversationEditorClosed();
-    assert.equal(f.sent('setup_patch').length, 1);
-    assert.deepEqual([f.role().provider, f.store.dirty, plain(f.store.ui.conversation.edited), f.store.conversationStatusText()], ['google', true, {}, 'Changes save automatically.']);
-    f.role().remote = true;                                                       // consented later in Convo's own modal ...
+    assert.equal(f.sent('setup_patch').length, 2);
+    const sent = f.sent('setup_patch').at(-1).changes;
+    assert.deepEqual([sent.some(change => change.path === 'roles.conversation.provider' && change.value === 'google'), sent.some(change => change.path === 'roles.conversation.remote' && change.value === true)], [true, true]);
+    f.store.conversationSetProvider('other', true);
+    f.role().api_base = 'http:/'; f.store.conversationEdited('roles.conversation.api_base', true);   // held: not an address
+    await f.store.conversationEditorClosed();
+    assert.equal(f.sent('setup_patch').filter(call => call.changes.some(change => change.path === 'roles.conversation.api_base' && change.value === 'http:/')).length, 0);
+    assert.deepEqual([f.role().api_base, f.store.dirty, plain(f.store.ui.conversation.edited), f.store.conversationStatusText()], ['http:/', true, {}, 'Changes save automatically.']);
+    const before = f.sent('setup_patch').length;
+    f.role().api_base = 'http://host.docker.internal:8080/v1';                    // corrected later in Convo's own modal ...
     await f.store.conversationFlush();
-    assert.equal(f.sent('setup_patch').length, 1);                                // ... is saved by that modal's Save, not by an old mark
+    assert.equal(f.sent('setup_patch').length, before);                           // ... is saved by that modal's Save, not by an old mark
 });
 
-test('A value the server would refuse waits with its reason: remote consent, a complete address, a usable context window', async () => {
+test('An outside provider is saved with its consent; a value the server would refuse waits with its reason: a complete address, a usable context window', async () => {
     const f = await rig();
     assert.equal(f.store.conversationSetProvider('openai', true), 'openai');
     await f.clock.advance(1000);
-    assert.equal(f.sent('setup_patch').length, 0);
-    assert.match(f.store.conversationStatusText(), /api\.openai\.com needs remote-processing consent/);
+    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path).sort(), ['roles.conversation.provider', 'roles.conversation.remote']);
+    assert.equal(f.server.config.roles.conversation.remote, true);               // the address was the consent: no switch, nothing held
     f.role().model = 'gpt-4o-audio-preview'; f.store.conversationEdited('roles.conversation.model', true);
     await f.clock.advance(AUTOSAVE_MS);
-    assert.deepEqual(f.sent('setup_patch').map(call => call.changes.map(change => change.path)), [['roles.conversation.model']]);   // the rest still goes
-    f.role().remote = true; f.store.conversationEdited('roles.conversation.remote', true);
-    await f.clock.advance(AUTOSAVE_MS);
-    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path).sort(), ['roles.conversation.provider', 'roles.conversation.remote']);
+    assert.deepEqual(f.sent('setup_patch').at(-1).changes.map(change => change.path), ['roles.conversation.model']);
     assert.deepEqual([f.server.config.roles.conversation.url, f.role().url, f.store.conversationStatusText()], ['https://api.openai.com/v1', 'https://api.openai.com/v1', 'Saved']);
     f.store.conversationSetProvider('other', true);
     f.role().api_base = 'http:/'; f.store.conversationEdited('roles.conversation.api_base', true);
@@ -701,7 +705,7 @@ test('A server you run yourself (llama.cpp) shows its address as a main field, w
     f.role().api_base = 'http://100.101.102.103:8081/v1'; f.store.conversationEdited('roles.conversation.api_base', true);
     await f.clock.advance(AUTOSAVE_MS);
     assert.equal(f.sent('setup_patch').at(-1).changes.find(change => change.path === 'roles.conversation.api_base').value, 'http://100.101.102.103:8081/v1');
-    assert.equal(f.store.conversationRemoteShown(), false);                          // no consent box for your tailnet
+    assert.deepEqual([f.store.conversationRemoteNeeded(), f.store.conversationRemoteNote()], [false, '']);   // nothing to say for your tailnet
     f.store.conversationSetProvider('openrouter', true);
     assert.equal(f.store.conversationLocalServer(), false);                         // a cloud provider keeps its override in Advanced
 });
@@ -875,9 +879,11 @@ test('The card renders on its own, uses Agent Zero\'s field classes and binds ev
     assert.doesNotMatch(html, /convo-settings-pending/);                          // every control the plan names is here now
     for (const name of ['field', 'field-label', 'field-title', 'field-description', 'field-control', 'toggle', 'toggler', 'model-search-btn', 'model-search-results', 'model-search-item', 'advanced-section', 'advanced-toggle', 'advanced-body', 'masked-text-input'])
         assert.match(html, new RegExp(`class="[^"]*\\b${name}\\b`), name);
-    assert.match(html, /Convo sends your speech as audio — choose a model that accepts audio input \(omni \/ multimodal audio model\)\./);
+    assert.match(html, /Your speech is sent as audio, so choose a model that accepts audio input\./);
     const bound = [...html.matchAll(/\s(?:x-model(?:\.[\w.]+)?|:value|:checked|@change|@input)="([^"]*)"/g)].map(match => match[1]);
-    for (const path of Object.keys(CARD_PATHS)) assert.ok(bound.some(expression => new RegExp(`config\\.${path.replace(/\./g, '\\.')}(?!\\w)`).test(expression)), path);
+    assert.ok(html.includes('data-convo-field="remote-note" x-effect="$store.convoSetup.conversationRemoteSync(autosave)"'));   // the consent follows the address: a line, no switch
+    assert.doesNotMatch(html, /Allow remote processing/);
+    for (const path of Object.keys(CARD_PATHS).filter(path => path !== 'roles.conversation.remote')) assert.ok(bound.some(expression => new RegExp(`config\\.${path.replace(/\./g, '\\.')}(?!\\w)`).test(expression)), path);
     for (const capability of ['audio_input', 'cancellation', 'tool_calls'])
         assert.match(html, new RegExp(`<input type="checkbox" data-convo-field="[\\w-]+" [^>]*x-model="\\$store\\.convoSetup\\.config\\.roles\\.conversation\\.capabilities\\.${capability}" @change="\\$store\\.convoSetup\\.conversationEdited\\('roles\\.conversation\\.capabilities\\.${capability}', autosave\\)">`), capability);
     assert.equal((html.match(/x-model\.number="\$store\.convoSetup\.config\.compaction\.context_tokens"/g) || []).length, 1);
@@ -905,14 +911,88 @@ test('Every control is labelled and keyboard reachable, and nothing writes a tit
 });
 
 // ---- Connections: Test on the card, a typed key, the server's own model list, and the extras every card shows.
-test('Test connection sits on the card (not in Advanced) on all three cards, with its extras', async () => {
-    for (const [file, test] of [['conversation-model-field.html', 'connection-test'], ['classifier-model-field.html', 'classifier-check']]) {
-        const markup = await readWebui(file), advanced = markup.indexOf('advanced-body');
-        assert.ok(markup.indexOf(`data-convo-field="${test}"`) > 0 && markup.indexOf(`data-convo-field="${test}"`) < advanced, file);
+test('The conversation card checks by itself, so its tests sit in Advanced; the other cards keep theirs on the card, all with the extras', async () => {
+    const card = await readWebui('conversation-model-field.html'), body = card.indexOf('advanced-body');
+    for (const part of ['connection-test', 'audio-probe']) assert.ok(card.indexOf(`data-convo-field="${part}"`) > body, part);
+    for (const part of ['connection-result', 'measured-result']) assert.ok(card.indexOf(`data-convo-field="${part}"`) < body, part);   // the answers stay in view
+    // Committing an address or a model name asks for the check (a change event, never each keystroke).
+    assert.equal((card.match(/@change="\$store\.convoSetup\.conversationAutoCheck\(autosave\)"/g) || []).length, 4);       // two address fields, the earlier-setup URL, the model
+    assert.doesNotMatch(card, /@input="[^"]*AutoCheck/);
+    assert.doesNotMatch(card, /x-init="[^"]*(AutoCheck|discover)/);                              // opening Settings contacts nothing
+    assert.match(card, /data-convo-field="connection-test"[^>]*@click="\$store\.convoSetup\.discover\(role, true\)\.then\(\(\) => \$store\.convoSetup\.conversationAdopt\(autosave\)\)"/);
+    // What the model can do is measured: its three switches show in developer mode only.
+    for (const name of ['convo-audio', 'convo-cancel', 'convo-tools'])
+        assert.ok(card.includes(`<div class="field" x-id="['${name}']" x-show="$store.convoSetup.config.developer_mode === true">`), name);
+    {
+        const markup = await readWebui('classifier-model-field.html'), advanced = markup.indexOf('advanced-body');
+        assert.ok(markup.indexOf('data-convo-field="classifier-check"') > advanced && advanced > 0);                 // Check server is in Advanced Settings
+        const speech = await readWebui('speech-output-field.html'), speechAdvanced = speech.indexOf('advanced-body');
+        assert.ok(speech.indexOf('>Test connection</button>') > speechAdvanced && speech.indexOf('Find models &amp; voices</button>') > speechAdvanced && speechAdvanced > 0);
     }
     for (const [file, prefix] of [['conversation-model-field.html', ''], ['classifier-model-field.html', 'classifier-'], ['speech-output-field.html', 'speech-']])
         for (const part of ['this-computer', 'key-move', 'connection-suggestion', 'certificate-note', 'certificate-forget', 'certificate-accept'])
             assert.ok((await readWebui(file)).includes(`data-convo-field="${prefix}${part}"`), file + ' ' + part);
+});
+
+const MEASURED = { ok: true, models: [{ id: 'omni-1', label: 'omni-1' }], voices: [], tuning: [], warnings: [], verification: { state: 'ready', message: 'listed' } };
+
+test('A committed address and model are checked once, by themselves, and what was measured becomes the declaration', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    assert.equal(f.store.conversationAutoCheck(), false);                              // no model yet: nothing to check
+    f.role().model = 'omni-1';
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'text', image_input: false, audio_input: false, message: 'm' } };
+    assert.equal(f.store.conversationAutoCheck(), true);
+    assert.equal(f.store.conversationAutoCheck(), true);                               // asked again before it ran: still one request
+    assert.equal(f.sent('connection_test').length, 0);                                 // not on the keystroke: after a short pause
+    await f.clock.advance(600);
+    assert.equal(f.sent('connection_test').length, 1);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [false, false]);
+    assert.equal(f.store.conversationAutoCheck(), false);                              // the same address and model: not asked twice
+    await f.clock.advance(5000);
+    assert.equal(f.sent('connection_test').length, 1);
+    f.server.answers.test = { ...MEASURED, models: [{ id: 'omni-2', label: 'omni-2' }], capabilities: { state: 'ready', tool_mode: 'native', audio_input: true, message: 'm' } };
+    f.store.conversationChooseModel('omni-2');                                         // a choice from the list checks too
+    await f.clock.advance(600);
+    assert.equal(f.sent('connection_test').length, 2);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [true, true]);
+});
+
+test('A check with no clear answer changes nothing, developer mode keeps your switches, and a refused address is not contacted', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.model': 'omni-1', 'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    for (const capabilities of [undefined, { state: 'unavailable', message: 'no answer' }, { state: 'skipped', message: 'busy' }, { state: 'ready', image_input: true, message: 'm' }]) {
+        f.server.answers.test = { ...MEASURED, ...(capabilities ? { capabilities } : {}) };
+        await f.store.discover('conversation', true);
+        assert.equal(f.store.conversationAdopt().length, 0);
+        assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [true, true]);
+    }
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'ignored', audio_input: false, message: 'm' } };
+    await f.store.discover('conversation', true);
+    f.store.config.developer_mode = true;
+    assert.equal(f.store.conversationAdopt().length, 0);                                 // developer mode: the switches are yours
+    f.store.config.developer_mode = false;
+    assert.deepEqual([...f.store.conversationAdopt()].sort(), ['audio_input', 'tool_calls']);
+    assert.deepEqual([f.role().capabilities.audio_input, f.role().capabilities.tool_calls], [false, false]);
+    const before = f.sent('connection_test').length;
+    f.role().api_base = 'http://203.0.113.9:8098/v1';                                  // outside your network, in plain http: refused by the settings
+    assert.equal(f.store.conversationAutoCheck(), false);
+    await f.clock.advance(5000);
+    assert.equal(f.sent('connection_test').length, before);
+});
+
+test('In the preset editor an adopted measurement is saved like any other edit', async () => {
+    const f = await rig({ config: { 'roles.conversation.provider': 'other', 'roles.conversation.api_base': 'http://desktop-example:8098/v1', 'roles.conversation.key_source': 'convo',
+                                    'roles.conversation.model': 'omni-1', 'roles.conversation.capabilities.audio_input': true, 'roles.conversation.capabilities.tool_calls': true } });
+    f.server.answers.test = { ...MEASURED, capabilities: { state: 'ready', tool_mode: 'text', audio_input: true, message: 'm' } };
+    f.role().model = 'omni-1 ';                                                        // an edit that commits (trimmed to the same model)
+    f.role().model = 'omni-1';
+    f.store.ui.conversation.checkedFor = '';
+    assert.equal(f.store.conversationAutoCheck(true), true);
+    await f.clock.advance(600);
+    await f.clock.advance(1000);                                                       // the autosave pause
+    assert.equal(f.server.config.roles.conversation.capabilities.tool_calls, false);
+    assert.equal(f.server.config.roles.conversation.capabilities.audio_input, true);
 });
 
 test('Test connection uses a key typed but not saved, and an answer survives typing a model name but not a new address', async () => {
@@ -954,7 +1034,8 @@ test('One click from a Test answer: the port that answers, the exact model name,
                               suggestion: { url: 'http://localhost:8890/v1', label: 'Use port 8890', message: 'Something answers on port 8890.' }, close_match: 'Gemma' };
     await f.store.discover('conversation', true);
     assert.deepEqual(plain(f.store.connectionSuggestion('conversation')), f.server.answers.test.suggestion);
-    assert.equal(f.store.conversationCloseMatch(), 'Gemma');
+    assert.deepEqual([f.role().model, f.store.conversationCloseMatch(), f.store.connectionFixNote('conversation')],
+                     ['Gemma', '', 'Using “Gemma”, the server’s spelling of the model name you entered.']);   // the spelling is fixed without a click
     await f.store.conversationUseAddress(f.store.connectionSuggestion('conversation').url);
     assert.equal(f.role().api_base, 'http://localhost:8890/v1');
     assert.equal(f.sent('connection_test').length, 2);                                  // tested again at once

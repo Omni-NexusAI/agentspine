@@ -116,7 +116,8 @@ LOOKUP_SECONDS = 2.0
 LOOKUP_NAME = 'example.com'        # a name reserved for exactly this kind of use; only looked up, never connected to
 PROGRAMS = 5
 GRAPHICS_ARGUMENTS = ('--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits')
-WHERE = "This is the machine Agent Zero runs on. It may be a container, so it can differ from the computer you are using."
+WHERE = ("This is the machine Agent Zero runs on. It may be a container, so it can differ from the computer you are using: that "
+         "computer's own graphics card, programs and files cannot be seen from here. For those, hand the question to the chat's agent.")
 
 
 def _words(text, limit):

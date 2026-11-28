@@ -311,11 +311,11 @@ async def suggestion(url, defaults=()):
         for default in defaults:
             other = urlsplit(default).port
             if other and other != port and await reachable(host, other):
-                return {'url': _with(url, port=other), 'label': 'Use port ' + str(other),
+                return {'url': _with(url, port=other), 'label': 'Use port ' + str(other), 'kind': 'port',
                         'message': 'Something answers on port ' + str(other) + ' of this computer, the usual port for this server (the one Docker publishes).'}
         return None
     if local_host(host) and docker_alias() and await reachable(DOCKER_HOST, port):
-        return {'url': _with(url, host='127.0.0.1'), 'label': 'Use 127.0.0.1:' + str(port),
+        return {'url': _with(url, host='127.0.0.1'), 'label': 'Use 127.0.0.1:' + str(port), 'kind': 'private',
                 'message': 'This computer answers privately on port ' + str(port) + ': if ' + host + ' is this computer, its server listens only '
                            'on 127.0.0.1 here, and 127.0.0.1 is its address.'}
     return None

@@ -41,9 +41,9 @@ try {
     await page.eval(`Alpine.store('rightCanvas').open('convo').then(() => 1)`);
     await page.waitFor(`!!document.querySelector('.convo-panel .convo-primary')`, 60000);
     await sleep(1500);
-    const panel = await page.eval(`(() => { const p = document.querySelector('.convo-panel'); const wrap = p.closest('.right-canvas-surface-panel'); const q = s => p.querySelector(s); return { chip: q('.convo-chip')?.textContent.trim(), buttons: [...p.querySelectorAll('.convo-controls button')].map(b => b.textContent.trim()), mute: getComputedStyle(q('.convo-mute')).display, tools: p.querySelectorAll('.convo-tools button').length, scroller: q('.convo-transcript')?.getBoundingClientRect().height, docked: !!wrap, active: wrap ? wrap.classList.contains('is-active') : null, opacity: wrap ? getComputedStyle(wrap).opacity : null, pointer: wrap ? getComputedStyle(wrap).pointerEvents : null }; })()`);
-    check('the panel renders its status, controls and Sound, settings and Studio buttons', !!panel.chip && panel.buttons.length === 4 && panel.buttons.some(b => /Share camera/.test(b)) && panel.buttons.some(b => /Share screen/.test(b)) && !panel.buttons.some(b => /Dictat/.test(b)) && panel.tools === 3 && panel.scroller > 50, JSON.stringify(panel));
-    check('Mute is there only while a conversation runs (none does here)', panel.mute === 'none', panel.mute);
+    const panel = await page.eval(`(() => { const p = document.querySelector('.convo-panel'); const wrap = p.closest('.right-canvas-surface-panel'); const q = s => p.querySelector(s); return { chip: q('.convo-chip')?.textContent.trim(), buttons: [...p.querySelectorAll('.convo-controls button')].map(b => b.textContent.trim()), orb: q('.convo-primary.convo-panel-orb')?.textContent.trim(), place: q('.convo-panel-orb')?.getAttribute('data-place'), layers: q('.convo-panel-orb .cf-core') ? 'full' : 'none', mute: getComputedStyle(q('.convo-mute')).opacity + ':' + q('.convo-icons').inert, tools: p.querySelectorAll('.convo-tools button').length, scroller: q('.convo-transcript')?.getBoundingClientRect().height, docked: !!wrap, active: wrap ? wrap.classList.contains('is-active') : null, opacity: wrap ? getComputedStyle(wrap).opacity : null, pointer: wrap ? getComputedStyle(wrap).pointerEvents : null }; })()`);
+    check('the panel renders its status, controls and Sound, settings and Studio buttons', !!panel.chip && panel.buttons.length === 5 && /Start conversation/.test(panel.orb) && ['ready', 'dock'].includes(panel.place) && panel.layers === 'full' && panel.buttons.some(b => /Mute microphone/.test(b)) && panel.buttons.some(b => /Float orb/.test(b)) && panel.buttons.some(b => /Silence voice/.test(b)) && panel.buttons.some(b => /Share camera/.test(b)) && panel.buttons.some(b => /Share screen/.test(b)) && !panel.buttons.some(b => /Dictat/.test(b)) && panel.tools === 3 && panel.scroller > 50, JSON.stringify(panel));
+    check('The controls stay tucked behind the orb, out of reach, until a conversation runs (none does here)', panel.mute === '0:true', panel.mute);
     if (panel.docked) check('a docked panel is visible and clickable (the host wrapper contract)', panel.active && panel.opacity === '1' && panel.pointer === 'auto');
 
     // the settings modal: tabs, no console noise, and a draft that is guarded
@@ -51,7 +51,7 @@ try {
     await page.waitFor(`!!document.querySelector('.convo-tabs')`, 60000);
     await sleep(1500);
     const tabs = await page.eval(`[...document.querySelectorAll('.convo-tabs button')].map(b => b.textContent.trim())`);
-    check('the settings modal offers the three sections', JSON.stringify(tabs) === JSON.stringify(['Connections', 'Conversation', 'Voice & Audio']), tabs.join(', '));
+    check('the settings modal offers the four sections', JSON.stringify(tabs) === JSON.stringify(['Connections', 'Conversation', 'Audio & Video', 'Advanced']), tabs.join(', '));
     for (const name of tabs) {
         await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === ${JSON.stringify(name)}).click()`);
         await sleep(500);
@@ -63,9 +63,11 @@ try {
     await page.key('Escape'); await sleep(300);
     const recorded = await page.eval(`(() => { const s = Alpine.store('convoSetup'); return { recording: s.ui.hotkeys.recording || '', dirty: s.dirty, open: !!document.querySelector('.convo-tabs'), mute: document.querySelector('[data-hotkey=mute]')?.textContent.trim() }; })()`);
     check('the Hotkeys card lists every action and records one combination at a time', hotkeys.rows === 11 && hotkeys.pressed === 'true' && /Press the keys/.test(hotkeys.reading || '') && !recorded.recording && !recorded.dirty && recorded.open, JSON.stringify({ hotkeys, recorded }));
-    // The tunables (speech gate included) moved to the developer diagnostics panel; Settings keeps a Developer row for the two modes.
-    const developer = await page.eval(`(() => { const r = document.querySelector('.convo-settings .convo-developer'); const t = r?.innerText || ''; return { shown: !!r && r.offsetParent !== null, diagnostics: /Developer diagnostics/.test(t), aiLink: /AI Link development mode/.test(t) }; })()`);
-    check('the Developer row offers Developer diagnostics and AI Link development mode', developer.shown && developer.diagnostics && developer.aiLink, JSON.stringify(developer));
+    // The tunables (speech gate included) are in the developer diagnostics panel; the Advanced tab holds the two modes as switches.
+    await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Advanced').click()`);
+    await sleep(500);
+    const developer = await page.eval(`(() => { const r = [...document.querySelectorAll('.convo-settings > .convo-stack')].find(s => s.offsetParent !== null); const t = r?.innerText || ''; return { shown: !!r, diagnostics: /Developer mode/.test(t), aiLink: /AI Link development mode/.test(t), switches: r ? r.querySelectorAll('label.toggle input[type=checkbox]').length : 0, old: !!document.querySelector('.convo-settings .convo-developer') }; })()`);
+    check('the Advanced tab offers Developer mode and AI Link development mode as switches', developer.shown && developer.diagnostics && developer.aiLink && developer.switches >= 4 && !developer.old, JSON.stringify(developer));
     const gate = await page.eval(`(() => { const row = (Alpine.store('convoSetup').readiness || []).find(i => i.id === 'speech_gate'); return { row: row ? { state: row.state, detail: row.detail.slice(0, 70) } : null }; })()`);
     check('readiness says whether the gate is calibrated or unsupported for the selected classifier', !!gate.row && ['ready', 'unsupported', 'unavailable'].includes(gate.row.state), JSON.stringify(gate.row));
     check('opening and browsing every section raised no console warning or error', page.problems().length === 0, page.problems().slice(0, 2).map(p => p.text.slice(0, 160)).join(' | '));
@@ -82,11 +84,11 @@ try {
     const closed = await page.eval(`({ dirty: Alpine.store('convoSetup').dirty, style: Alpine.store('convoSetup').config?.style, focus: document.activeElement?.getAttribute('aria-label') || document.activeElement?.tagName })`);
     check('accepting discards the draft, closes only the top modal and returns focus to the gear', !closed.dirty && closed.style !== 'smoke-test draft' && closed.focus === 'Convo settings', JSON.stringify(closed));
 
-    // contrast of the primary button in both themes (WCAG AA for text)
+    // The orb is the primary control and it is a graphic: its own colour against what is behind it, in both themes (WCAG 3:1)
     for (const theme of ['dark', 'light']) {
-        const colours = await page.eval(`(() => { document.body.classList.remove('dark-mode', 'light-mode'); document.body.classList.add('${theme}-mode'); const b = document.querySelector('.convo-panel .convo-primary'); const cs = getComputedStyle(b); return { fg: cs.color, bg: cs.backgroundColor }; })()`);
+        const colours = await page.eval(`(() => { document.body.classList.remove('dark-mode', 'light-mode'); document.body.classList.add('${theme}-mode'); const core = document.querySelector('.convo-panel .convo-primary .cf-core'); let behind = core, bg = 'rgba(0, 0, 0, 0)'; while (behind && /rgba\\(0, 0, 0, 0\\)|transparent/.test(bg)) { behind = behind.parentElement; bg = behind ? getComputedStyle(behind).backgroundColor : 'rgb(255, 255, 255)'; } return { fg: getComputedStyle(core).color, bg }; })()`);
         const ratio = contrast(colours.fg, colours.bg);
-        check(`the primary button reads clearly in ${theme} mode`, ratio >= 4.5, `${ratio.toFixed(2)}:1`);
+        check(`the orb stands out from the panel in ${theme} mode`, ratio >= 3, `${ratio.toFixed(2)}:1 ${colours.fg} on ${colours.bg}`);
     }
     await page.eval(`(() => { document.body.classList.remove('light-mode'); document.body.classList.add('dark-mode'); return 1; })()`);
 

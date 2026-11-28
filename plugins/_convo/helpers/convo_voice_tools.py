@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import logging
+import re
 import time
 import unicodedata
 import uuid
@@ -41,7 +42,8 @@ ASKED = ("You are given one utterance a person said to their voice assistant. De
          "the assistant to %s. Any wording and any language counts. Reply with exactly one word and nothing else: YES if they ask for "
          "it; NO if they do not (a remark, a question about it, an answer, something else); OTHER if it is unclear.")
 # `voice_mode` has two of its own: planning ends only on the user's word (convo_modes.decide), and handing a plan over starts work.
-ASKED_FOR = {'voice_mode': 'stop planning: to finish or wrap up the plan they are working on together, or to leave planning mode',
+ASKED_FOR = {'change_setting': 'change one of the assistant\'s own settings: to mute or unmute the microphone or its voice, to start or stop the camera, to make its answers shorter or longer, or to turn an option on or off',
+             'voice_mode': 'stop planning: to finish or wrap up the plan they are working on together, or to leave planning mode',
              'voice_mode:plan': 'put the plan they are working on together aside for now and to plan something else, or to go back to another plan',
              'voice_mode:hand_over': 'hand the plan they worked out together over, so that another agent or chat carries it out',
              'delegate_task': 'have some work done: to hand it to another agent or chat, to do it in the background, or to look into it thoroughly',
@@ -369,6 +371,52 @@ def parse_reading(text):
     return {'YES': 'yes', 'NO': 'no', 'OTHER': 'other', 'CHANGE': 'change'}.get(words[0].upper(), 'unread') if len(words) == 1 else 'unread'
 
 
+# What a reply that called no tool left open (2026-11-25: "let me check what I can do", then nothing; "I can open Settings for you
+# if you'd like", then "do it" was not understood). The same isolated one-word reading, of the assistant's own sentence this time:
+# no history and no tool result reach it. It reads meaning in any language, never particular words.
+SAID = ("You are given what a voice assistant has just said to its user. Decide what it left open. Reply with exactly one word and "
+        "nothing else: YES if it says that it is now going to do, check, look up, open, start or find out something, or asks the "
+        "user to wait while it does; OTHER if it offers to do something and leaves it to the user to accept; NO if it does "
+        "neither (it answers, explains, asks a question about something else, or says it cannot).")
+# An answer that is owed (the user spoke on while a look-up was running): before it is given, is the earlier request still wanted?
+# Read from the user's later words alone, with the earlier request beside them. Meaning, never particular words.
+STILL = ("A person asked their voice assistant for something; the assistant was still looking it up when the person went on "
+         "talking. You are given the earlier request and what the person said after it. Decide whether the earlier request "
+         "should still be answered. Reply with exactly one word and nothing else: NO if the person since withdrew it, corrected "
+         "or replaced it with another request, or it no longer makes sense after what they said; YES if it still stands; OTHER "
+         "if it is unclear.")
+
+
+async def still_wanted(rt, state, earlier, later):
+    """Whether an owed answer is still wanted: False only when the reading says no (withdrawn, corrected, replaced)."""
+    later = ' '.join(str(later or '').split())
+    if not later:
+        return True
+    text = 'Earlier request: ' + json.dumps(' '.join(str(earlier or '').split())[:400], ensure_ascii=False) + '\nSaid after it: ' + json.dumps(later[-600:], ensure_ascii=False)
+    return await reading(rt, state, None, text, STILL, seconds=SAID_SECONDS) != 'no'
+
+
+SAID_SECONDS = 4.0
+SAID_CHARS = 600
+
+
+async def left_open(rt, state, said):
+    """'promise' (the reply announced an action and called no tool), 'offer' (it offered one) or '' (neither, or it could not be
+    read). Skipped on the user's own llama.cpp server with a single slot: a second prompt there would evict the conversation's
+    cached start, and the next reply would be slower for it."""
+    said = ' '.join(str(said or '').split())
+    if not said:
+        return ''
+    try:
+        server = rt._server(state)
+        if server.get('kind') == 'llama.cpp' and int(server.get('slots') or 1) <= 1:
+            return ''
+    except Exception:
+        pass
+    answer = await reading(rt, state, None, said[-SAID_CHARS:], SAID, seconds=SAID_SECONDS)
+    return {'yes': 'promise', 'other': 'offer'}.get(answer, '')
+
+
 def can_read(state, audio, transcript):
     """Whether a spoken answer can be read at all: the conversation model hears the audio, or there is recognized text."""
     hears = bool(state['config']["roles"]["conversation"].get("capabilities", {}).get("audio_input"))
@@ -477,7 +525,7 @@ async def place(rt, state, session, chat='', create=True):
 
     A chat the model names (the user asked for it) always wins: "new" is a new chat, any other name the one chat it matches
     (none or several raise ValueError in plain words, and the model asks the user). With no name: a chat's own conversation
-    hands to its chat. A conversation across chats follows the setting `task_chat`: the chat selected in the interface
+    hands to the chat the user is looking at (its own chat unless they opened another one). A conversation across chats follows the setting `task_chat`: the chat selected in the interface
     ("selected"; a new chat when none is), or a new chat ("new"), the same one for the later tasks of this voice session.
     `create=False` only checks (a named chat must exist) and never makes a chat."""
     host = state["service"].host
@@ -488,7 +536,7 @@ async def place(rt, state, session, chat='', create=True):
     work = rt._work(state, session)
     if not wanted:
         if not rt._global(session):
-            return {'id': session["target"], 'name': host.chat_name(session["target"]), 'new': False}
+            return {'id': work or session["target"], 'name': host.chat_name(work or session["target"]), 'new': False}
         if state['config'].get('task_chat') == 'selected' and work:
             return {'id': work, 'name': host.chat_name(work), 'new': False}
         if state.get('opened_chat'):
@@ -501,13 +549,38 @@ async def place(rt, state, session, chat='', create=True):
     return {**made, 'new': True}
 
 
-async def queue(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False, label=''):
+PARALLEL_TASKS = 4          # tasks of this conversation running or waiting at once, across chats, before a separate one must wait
+
+
+def _open_tasks(s, session):
+    """How many of this session's tasks are still running or waiting (never raises: unknown counts as none)."""
+    try:
+        return sum(1 for job in s.store.jobs(session["target"])
+                   if job.get('session') == session['id'] and job.get('status') not in ('completed', 'failed', 'uncertain', 'cancelled'))
+    except Exception:
+        return 0
+
+
+async def queue(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False, label='', relation=''):
     """Queue one task for a chat's agent (`place`) and say so in the panel. Returns (the job, what is now true as a sentence for the model).
     `agreed`: the user has just agreed to this very task, so it starts although the conversation is planning; any other one that gets here
-    while a plan is open waits for its end."""
+    while a plan is open waits for its end.
+
+    `relation` "separate" (the model's reading, by meaning, of how the task relates to work already going on): when the chat is
+    busy, the task does not wait behind that work but starts at once in a new chat named after it, at most PARALLEL_TASKS of
+    this conversation's tasks at a time. A chat the user named is never replaced, and anything else waits in line as before."""
     s = state["service"]
     where = await place(rt, state, session, chat)
     idle = rt._chat_idle(s, where['id'])               # before the task itself makes its chat busy
+    if not idle and relation == 'separate' and not ' '.join(str(chat or '').split()) and _open_tasks(s, session) < PARALLEL_TASKS:
+        # Separate work: its own chat, named after the task, in the same project as the chat it would have waited in.
+        title = ' '.join(str(label or text).split())[:48] or 'Voice task'
+        try:
+            made = s.host.new_chat(title, like=where['id'])
+            where, idle = {**made, 'new': True}, True
+            rt._mark(turn, 'task.parallel')
+        except Exception:
+            pass                                       # no new chat could be made: it waits in line, as it always did
     job = s.store.submit(session["id"], sid, session["epoch"], turn, key or (turn + ":job"), text,
                          target=where['id'] if where['id'] != session["target"] else None)
     waits = False
@@ -534,9 +607,9 @@ def queued(rt, session, where, chat, idle, waits=False):
             else "The task is queued in %s behind its current work and starts when that is finished; its result is reported later." % named)
 
 
-async def delegate(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False):
+async def delegate(rt, sid, state, session, turn, text, key=None, chat='', *, agreed=False, relation=''):
     """Queue one task (`queue`). Returns what is now true, as a sentence for the model."""
-    return (await queue(rt, sid, state, session, turn, text, key, chat, agreed=agreed))[1]
+    return (await queue(rt, sid, state, session, turn, text, key, chat, agreed=agreed, relation=relation))[1]
 
 
 def prepare_task(rt, state, session, turn, task):
@@ -544,7 +617,8 @@ def prepare_task(rt, state, session, turn, task):
     task = str(task or '').strip()
     if not task or len(task) > 16000:
         raise ValueError("Invalid delegated task")
-    text = (rt._relevant(state, session["target"], task, turn) or rt._helper('convo_context').BoundedContext(())).with_task(task)
+    # The chat's agent already has its own messages: only the voice conversation's lines go with the task.
+    text = (rt._relevant(state, session["target"], task, turn, chat_messages=False) or rt._helper('convo_context').BoundedContext(())).with_task(task)
     if len(text) > 16000:
         raise ValueError("Invalid delegated task")
     return text
@@ -559,7 +633,8 @@ async def perform(rt, sid, state, session, turn, record, *, voice=True, panel=Fa
             return await modes.switch(rt, sid, state, session, turn, args, voice=voice, about=record.get('about') or '', may_ask=not panel)
         if name == 'delegate_task':
             text = record.get('prepared') or prepare_task(rt, state, session, turn, args.get('task'))
-            return modes.Outcome(True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'), agreed=True))
+            return modes.Outcome(True, await delegate(rt, sid, state, session, turn, text, key=record['id'], chat=args.get('chat'), agreed=True,
+                                                      relation=args.get('relation') or ''))
         return modes.Outcome(*await act(rt, sid, state, session, turn, name, args, state['config']))
     except asyncio.CancelledError:
         raise
@@ -592,6 +667,8 @@ async def act(rt, sid, state, session, turn, name, args, config):
                 '' if sure else ' The speech server was asked for it; some voices ignore a speed, so the user may hear no change.')
         if name == 'open':
             return await _open(rt, sid, state, session, turn, args)
+        if name == 'change_setting':
+            return await _setting(rt, sid, state, session, turn, args)
         if name == 'remember':
             actions = rt._helper('convo_actions')
             agent = s.host.context(session["target"]).agent0
@@ -702,6 +779,96 @@ def _words(text):
     return ''.join(letter if unicodedata.category(letter)[0] in 'LMN' else ' ' for letter in str(text or '').casefold()).split()
 
 
+# ── Convo's own settings by voice ─────────────────────────────────────────────────
+# A fixed, safe subset. For this conversation only (the page does it): the microphone, the assistant's voice, the camera. Saved
+# (convo_setup.patch, the same validated path as the settings page): answer length, spoken task updates and the developer options.
+# Never by voice: what the voice agent may do, consents, keys, addresses, providers, models and the speech gate.
+ON_WORDS = ('on', 'yes', 'true', 'enable', 'enabled', 'start', 'unmute', 'unmuted', 'show', 'share')
+OFF_WORDS = ('off', 'no', 'false', 'disable', 'disabled', 'stop', 'mute', 'muted', 'hide', 'silent', 'silence')
+SESSION_SETTINGS = ('microphone', 'voice', 'camera')
+SAVED_SETTINGS = {'answer_length': ('response_detail', ('concise', 'balanced', 'detailed')),
+                  'spoken_updates': ('spoken_updates', ('completion', 'milestones', 'frequent')),
+                  'developer_mode': ('developer_mode', None), 'diagnostic_events': ('show_diagnostic_events', None),
+                  'rejected_replies': ('show_rejected_responses', None)}
+SETTING_NAMES = {'answer_length': 'Answer length', 'spoken_updates': 'Spoken task updates', 'developer_mode': 'Developer mode',
+                 'diagnostic_events': 'Diagnostic events in the history', 'rejected_replies': 'Replies that were never delivered'}
+
+
+def switch(value):
+    """True / False for a model's wording of on and off (in any case, with words around it), or None."""
+    words = re.sub(r'[^a-z]+', ' ', str(value or '').lower()).split()
+    on, off = any(word in ON_WORDS for word in words), any(word in OFF_WORDS for word in words)
+    return True if on and not off else False if off and not on else None
+
+
+async def _setting(rt, sid, state, session, turn, args):
+    """Carry out one change of the voice agent's own settings. Returns (worked, what is now true, in words for the model)."""
+    name, value = args['setting'], str(args.get('value') or '').strip()
+    if name in SESSION_SETTINGS:
+        wanted = switch(value)
+        if wanted is None:
+            return False, 'whether to turn it on or off was not said'
+        request_id = uuid.uuid4().hex
+        waiting = state.setdefault('ui_waiting', {})
+        future = asyncio.get_running_loop().create_future()
+        waiting[request_id] = future
+        try:
+            await rt._send(sid, state, session, turn, 'ui.setting', request_id=request_id, setting=name, on=wanted)
+            answer = await asyncio.wait_for(future, UI_WAIT)
+        except (asyncio.TimeoutError, TimeoutError):
+            return False, "the user's browser did not answer"
+        finally:
+            waiting.pop(request_id, None)
+        detail = ' '.join(str(answer.get('detail') or '').split())[:160]
+        if answer.get('ok') is not True:
+            return False, detail or 'the browser could not change it'
+        return True, detail or {('microphone', True): 'The microphone is on.',
+                                ('microphone', False): 'The microphone is muted. The user unmutes it with the microphone button.',
+                                ('voice', True): 'Your voice is on again.',
+                                ('voice', False): 'Your voice is silent from now on; your replies still appear as text.',
+                                ('camera', True): 'The camera is shared.', ('camera', False): 'The camera is no longer shared.'}[(name, wanted)]
+    path, choices = SAVED_SETTINGS[name]
+    if choices is None:
+        new = switch(value)
+        if new is None:
+            return False, 'whether to turn it on or off was not said'
+    else:
+        word = _named(value, choices)
+        if not word:
+            return False, 'it must be one of: ' + ', '.join(choices)
+        new = word
+    current = state['config'].get(path)
+    said = (('on' if new else 'off') if choices is None else new)
+    if current == new:
+        return True, '%s was already %s.' % (SETTING_NAMES[name], said)
+    setup = rt._helper('convo_setup')
+    try:
+        result = await asyncio.to_thread(setup.patch, [{'path': path, 'base': current, 'value': new}])
+    except ValueError as error:
+        return False, _safe(error, 'the settings refused the change')
+    except Exception:
+        return False, 'the settings could not be written'
+    if isinstance(result, dict) and result.get('conflicts'):
+        return False, 'the setting was changed elsewhere at the same moment; nothing was written'
+    state['config'][path] = new                              # this conversation follows it from the next reply
+    return True, '%s is now %s, saved in the voice settings.' % (SETTING_NAMES[name], said)
+
+
+# The voice agent's own places (the page knows how to open each; nothing else is ever opened by name).
+SETTINGS_TABS = ('connections', 'conversation', 'audio', 'advanced')
+CLOSABLE = ('voice_settings', 'sound', 'voice_studio', 'diagnostics', 'settings')
+
+
+def _named(text, names):
+    """The one of `names` a model's free wording means ("the audio tab", "Voice Studio", "voice-settings"), or ''."""
+    words = re.sub(r'[^a-z]+', ' ', str(text or '').lower()).split()
+    joined = '_'.join(words)
+    for name in names:
+        if name == joined or name in words or name.replace('_', '') == ''.join(words) or all(part in words for part in name.split('_')):
+            return name
+    return ''
+
+
 async def _open(rt, sid, state, session, turn, args):
     """Open a chat, Settings, the file browser or a web page in the user's browser (the page does it and says whether it worked)."""
     what, target, title = args['what'], str(args.get('target') or '').strip(), ''
@@ -717,6 +884,12 @@ async def _open(rt, sid, state, session, turn, args):
         if parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password:
             return False, 'only an ordinary web address can be opened'
         target, title = parts.geturl(), parts.hostname
+    elif what == 'voice_settings':
+        target = _named(target, SETTINGS_TABS)                     # '' opens the settings where they were
+    elif what == 'close':
+        target = _named(target, CLOSABLE)
+        if not target:
+            return False, 'which place to close was not said: the voice settings, the sound controls, Voice Studio, the diagnostics or Settings'
     else:
         target = ''
     request_id = uuid.uuid4().hex
@@ -733,7 +906,10 @@ async def _open(rt, sid, state, session, turn, args):
     detail = ' '.join(str(answer.get('detail') or '').split())[:160]
     if answer.get('ok') is True:
         return True, detail or {'chat': 'The chat "%s" is open.' % title[:80], 'settings': 'Settings are open.',
-                                'files': 'The file browser is open.', 'page': 'A link to the page is shown in the Convo panel.'}[what]
+                                'files': 'The file browser is open.', 'page': 'A link to the page is shown in the Convo panel.',
+                                'voice_settings': 'The voice settings are open.', 'sound': 'The sound controls are open.',
+                                'voice_studio': 'Voice Studio is open.', 'diagnostics': 'The diagnostics are open.',
+                                'close': 'It is closed.'}[what]
     return False, detail or 'the browser could not open it'
 
 

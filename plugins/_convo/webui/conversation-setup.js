@@ -29,15 +29,15 @@ export const CONVERSATION_CATALOG = {
 };
 // A provider Convo has no verdict for that Agent Zero describes as OpenAI-compatible (another plugin may add one): selectable.
 export const UNKNOWN_COMPATIBLE = { short: 'audio not verified',
-    reason: 'Agent Zero lists this provider as OpenAI-compatible; Convo has not verified that it accepts audio input. Test audio input checks it.' };
+    reason: 'Agent Zero lists this provider as OpenAI-compatible; Convo checks whether it accepts audio once a model is chosen.' };
 
 // Every setting this card edits, with the name a conflict is shown under.
 export const CARD_PATHS = {
     'roles.conversation.provider': 'Provider', 'roles.conversation.model': 'Model name', 'roles.conversation.api_base': 'API base URL',
-    'roles.conversation.url': 'Server URL', 'roles.conversation.key_source': 'Key source', 'roles.conversation.remote': 'Allow remote processing',
+    'roles.conversation.url': 'Server URL', 'roles.conversation.key_source': 'Key source', 'roles.conversation.remote': 'Consent for an address outside your network',
     'roles.conversation.token_env': 'Credential environment reference', 'roles.conversation.capabilities.audio_input': 'Accepts audio input',
     'roles.conversation.capabilities.cancellation': 'Supports cancellation', 'roles.conversation.capabilities.tool_calls': 'Supports tool calls',
-    'compaction.context_tokens': 'Context window',
+    'compaction.context_tokens': 'Context window', 'compaction.trigger': 'Summarise older conversation at',
     'summary_writer': 'Who writes the summaries', 'utility_summary_consent': 'Allow a utility model outside your network',
 };
 const ROWS = ['conversation_provider', 'conversation_key_route', 'summary_writer'];
@@ -49,7 +49,15 @@ export function conversationUrl(role, compatibleBase = '') {
     return roleUrl(role, spec || (compatibleBase ? { base: compatibleBase } : null));
 }
 
+// The compaction threshold as the server bounds it (helpers/convo_memory.py TRIGGER_MIN / TRIGGER_MAX / TRIGGER_DEFAULT).
+export const THRESHOLD = { min: 0.3, max: 0.9, fallback: 0.7 };
+export function thresholdInEffect(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 && typeof value !== 'boolean' ? Math.min(THRESHOLD.max, Math.max(THRESHOLD.min, number)) : THRESHOLD.fallback;
+}
+
 export const conversationSetup = {
+    conversationThresholdText() { return Math.round(thresholdInEffect(this.config?.compaction?.trigger) * 100) + '% full'; },
     ...modelRoleSetup('conversation', {
         paths: CARD_PATHS,
         trimmed: ['roles.conversation.model', 'roles.conversation.api_base', 'roles.conversation.url', 'roles.conversation.token_env'],
@@ -63,6 +71,7 @@ export const conversationSetup = {
         context: { path: 'compaction.context_tokens', min: 4096, message: 'Enter a context window of at least 4096 tokens.' },
         sectionKey: 'convo_conversation_model',
         probe: { action: 'audio_probe', busy: 'Sending one short synthetic clip…' },
+        autoCheck: true,
         keyCopy: { action: 'conversation_key_copy' },
     }),
     // The saved choice, for the "Convo — provider / model" row in Agent Zero's preset overview.
@@ -72,7 +81,7 @@ export const conversationSetup = {
         const name = !provider ? 'Custom endpoint' : usable ? usable.label : `${this.conversationHostLabels()[provider] || provider} (not usable)`;
         return { provider: name, model: saved.model || '' };
     },
-    // Tools and images, measured by Test connection (helpers/convo_setup.probe_capabilities): the newest test's answer, else the saved
+    // Audio, tools and images, measured by the connection check (helpers/convo_setup.probe_capabilities): the newest answer, else the saved
     // record as the readiness row `conversation_measured` reports it. Never inferred in the browser.
     conversationMeasured() {
         const fresh = this.choices?.conversation?.capabilities;

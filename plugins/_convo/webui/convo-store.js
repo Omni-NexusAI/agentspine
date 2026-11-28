@@ -4,9 +4,9 @@ import { createNamespacedClient } from '/js/websocket.js';
 import { getCurrentContextId, getCurrentContext, openModal } from '/js/shortcuts.js';
 import { AudioSession } from './audio.js';
 import { ACTIVE_JOB, GLOBAL_SCOPE, PAGE, captureAnchor, deriveTimings, changeState, describeEvent, foldTurns, markTurn, mergeEvents, nearBottom, planState, restoreAnchor, summarizeTimings, toBottom, wrapTab } from './view-helpers.js';
-import { announce, cueFor, emitCue, orbView, syncOrb } from './orb.js';
+import { announce, cueFor, emitCue, orbView, releaseOrb, syncOrb } from './orb.js';
 import { bindOrbGesture, continuousDraft, dictationEndNote } from './dictation.js';
-import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, soundKey, soundSource } from './sound-setup.js';
+import { captureProcessing, createSoundStore, effectiveSound, isPhone, migrateLegacy, phoneAudioMode, readChoices, readPicture, soundKey, soundSource } from './sound-setup.js';
 import { plainText } from './plain-text.js';
 import { bindHotkeys } from './hotkeys.js';
 
@@ -159,12 +159,12 @@ async function native() {
         if (modern) {
             const { store } = await import(path);
             await store.initRuntime?.();
-            return nativeBinding = { store, device: () => store.getSelectedDevice(), transcribe: '/plugins/_whisper_stt/transcribe' };
+            return nativeBinding = { store, mic: store, device: () => store.getSelectedDevice(), transcribe: '/plugins/_whisper_stt/transcribe' };
         }
         const [{ store }, { store: devices }] = await Promise.all([
             import('/components/chat/speech/speech-store.js'), import('/components/settings/speech/microphone-setting-store.js'),
         ]);
-        return nativeBinding = { store, device: () => devices.getSelectedDevice(), transcribe: '/transcribe' };
+        return nativeBinding = { store, mic: devices, device: () => devices.getSelectedDevice(), transcribe: '/transcribe' };
     })();
     return nativePromise;
 }
@@ -367,9 +367,22 @@ const preRollField = meta => (Number.isFinite(meta?.pre_roll_s) && meta.pre_roll
 // How long ago the utterance's first sound was, as it is sent (it may have waited): what began before a question is no answer to it.
 const onsetField = candidate => (Number.isFinite(candidate?.began) ? { onset_s: Math.max(0, Math.round(clock() - candidate.began) / 1000) } : {});
 // An overlap probe also carries this device's "Interrupt after" (`barge_in_s`, 0.4-2.0): the server's safety yield uses it for that probe.
+// The echo guard's latest verdict (state names and numbers only, never audio), sent with each piece of speech so the server's
+// journal can explain afterwards why speech during a reply was let through (2026-11-25: the assistant's own voice, through a loud
+// headset, was taken for the user's twice, and nothing recorded what the guard had seen).
+export function guardVerdict(metric) {
+    if (!metric || typeof metric !== 'object') return null;
+    const number = value => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 1000) / 1000 : undefined);
+    const name = value => (typeof value === 'string' ? value.slice(0, 24) : undefined);
+    return { mode: name(metric.mode), state: name(metric.acousticState), path: name(metric.candidatePath), reject: name(metric.rejectReason),
+        correlation: number(metric.correlation), lag_ms: number(metric.lagMs), independent_ms: number(metric.independentMs),
+        echo_ms: number(metric.echoEvidenceMs), playing: metric.playbackActive === true, native_aec: metric.nativeAec === true };
+}
 function overlapFields(candidate, voiced, final = false) {
     const fields = {};
     if (voiced !== undefined) fields.voiced_s = voiced;
+    const guard = guardVerdict(audio?.echoMetric);
+    if (guard) fields.guard = guard;
     if (candidate?.overlap) {
         fields.overlap = true; if (candidate.heard) fields.heard = { ...candidate.heard };
         if (!final) fields.barge_in_s = store.soundValues().barge_in_seconds;
@@ -382,6 +395,8 @@ function beginCandidate(attempt) {
     // A test clip armed in diagnostics takes this utterance instead: no candidate, no probe, no turn.
     if (store.clipArmed) { clipCapture = { label: store.clipArmed, attempt }; store.clipArmed = ''; store.clipNote = 'Recording the test clip…'; return; }
     setHearing(true); lastActivity = Date.now();
+    // Told at once, before any audio exists (no audio and no words go with it): a finished task's result never starts over the user.
+    void request('speaking', { ...identity() }).catch(() => {});
     candidateCapture = resumeAbandoned(attempt) || { turn_id: crypto.randomUUID(), sequence: 0, attempt, final: false };
     candidateCapture.began = clock() - (audio?.boundary?.spokenFor?.() ?? 0) * 1000;
     candidates.set(candidateCapture.turn_id, candidateCapture); orderOf(candidateCapture.turn_id);
@@ -567,6 +582,119 @@ function updateOrb() {
     if (spoken !== lastDictationLabel) { lastDictationLabel = spoken; if (spoken) announce(spoken); }
     const mic = typeof document !== 'undefined' ? document.getElementById?.('microphone-button') : null;
     if (mic) syncOrb(mic, view, id === 'speaking' ? store.outputLevel : store.inputLevel);
+    // The panel's own orb (its start and stop control) shows the same state with the same layers.
+    if (panelOrb) { try { syncOrb(panelOrb, view, id === 'speaking' ? store.outputLevel : store.inputLevel); } catch { /* the panel is optional */ } }
+    // The floating orb, when the user let it out of the panel: the same view on an element of its own.
+    try { syncFloat(); if (floatOrb) syncOrb(floatOrb, view, id === 'speaking' ? store.outputLevel : store.inputLevel); } catch { /* the floating orb is optional */ }
+}
+let panelOrb = null;
+
+// ---- Where the panel's orb sits. It is one absolutely placed element; this gives it the box of the slot on the ready page (no
+// conversation, nothing said yet) or of the dock beside the controls. A change of place is animated by the stylesheet; a placement
+// that only follows a resize is immediate (`data-still`).
+let orbFrame = 0, orbWatch = null, orbPlace = '', orbMoveUntil = 0;
+function placeOrb() {
+    orbFrame = 0;
+    const orb = panelOrb, panel = orb?.closest?.('.convo-panel');
+    if (!panel?.getBoundingClientRect || !orb.style) return;
+    const live = store.active || store.busy;
+    const slot = live ? null : panel.querySelector('.convo-orb-slot')?.getBoundingClientRect?.();
+    const ready = !!slot && slot.width > 8 && slot.height > 8;
+    const box = ready ? slot : panel.querySelector('.convo-orb-dock')?.getBoundingClientRect?.();
+    if (!box || box.width < 8) return;                               // the panel is not laid out yet (a hidden canvas)
+    const outer = panel.getBoundingClientRect(), size = Math.round(Math.min(box.width, box.height));
+    const place = ready ? 'ready' : 'dock', now = Date.now();
+    if (place !== orbPlace) { if (orbPlace) orbMoveUntil = now + 750; orbPlace = place; }
+    if (now >= orbMoveUntil) orb.setAttribute('data-still', ''); else orb.removeAttribute('data-still');
+    orb.setAttribute('data-place', place);
+    orb.style.left = `${Math.round(box.left - outer.left + (box.width - size) / 2)}px`;
+    orb.style.top = `${Math.round(box.top - outer.top + (box.height - size) / 2)}px`;
+    orb.style.width = orb.style.height = `${size}px`;
+}
+function queuePlace() {
+    if (!panelOrb || orbFrame) return;
+    const raf = globalThis.requestAnimationFrame;
+    if (typeof raf === 'function') orbFrame = raf(placeOrb); else placeOrb();
+}
+function watchOrbPlace(orb) {
+    try { orbWatch?.disconnect(); } catch { /* already gone */ }
+    orbWatch = null; orbPlace = ''; orbMoveUntil = 0;
+    const panel = orb?.closest?.('.convo-panel'), Observer = globalThis.ResizeObserver;
+    if (!panel || typeof Observer !== 'function') return;
+    orbWatch = new Observer(queuePlace);
+    for (const part of [panel, ...['.convo-bar', '.convo-stage', '.convo-log', '.convo-empty'].map(name => panel.querySelector(name))]) if (part) orbWatch.observe(part);
+}
+
+// ---- The floating orb: the user can let the orb out of the panel while a conversation runs. It sits on the page itself (so it
+// stays when the panel is closed), is dragged anywhere in the window, stops the conversation on a click like the panel's orb, and
+// goes back with its small button. Whether it floats and where it was left are kept for this browser.
+const FLOAT_KEY = 'convo.orb.v1', FLOAT_SIZE = 76;
+function readFloat() {
+    try { const kept = JSON.parse(globalThis.localStorage?.getItem(FLOAT_KEY) || 'null'); return kept && typeof kept === 'object' ? kept : {}; } catch { return {}; }
+}
+let floatBox = null, floatOrb = null, floatAt = readFloat(), floatDragged = false;
+function saveFloat() {
+    try { globalThis.localStorage?.setItem(FLOAT_KEY, JSON.stringify({ floating: !!store.orbFloating, x: floatAt.x, y: floatAt.y })); } catch { /* kept for this page only */ }
+}
+function moveFloat(x, y) {
+    const width = globalThis.innerWidth || 0, height = globalThis.innerHeight || 0;
+    floatAt = { x: Math.round(Math.max(4, Math.min(Math.max(4, width - FLOAT_SIZE - 4), x))), y: Math.round(Math.max(4, Math.min(Math.max(4, height - FLOAT_SIZE - 4), y))) };
+    if (floatBox) { floatBox.style.left = `${floatAt.x}px`; floatBox.style.top = `${floatAt.y}px`; }
+}
+function buildFloat(doc) {
+    const box = doc.createElement('div'), orb = doc.createElement('button'), back = doc.createElement('button'), glyph = doc.createElement('span');
+    box.className = 'convo-float'; box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Convo orb');
+    orb.type = 'button'; orb.className = 'convo-panel-orb convo-float-orb';
+    back.type = 'button'; back.className = 'convo-float-back'; back.setAttribute('aria-label', 'Put the orb back in the Convo panel');
+    glyph.className = 'material-symbols-outlined'; glyph.setAttribute('aria-hidden', 'true'); glyph.textContent = 'close_fullscreen';
+    back.appendChild(glyph); box.appendChild(orb); box.appendChild(back);
+    let grab = null;
+    box.addEventListener('pointerdown', event => {
+        if (event.button > 0 || event.target?.closest?.('.convo-float-back')) return;
+        grab = { x: event.clientX, y: event.clientY, left: floatAt.x, top: floatAt.y, moved: false };
+        try { box.setPointerCapture?.(event.pointerId); } catch { /* dragging still works without capture */ }
+    });
+    box.addEventListener('pointermove', event => {
+        if (!grab) return;
+        const dx = event.clientX - grab.x, dy = event.clientY - grab.y;
+        if (!grab.moved && Math.hypot(dx, dy) < 5) return;
+        grab.moved = true; box.setAttribute('data-drag', '');
+        moveFloat(grab.left + dx, grab.top + dy);
+    });
+    const drop = () => {
+        if (!grab) return;
+        if (grab.moved) { floatDragged = true; setTimeout(() => { floatDragged = false; }, 0); saveFloat(); }
+        grab = null; box.removeAttribute('data-drag');
+    };
+    box.addEventListener('pointerup', drop); box.addEventListener('pointercancel', drop);
+    // A click that was not a drag is the orb's own action: stop the conversation.
+    orb.addEventListener('click', event => { if (floatDragged || grab?.moved) { event.preventDefault?.(); return; } if (store.active || store.busy) void store.stop(); });
+    back.addEventListener('click', () => { store.orbFloating = false; saveFloat(); updateOrb(); });
+    return { box, orb };
+}
+function syncFloat() {
+    const wanted = !!(store.orbFloating && store.enabled && (store.active || store.busy));
+    if (!wanted) { if (floatBox) { try { releaseOrb(floatOrb); floatBox.remove(); } catch { /* already gone */ } floatBox = floatOrb = null; } return; }
+    if (floatBox) return;
+    const doc = globalThis.document;
+    if (!doc?.createElement || !doc.body?.appendChild || typeof doc.createElement('div')?.addEventListener !== 'function') return;
+    ({ box: floatBox, orb: floatOrb } = buildFloat(doc));
+    doc.body.appendChild(floatBox);
+    const width = globalThis.innerWidth || 0, height = globalThis.innerHeight || 0;
+    moveFloat(Number.isFinite(floatAt.x) ? floatAt.x : width - FLOAT_SIZE - 28, Number.isFinite(floatAt.y) ? floatAt.y : height - FLOAT_SIZE - 150);
+}
+try { globalThis.addEventListener?.('resize', () => { if (floatBox) moveFloat(floatAt.x, floatAt.y); queuePlace(); }); } catch { /* no window here */ }
+
+// ---- The preview of what is shared (camera, screen): this page's own streams shown small in the panel; nothing leaves the page.
+const PREVIEW_KEY = 'convo.preview.v1';
+let previewShows = 'camera', previewDrag = null, previewFlashTimer = null;
+function readPreviewPlace() {
+    try { const place = JSON.parse(globalThis.localStorage?.getItem(PREVIEW_KEY) || 'null'); return place && Number.isFinite(place.right) && Number.isFinite(place.bottom) ? place : null; } catch { return null; }
+}
+function flashPreview() {
+    store.previewFlash = true;
+    clearTimeout(previewFlashTimer);
+    previewFlashTimer = setTimeout(() => { store.previewFlash = false; }, 450);
 }
 
 // History entries are keyed by the sequence number of the event they are placed at (a folded turn: its first event).
@@ -646,9 +774,15 @@ function releaseCamera() {
     if (cameraVideo) cameraVideo.srcObject = null;
     cameraStream = null; cameraVideo = null;
 }
+// The edge for one picture: the smaller of what the server asked for and what this browser's Audio & Video setting allows.
+export function pictureEdge(asked, chosen) {
+    const limit = Number(chosen) > 0 ? Number(chosen) : SNAPSHOT_EDGE;
+    return Math.min(Number(asked) > 0 ? Number(asked) : SNAPSHOT_EDGE, limit);
+}
 async function answerCamera(event) {
     let image = '';
-    try { image = videoFrame(cameraVideo, event.max_edge, event.quality); } catch { image = ''; }
+    flashPreview();                                        // the assistant is looking now: the preview's frame lights up
+    try { image = videoFrame(cameraVideo, pictureEdge(event.max_edge, readPicture().camera_edge), event.quality); } catch { image = ''; }
     await request('camera_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
 
@@ -665,7 +799,8 @@ function releaseScreen() {
 }
 async function answerScreen(event) {
     let image = '';
-    try { image = videoFrame(screenVideo, event.max_edge, event.quality); } catch { image = ''; }
+    flashPreview();
+    try { image = videoFrame(screenVideo, pictureEdge(event.max_edge, readPicture().screen_edge), event.quality); } catch { image = ''; }
     await request('screen_snapshot', { ...identity(), turn_id: event.turn_id, request_id: event.request_id, image }).catch(() => {});
 }
 
@@ -750,12 +885,80 @@ function openPage(target, title) {
     addLink(url, title);
     return [true, 'A link is shown in the Convo panel.'];
 }
+// ---- The voice agent's own places: a fixed list, each opened and closed the way its own button does it.
+const SETTINGS_TABS = { connections: 'Connections', conversation: 'Conversation', audio: 'Audio & Video', advanced: 'Advanced' };
+const SETTINGS_PATH = '/plugins/_convo/webui/settings-modal.html', STUDIO_PATH = '/plugins/_convo/webui/studio.html';
+function showPanel() { try { const canvas = hostStore('rightCanvas'); if (typeof canvas?.open === 'function') void canvas.open('convo'); } catch { /* the panel is optional */ } }
+async function openVoiceSettings(tab) {
+    const outcome = await hostCall(() => store.openSettingsModal(), UI_START_MS);      // resolves when the modal closes: never awaited to its end
+    if (outcome.error) return [false, 'The voice settings could not be opened.'];
+    const setup = hostStore('convoSetup'), name = SETTINGS_TABS[tab];
+    if (name && setup) setup.section = name;
+    return [true, name ? `The voice settings are open on ${name}.` : 'The voice settings are open.'];
+}
+function openSound() {
+    const sound = hostStore('convoSound');
+    if (typeof sound?.show !== 'function') return [false, 'The sound controls cannot be reached from this page.'];
+    showPanel();
+    if (!sound.open) sound.show();
+    return [true, 'The sound controls are open in the Convo panel.'];
+}
+async function openVoiceStudio() {
+    const outcome = await hostCall(() => store.openStudio(), UI_START_MS);
+    return outcome.error ? [false, 'Voice Studio could not be opened.'] : [true, 'Voice Studio is open.'];
+}
+async function openDiagnostics() {
+    const diagnostics = hostStore('convoDiagnostics');
+    if (!diagnostics?.available || typeof diagnostics.open !== 'function') return [false, 'The diagnostics are only there with developer mode on.'];
+    const outcome = await hostCall(() => diagnostics.open(), UI_START_MS);
+    return outcome.error ? [false, 'The diagnostics could not be opened.'] : [true, 'The diagnostics are open.'];
+}
+async function closeModalAt(path) {
+    const modals = await import('/js/modals.js');
+    if (typeof modals.closeModal !== 'function') return false;
+    if (typeof modals.isModalOpen === 'function' && !modals.isModalOpen(path)) return null;       // it was not open
+    await hostCall(() => modals.closeModal(path), UI_START_MS);
+    return true;
+}
+async function closePlace(place) {
+    if (place === 'sound') {
+        const sound = hostStore('convoSound');
+        if (typeof sound?.hide !== 'function') return [false, 'The sound controls cannot be reached from this page.'];
+        sound.hide();
+        return [true, 'The sound controls are closed.'];
+    }
+    if (place === 'diagnostics') {
+        const diagnostics = hostStore('convoDiagnostics');
+        if (typeof diagnostics?.closeWindow !== 'function') return [false, 'The diagnostics cannot be reached from this page.'];
+        diagnostics.closeWindow({ focus: false });
+        showPanel();
+        return [true, 'The diagnostics are closed.'];
+    }
+    if (place === 'voice_settings') {
+        // Unsaved edits are the user's to keep or drop: the settings stay open rather than asking in a browser dialog nobody expects.
+        if (hostStore('convoSetup')?.dirty) return [false, 'The voice settings have unsaved changes, so they were left open.'];
+        const closed = await closeModalAt(SETTINGS_PATH);
+        return closed === false ? [false, 'The voice settings could not be closed from this page.'] : [true, closed === null ? 'The voice settings were not open.' : 'The voice settings are closed.'];
+    }
+    if (place === 'voice_studio') {
+        const closed = await closeModalAt(STUDIO_PATH + '?v=20260911-ready');
+        return closed === false ? [false, 'Voice Studio could not be closed from this page.'] : [true, closed === null ? 'Voice Studio was not open.' : 'Voice Studio is closed.'];
+    }
+    if (place === 'settings') {
+        const closed = await closeModalAt(SETTINGS_MODAL);
+        return closed === false ? [false, 'The settings of Agent Zero could not be closed from this page.'] : [true, closed === null ? 'The settings of Agent Zero were not open.' : 'The settings of Agent Zero are closed.'];
+    }
+    return [false, 'Convo cannot close that.'];
+}
 async function answerOpen(event) {
     const what = String(event.what || ''), target = typeof event.target === 'string' ? event.target.trim() : '';
     let ok = false, detail = 'That could not be opened.';
     try {
         [ok, detail] = what === 'chat' ? await openChat(target, store.uiWaitMs) : what === 'settings' ? await openHostSettings()
             : what === 'files' ? await openHostFiles() : what === 'page' ? openPage(target, event.title)
+            : what === 'voice_settings' ? await openVoiceSettings(target) : what === 'sound' ? openSound()
+            : what === 'voice_studio' ? await openVoiceStudio() : what === 'diagnostics' ? await openDiagnostics()
+            : what === 'close' ? await closePlace(target)
             : [false, 'Convo cannot open that kind of thing.'];
     } catch { ok = false; detail = 'That could not be opened.'; }
     await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
@@ -775,6 +978,27 @@ function watchSize(element) {
     if (!element || typeof globalThis.ResizeObserver !== 'function') return;
     sizeWatch = new globalThis.ResizeObserver(() => { if (scroller === element) store.settleScroll(); });
     sizeWatch.observe(element);
+}
+
+// ---- Settings by voice (the change_setting tool, `ui.setting`): the three that live in this page, for this conversation.
+async function answerSetting(event) {
+    const setting = String(event.setting || ''), on = event.on === true;
+    let ok = false, detail = 'That setting cannot be changed from this page.';
+    try {
+        if (setting === 'microphone') {
+            store.setMuted(!on);
+            ok = store.muted === !on;
+            detail = ok ? (on ? 'The microphone is on.' : 'The microphone is muted. It is unmuted with the microphone button.') : 'The microphone could not be changed.';
+        } else if (setting === 'voice') {
+            store.setVoiceMuted(!on);
+            ok = true; detail = on ? 'The voice is on again.' : 'The voice is silent from now on; replies still appear as text.';
+        } else if (setting === 'camera') {
+            if (on) await store.shareCamera(); else store.stopCamera();
+            ok = store.cameraShared === on;
+            detail = ok ? (on ? 'The camera is shared.' : 'The camera is no longer shared.') : 'The camera could not be started: the browser has not allowed it for this page.';
+        }
+    } catch { ok = false; detail = 'That setting could not be changed.'; }
+    await request('ui_result', { ...identity(), request_id: event.request_id, ok: !!ok, detail: String(detail).slice(0, 160) }).catch(() => {});
 }
 
 export const store = createStore('convo', {
@@ -834,6 +1058,16 @@ export const store = createStore('convo', {
         return true;
     },
     toggleMute() { return this.setMuted(!this.muted); },
+    // The assistant's voice, silent or not (the speaker icon and "be quiet" by voice): replies still arrive and appear as text, and
+    // are played without sound, so everything that depends on a reply having been heard stays as it is.
+    voiceMuted: false,
+    setVoiceMuted(value) {
+        this.voiceMuted = !!value;
+        try { audio?.setVoiceMuted?.(this.voiceMuted); } catch { /* applied when the next audio session starts */ }
+        if (!this.panelOpen) announce(this.voiceMuted ? 'Voice silent.' : 'Voice on.');
+        return this.voiceMuted;
+    },
+    toggleVoice() { return this.setVoiceMuted(!this.voiceMuted); },
     pushToTalk(value) {
         value = !!value;
         if (value ? !this.active || !this.muted || this.talking : !this.talking) return false;
@@ -881,11 +1115,14 @@ export const store = createStore('convo', {
     get targetPrefix() { return this.across ? (this.work ? 'Working in: ' : '') : this.target ? 'Chat · ' : ''; },
     get targetLabel() {
         if (this.across) return this.work ? (this.workName || 'an untitled chat') : 'No chat selected';
-        return this.targetName || (this.target ? 'Selected chat' : 'No chat selected');
+        const own = this.targetName || (this.target ? 'Selected chat' : 'No chat selected');
+        // The conversation stays with its chat; another chat opened meanwhile is where its work goes.
+        return this.session && this.work && this.work !== this.target ? own + ' · work goes to ' + (this.workName || 'the open chat') : own;
     },
     // The live draft as the history will read once it is heard: no Markdown (plain-text.js, the browser copy of the server's cleaner).
     get draftText() { return plainText(this.draft); },
-    get canRetarget() { return !this.across && !!this.selected && this.selected !== this.target; },
+    // Chats follow you: nothing has to be pressed to switch (the conversation carries on and its work goes to the open chat).
+    get canRetarget() { return false; },
     get activeJobs() { return this.jobs.filter(job => ACTIVE_JOB.has(job.status)); },
     // One "You" and one "Convo" entry per turn (view-helpers.js foldTurns); developer mode adds a secondary line and the bookkeeping.
     get visibleEvents() {
@@ -914,13 +1151,38 @@ export const store = createStore('convo', {
     outputView() {
         const page = pageAudio(), info = page?.snapshot?.() || {}, choices = readChoices(this.soundInput());
         const named = this.outputs?.find?.(device => device.id === (info.missing ? '' : choices.output));
-        const label = choices.output && !info.missing ? (named?.label || 'the chosen output device') : 'System default';
+        const label = choices.output && !info.missing ? (named?.label || choices.output_label || 'the saved output') : 'System default';
         return { label, state: String(info.state || ''), can_choose: !!info.can_choose && !isPhone(), missing: !!info.missing, phone: isPhone(),
                  mode: audioMode.mode, mode_source: audioMode.source, mode_reason: audioMode.reason, reopened: info.reopened || 0,
                  ducks: audio?.duck?.engagements || 0, rebuffers: audio?.underruns || 0 };
     },
     outputs: [],
     async listOutputs() { const page = pageAudio(); this.outputs = page?.supportsSink?.() ? await page.outputs() : []; return this.outputs; },
+    // The microphones Agent Zero's own speech setting lists, and the one it has chosen. Convo has no microphone setting of its
+    // own: choosing one here changes that setting, so dictation and Convo use the same microphone.
+    async microphones() {
+        try {
+            const mic = (await native()).mic;
+            if (!(mic.devices || []).length) await mic.loadDevices?.();
+            const list = (mic.devices || []).filter(device => device?.deviceId)
+                .map(device => ({ id: String(device.deviceId), label: String(device.label || '').slice(0, 80) }));
+            return { chosen: String(mic.getSelectedDevice?.()?.deviceId || ''), list };
+        } catch { return { chosen: '', list: [] }; }
+    },
+    async chooseMicrophone(id) {
+        try {
+            const mic = (await native()).mic;
+            if (typeof mic.selectDevice !== 'function' || !(mic.devices || []).some(device => device?.deviceId === id))
+                return { ok: false, message: 'That microphone is not available any more.' };
+            await mic.selectDevice(id);
+            return { ok: true, message: this.active ? 'Used the next time you start a conversation.' : '' };
+        } catch (error) { return { ok: false, message: 'The microphone was not changed: ' + (error?.message || String(error)) }; }
+    },
+    // The cameras this browser can name (names appear once a camera or the microphone was allowed); opens nothing.
+    async cameras() {
+        return (await listDevices()).filter(device => device.kind === 'videoinput' && device.deviceId)
+            .map(device => ({ id: String(device.deviceId), label: String(device.label || '').slice(0, 80) }));
+    },
     async chooseOutput(id) {
         const page = pageAudio();
         if (!page) return { ok: false, message: 'This browser cannot choose an output here.' };
@@ -966,7 +1228,8 @@ export const store = createStore('convo', {
     // Where work goes by default in the conversation across chats. Voice off: the selected chat. Voice on: a changed selection is
     // told to the server (`convo.work`), lightly debounced and never while the conversation starts or re-attaches.
     noteWork() {
-        if (!this.across) return;
+        // A chat's own conversation follows the user too: while it runs, the chat they open is where its work goes.
+        if (!this.across && !this.session) return;
         if (!this.session) { if (!this.busy) { this.work = getCurrentContextId() || ''; this.workName = hostChatName(this.work); } return; }
         if (this.busy || reattaching || this.selected === workAsked) return;
         clearTimeout(workTimer);
@@ -974,7 +1237,7 @@ export const store = createStore('convo', {
     },
     async sendWork() {
         const chat = getCurrentContextId() || '', session = this.session;
-        if (workSending || !session || this.busy || reattaching || !this.across || chat === workAsked) return false;
+        if (workSending || !session || this.busy || reattaching || chat === workAsked) return false;
         workSending = true;
         try {
             const result = await request('work', { ...identity(), chat });
@@ -994,6 +1257,62 @@ export const store = createStore('convo', {
     jobChat(job) { return this.across && job ? (jobChats.get(job.id) || hostChatName(job.target)) : ''; },
     async mountPanel() { this.panelOpen = true; if (!this.active) this.target = this.idleTarget(); this.syncTargetName(); await this.refresh(); await this.history(); },
     unmountPanel() { this.panelOpen = false; },
+    bindPanelOrb(element) { panelOrb = element || null; watchOrbPlace(panelOrb); if (panelOrb) { updateOrb(); queuePlace(); } },
+    queuePlaceOrb() { queuePlace(); },
+    // The ready page: no conversation and nothing said in this chat yet. The orb rests there, large; otherwise beside the controls.
+    get resting() { return !(this.active || this.busy) && !this.visibleEvents.length && !this.draft; },
+    // The one quiet line under the controls. Whether the microphone is on is the mute button's and the status chip's to say.
+    get hintText() {
+        if (this.note || this.waiting) return this.note || this.waiting;
+        if (this.dictating) return 'Dictating · click the composer orb to finish, Escape cancels';
+        if (this.active) return this.settings?.remote_processing ? 'Remote processing configured' : '';
+        if (this.busy || this.resting) return '';
+        return this.settings?.ai_link_development_mode ? 'Voice idle · development mode' : 'Click the orb to start a conversation';
+    },
+    orbFloating: readFloat().floating === true,
+    toggleFloat() { this.orbFloating = !this.orbFloating; saveFloat(); updateOrb(); },
+    // ---- the preview
+    previewFlash: false, previewPlace: readPreviewPlace(),
+    get previewStyle() { const place = this.previewPlace; return place ? `right:${place.right}px;bottom:${place.bottom}px` : ''; },
+    get canPopPreview() { return typeof globalThis.document?.pictureInPictureEnabled === 'boolean' ? globalThis.document.pictureInPictureEnabled : false; },
+    attachPreview(video, camera, screen) {
+        if (!video) return;
+        if (!camera && !screen) { try { video.srcObject = null; } catch { /* already gone */ } return; }
+        const which = camera && screen ? previewShows : camera ? 'camera' : 'screen';
+        const stream = which === 'camera' ? cameraStream : screenStream;
+        try { if (video.srcObject !== stream) { video.srcObject = stream; void video.play?.()?.catch?.(() => {}); } } catch { /* the preview is optional */ }
+    },
+    // Both are shared: the preview shows one of them, and this switches to the other.
+    previewSwap() {
+        previewShows = previewShows === 'camera' ? 'screen' : 'camera';
+        this.attachPreview(globalThis.document?.querySelector?.('.convo-preview-video'), this.cameraShared, this.screenShared);
+    },
+    async previewPop(video) {
+        try {
+            if (globalThis.document?.pictureInPictureElement) await globalThis.document.exitPictureInPicture();
+            else await video?.requestPictureInPicture?.();
+        } catch { this.say?.('The preview could not be opened in its own window here.'); }
+    },
+    // Dragged by pointer inside the panel; where it was left is kept for this browser.
+    previewGrab(event, element) {
+        if (!element || event.button > 0 || event.target?.closest?.('button')) return;
+        const panel = element.closest('.convo-panel'), box = element.getBoundingClientRect(), outer = panel?.getBoundingClientRect?.();
+        if (!outer) return;
+        previewDrag = { x: event.clientX, y: event.clientY, right: outer.right - box.right, bottom: outer.bottom - box.bottom, maxRight: outer.width - box.width, maxBottom: outer.height - box.height };
+        const move = moved => {
+            if (!previewDrag) return;
+            const right = Math.max(0, Math.min(previewDrag.maxRight, previewDrag.right - (moved.clientX - previewDrag.x)));
+            const bottom = Math.max(0, Math.min(previewDrag.maxBottom, previewDrag.bottom - (moved.clientY - previewDrag.y)));
+            this.previewPlace = { right: Math.round(right), bottom: Math.round(bottom) };
+        };
+        const drop = () => {
+            globalThis.removeEventListener?.('pointermove', move); globalThis.removeEventListener?.('pointerup', drop); globalThis.removeEventListener?.('pointercancel', drop);
+            previewDrag = null;
+            try { globalThis.localStorage?.setItem(PREVIEW_KEY, JSON.stringify(this.previewPlace)); } catch { /* kept for this page only */ }
+        };
+        globalThis.addEventListener?.('pointermove', move); globalThis.addEventListener?.('pointerup', drop); globalThis.addEventListener?.('pointercancel', drop);
+        event.preventDefault?.();
+    },
     get enabled() { return !!this.settings?.enabled; },
     get active() { return !!this.session; },
     async refresh() {
@@ -1174,6 +1493,7 @@ export const store = createStore('convo', {
                     if (event.type === 'action.pending') { showAction(event); return; }
                     if (event.type === 'action.resolved') { if (event.id) clearAction(String(event.id)); return; }
                     if (event.type === 'ui.open') { void answerOpen(event); return; }
+                    if (event.type === 'ui.setting') { void answerSetting(event); return; }
                     // The spoken notice of a finished task could not be spoken: it is offered again (the server bounds how often).
                     if (event.type === 'notice_retry') { if (event.job_id) noticeSeen.delete(String(event.job_id)); return; }
                 }
@@ -1262,7 +1582,7 @@ export const store = createStore('convo', {
             const choices = readChoices(this.soundInput());
             audioMode = phoneAudioMode({ phone: isPhone(), devices: await listDevices(), override: choices.phone_mode });
             const sound = this.soundValues(), key = this.soundKey();
-            ownedAudio = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            ownedAudio = new AudioSession({ voiceMuted: this.voiceMuted, muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 echoState: echoByMode.get(audioMode.mode) ?? null, page: pageAudio(), processing: captureProcessing(audioMode.mode, choices), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },
@@ -1381,7 +1701,14 @@ export const store = createStore('convo', {
         try {
             const media = globalThis.navigator?.mediaDevices;
             if (!media?.getUserMedia) throw new Error('This browser cannot share a camera here.');
-            const stream = await media.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+            // The camera chosen under Audio & Video; one that is gone (unplugged, another browser profile) falls back to the default.
+            const size = { width: { ideal: 1280 }, height: { ideal: 720 } }, chosen = readPicture().camera;
+            let stream = null;
+            if (chosen) stream = await media.getUserMedia({ video: { ...size, deviceId: { exact: chosen } }, audio: false }).catch(error => {
+                if (error?.name === 'OverconstrainedError' || error?.name === 'NotFoundError') return null;
+                throw error;
+            });
+            if (!stream) stream = await media.getUserMedia({ video: size, audio: false });
             const video = document.createElement('video');
             video.muted = true; video.playsInline = true; video.srcObject = stream;
             await video.play?.().catch(() => {});
@@ -1543,7 +1870,7 @@ export const store = createStore('convo', {
             if (attempt !== generation) return;
             const sound = this.soundValues();
             // The same page output and the same phone audio mode as the conversation it continues (the mode is fixed per conversation).
-            const replacement = new AudioSession({ muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
+            const replacement = new AudioSession({ voiceMuted: this.voiceMuted, muted: this.micMuted, maximum: this.settings.max_audio_seconds, deviceId: binding.device()?.deviceId, echoGuard: sound.echo_guard, echoState, sound, onMeter: meterReading, onMicrophone: microphoneIssue,
                 page: pageAudio(), processing: captureProcessing(audioMode.mode, readChoices(this.soundInput())), onOutput: outputNotice,
                 onStart: () => beginCandidate(attempt),
                 onProbe: (value, meta) => { if (!this.settings.text_input_required) void sendCandidate(value, attempt, false, meta); },

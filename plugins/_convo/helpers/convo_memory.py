@@ -48,19 +48,49 @@ def tokens(value, ratio=BYTES_PER_TOKEN):
     return int(math.ceil(len(text.encode('utf-8')) / max(0.5, float(ratio or BYTES_PER_TOKEN))))
 
 
+# The compaction threshold (settings `compaction.trigger`): how full the context window gets before the older part of the
+# conversation is summarised. 0.7 is the measured default (the bands below at their original sizes); the bands scale with it.
+TRIGGER_MIN, TRIGGER_MAX, TRIGGER_DEFAULT = 0.3, 0.9, 0.7
+
+
+def threshold(value):
+    """The threshold in effect for any stored value: out of range is clamped, anything that is not a number is the default."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return TRIGGER_DEFAULT
+    if isinstance(value, bool) or not math.isfinite(number) or number <= 0:
+        return TRIGGER_DEFAULT
+    return min(TRIGGER_MAX, max(TRIGGER_MIN, number))
+
+
+def _whole(value, default, floor=0):
+    """A stored count as an int, or the default when it is missing or not a usable number (a budget is never refused)."""
+    try:
+        number = float(value)
+        return max(floor, int(number)) if math.isfinite(number) and number > 0 and not isinstance(value, bool) else default
+    except (TypeError, ValueError):
+        return default
+
+
 class Budget:
     """The parts of the context window, scaled from the window in effect (24k on the test host gives the plan's numbers). The bands
     leave room for what every request also carries: the answer (`output_reserve`), this turn's audio (`audio_reserve`, passed by
     the turn engine), the fixed rules (STABLE_TOKENS) and the standing notes, so a small window never squeezes the fixed rules."""
 
     def __init__(self, settings):
-        self.window = int(settings.get('context_tokens') or 16384)
-        self.reserve = int(settings.get('output_reserve') or 1024)
-        self.recent = max(1, int(settings.get('recent_exchanges') or 6))
-        room = max(1024, self.window - self.reserve - int(settings.get('audio_reserve') or 0) - STABLE_TOKENS - STANDING_TOKENS)
+        settings = settings if isinstance(settings, dict) else {}
+        self.window = _whole(settings.get('context_tokens'), 16384, 1024)
+        self.reserve = _whole(settings.get('output_reserve'), 1024)
+        self.recent = _whole(settings.get('recent_exchanges'), 6, 1)
+        self.threshold = threshold(settings.get('trigger'))
+        scale = self.threshold / TRIGGER_DEFAULT
+        room = max(1024, self.window - self.reserve - _whole(settings.get('audio_reserve'), 0) - STABLE_TOKENS - STANDING_TOKENS)
         self.chapters_max = int(min(self.window * 0.125, room * 0.25))      # 3k of 24k: past this the oldest half is condensed
-        self.verbatim_high = int(min(self.window * 0.35, room - self.chapters_max))   # 8.5k of 24k: past this a chapter is written
-        self.verbatim_low = int(min(self.window * 0.21, self.verbatim_high * 0.6))   # 5k of 24k: where a chapter brings it back to
+        # At the default threshold: 8.5k of 24k word for word before a chapter is written, which brings it back to 5k. Whatever
+        # the threshold, the word-for-word part never takes the room the answer, the audio and the fixed rules need.
+        self.verbatim_high = max(256, int(min(self.window * 0.35 * scale, room - self.chapters_max)))
+        self.verbatim_low = int(min(self.window * 0.21 * scale, self.verbatim_high * 0.6))
         self.condensed = max(150, int(self.window * 0.025))
 
 

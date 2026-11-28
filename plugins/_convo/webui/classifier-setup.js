@@ -17,7 +17,7 @@ const GROUP_OF = { decision_local: 'local', decision_cloud: 'cloud', chat: 'clou
 export const KIND_LABELS = { auto: 'Auto', decision: 'Decision model (System One protocol)', chat: 'Chat model (JSON verdict)' };
 export const CARD_PATHS = {
     'roles.classifier.provider': 'Provider', 'roles.classifier.model': 'Model name', 'roles.classifier.api_base': 'API base URL',
-    'roles.classifier.url': 'Server URL', 'roles.classifier.key_source': 'Key source', 'roles.classifier.remote': 'Allow remote processing',
+    'roles.classifier.url': 'Server URL', 'roles.classifier.key_source': 'Key source', 'roles.classifier.remote': 'Consent for an address outside your network',
     'roles.classifier.token_env': 'Credential environment reference', 'roles.classifier.capabilities.audio_input': 'Accepts audio input',
     'roles.classifier.context_window': 'Context window', 'roles.classifier.kind': 'Classifier type', 'decider.source': 'Use System One’s decider',
 };
@@ -134,7 +134,7 @@ export const classifierSetup = {
     classifierBaseProblem() {
         const view = this.classifierView(), info = this.classifierProviderInfo();
         if (view.provider && info.selectable && !info.url) return `Enter the API base URL: ${info.label} has no default address.`;
-        return addressProblem(this.classifierUrl(), view.remote === true);
+        return addressProblem(this.classifierUrl(), true);
     },
 
     classifierContextProblem() {
@@ -199,14 +199,14 @@ export const classifierSetup = {
         if (!provider) return { provider: 'other', api_base: (view.url || '').trim(), model: (view.model || '').trim(), kind: 'chat' };
         return { provider, api_base: (view.api_base || '').trim(), model: (view.model || '').trim(), kind: view.kind || 'auto' };
     },
-    // Check server goes by the SAVED remote-processing consent (the server reads it), so a consent still unsaved is said here.
+    // Check server goes by the SAVED settings (the server reads the consent there), so an outside address not saved yet is said here.
     classifierCheckProblem() {
         const info = this.classifierProviderInfo(), url = this.classifierUrl();
         if (!info.selectable) return `${info.label} cannot be used: ${info.reason}`;
         if (!url) return this.classifierView().provider ? this.classifierBaseProblem() : 'Enter the server URL first.';
-        const shown = addressProblem(url, this.classifierView().remote === true);
+        const shown = addressProblem(url, true);
         if (shown) return 'Refused: ' + shown;
-        if (this.classifierSaved().remote !== true && addressProblem(url, false)) return 'Save first: Check server uses the saved remote-processing consent.';
+        if (this.classifierSaved().remote !== true && addressProblem(url, false)) return 'Save first: an address outside your network is checked once it is saved.';
         return '';
     },
     async classifierCheck() {
@@ -225,6 +225,7 @@ export const classifierSetup = {
         } catch (error) { check = { state: 'refused', message: error?.message || String(error) }; }
         const stale = JSON.stringify(this.classifierCheckRequest()) !== JSON.stringify(request) || this.classifierUsesSystemOne();
         Object.assign(this.ui.classifier, { checking: false, check: stale ? null : check });
+        if (!stale && await this.connectionAutoFix('classifier')) return this.ui.classifier.check?.state === 'decision' || this.ui.classifier.check?.state === 'chat';
         return !stale && (check.state === 'decision' || check.state === 'chat');
     },
     classifierChecking() { return this.ui?.classifier?.checking === true; },

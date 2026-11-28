@@ -9,7 +9,8 @@ never turns a question or a refusal into a run, and it holds for every way somet
 - a question still open from before planning (dropped: `begin` at once, convo_voice_tools.pending when planning was switched on elsewhere);
 - tasks handed over earlier that have not started (convo_planning.held, read by the dispatcher).
 
-Two things run at once because they start nothing: the voice's speed, and stopping a task (or a timer) the user's own words ask to stop.
+Two things run at once because they start nothing: how the two of them talk (the voice's speed; muting the microphone or the voice,
+sharing the camera: CONVERSATION_SETTINGS), and stopping a task (or a timer) the user's own words ask to stop.
 Planning goes on by the user's word, the panel or a hotkey; the model may switch it on itself, since it only makes Convo more careful. What
 takes something from the user's hands needs their word, too: ending planning, putting the plan in hand away for another one, going on with a
 plan whose task has not started (it is taken back), and handing a plan over. The model's call is not enough, nor that some request was heard:
@@ -180,6 +181,10 @@ def ask_words(name, args, plan=None):
     return 'Finish the plan' if (plan or {}).get('status') == 'open' else 'Hand over the plan', '; '.join(part for part in parts if part)[:300]
 
 
+# change_setting's settings that only change how the conversation goes on (this page's microphone, voice and camera), not anything saved.
+CONVERSATION_SETTINGS = frozenset({'microphone', 'voice', 'camera'})
+
+
 async def decide(rt, state, session, turn, name, args, how, *, conversing, followup=False, granted=False, decision=None, audio=None,
                  transcript=None, floor=False):
     """What it takes to run a call that is not read-only: 'run', 'confirm' or 'refuse', after convo_policy.authorize said `how`.
@@ -219,8 +224,9 @@ async def decide(rt, state, session, turn, name, args, how, *, conversing, follo
             return 'run'
         # (Planning may have been switched on in the panel while the words were read.)
         return 'run' if await plainly_asked() and on(rt, state, session) is None else 'confirm'
-    if name == 'voice_speed':
-        return how
+    if name == 'voice_speed' or (name == 'change_setting' and str((args or {}).get('setting')) in CONVERSATION_SETTINGS):
+        # How the two of them talk, not work: its own rule decides (a question to it that the user has just agreed to runs).
+        return 'run' if granted and how == 'confirm' else how
     if how == 'refuse' or followup or not conversing:
         return 'refuse'
     if granted:

@@ -37,7 +37,8 @@ export const store = createStore('convoSetup', compose({
     providers: [], native: {}, deciderReference: null, classifierCatalog: null, inConfigModal: false,
     profiles: [],                                       // agent profiles for "Speak as profile" (setup_read `profiles`: [{id, title}])
     stale: false, conflicts: [], theirs: null, revisionSeen: '',
-    section: 'Connections', sections: ['Connections', 'Conversation', 'Voice & Audio'],   // tuning lives in the developer diagnostics panel
+    spokenNameKept: false,                                 // the older spoken-name field shows only while a name is saved
+    section: 'Connections', sections: ['Connections', 'Conversation', 'Audio & Video', 'Advanced'],   // tuning lives in the developer diagnostics panel
     roles: ['conversation', 'classifier', 'tts'], choices: {}, searches: {}, error: '', message: '',
     importDocument: null, importPreview: null, importPaths: [],
     network: {}, certificates: {}, keyBound: {},       // where Agent Zero runs, remembered certificates, the address each saved key is for
@@ -45,8 +46,28 @@ export const store = createStore('convoSetup', compose({
     get dirty() { return !!this.config && (JSON.stringify(this.config) !== this.baseline || Object.keys(this.keys).length > 0); },
     // System One's own decider as the server describes it (decider_reference), with its verdict `audio`.
     get decider() { return this.deciderReference || { installed: false, enabled: false, consumer_enabled: false, registered: [], reasons: [] }; },
-    setKey(role, value) { if (value) this.keys[role] = value; else delete this.keys[role]; },
-    clearKey(role) { this.keys[role] = ''; },
+    setKey(role, value) { delete this.revealed[role]; if (value) this.keys[role] = value; else delete this.keys[role]; },
+    clearKey(role) { delete this.revealed[role]; this.keys[role] = ''; },
+    // ---- the eye on a key field. A key being typed is simply shown. A saved key (Convo's own, write-only otherwise) is asked
+    // for on this click only: the whole key when Agent Zero has a login set, else its last four characters. Hidden again by a
+    // second click, by typing, and whenever the settings are loaded or reset; never stored and never part of a save.
+    revealed: {},
+    keyShown(role) { return this.revealed[role]?.on === true; },
+    keyValue(role) { return this.keys[role] || (this.revealed[role]?.on ? this.revealed[role].key || '' : ''); },
+    keyNote(role) { return this.revealed[role]?.note || ''; },
+    async toggleKey(role) {
+        if (this.revealed[role]?.on || this.revealed[role]?.note) { delete this.revealed[role]; return false; }
+        if (this.keys[role]) { this.revealed[role] = { on: true, key: '', note: '' }; return true; }
+        if (!this.credentials?.[role]) { this.revealed[role] = { on: false, key: '', note: 'No key is saved for this card.' }; return false; }
+        try {
+            const result = await this.api('key_reveal', { role });
+            if (this.keys[role]) return false;                                  // typed meanwhile: that is what the field shows
+            if (result?.whole && typeof result.key === 'string' && result.key) this.revealed[role] = { on: true, key: result.key, note: '' };
+            else this.revealed[role] = { on: false, key: '', note: (result?.ending ? `The saved key ends in ${result.ending}. ` : 'A key is saved. ')
+                + 'The whole key is shown only when Agent Zero has a login set, because without one anyone who can open this page could read it.' };
+        } catch (error) { this.revealed[role] = { on: false, key: '', note: 'The key could not be shown: ' + (error?.message || String(error)) }; }
+        return this.keyShown(role);
+    },
     label(role) { return {conversation:'Conversation model', classifier:'Classifier', tts:'Speech output'}[role]; },
     isDiscovering(role) { return !!this.choices[role]?.busy; },
     // Which controls a role shows. Speech output asks its own card (speechControls); the other roles are one endpoint each.
@@ -69,7 +90,7 @@ export const store = createStore('convoSetup', compose({
         this.classifierCatalog = result.classifier_catalog || null;
         this.profiles = Array.isArray(result.profiles) ? result.profiles.filter(item => item && typeof item.id === 'string').slice(0, 200) : [];
         this.takeFacts(result);
-        this.keys = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
+        this.keys = {}; this.revealed = {}; this.fixes = {}; this.error = ''; this.stale = false; this.conflicts = []; this.theirs = null; this.revisionSeen = '';
     },
     takeFacts(result) {
         this.network = result.network || this.network || {};
@@ -141,12 +162,15 @@ export const store = createStore('convoSetup', compose({
     discard() {
         if (!this.baseline) return;
         this.config = fillDefaults(clone(JSON.parse(this.baseline)));
-        this.keys = {}; this.error = ''; this.message = '';
+        this.keys = {}; this.revealed = {}; this.error = ''; this.message = '';
     },
     async save() {
         if (this.busy || !this.config) return false;
         this.busy = true; this.error = '';
         if (patching) await patching;                       // a patch in flight lands first, so this save carries the revision it made
+        // The address is the consent (no switch): each role's stored flag follows its address before the settings are sent.
+        this.conversationRemoteSync?.(); this.speechRemoteSync?.();
+        if (!this.classifierUsesSystemOne?.()) this.classifierRemoteSync?.();
         const submitted = clone(this.config), keys = clone(this.keys);
         let finished; saving = new Promise(resolve => { finished = resolve; });
         try {
@@ -196,13 +220,16 @@ export const store = createStore('convoSetup', compose({
         const id = asked[role] = (asked[role] || 0) + 1;
         this.choices[role] = {...this.choices[role], busy:true};
         const provider = clone(this.config.roles[role]), draft = this.keys[role];
+        let answered = false;
         try {
             const result = await this.api(test ? 'connection_test' : 'discover', {role, provider, ...(draft ? {draft_key: draft} : {})});
             if (id !== asked[role] || addressOf(provider) !== addressOf(this.config.roles[role])) return;
             this.choices[role] = {...result, busy:false};
             if ('certificate' in result) this.certificates = {...this.certificates, [role]: result.certificate};
+            answered = true;
         } catch (error) { if (id === asked[role]) { this.choices[role] = {...this.choices[role], verification:{state:'error', message:error.message}}; this.fail(error); } }
         finally { if (id === asked[role]) this.choices[role] = {...this.choices[role], busy:false}; }
+        if (answered) await this.connectionAutoFix(role);
     },
 
     // ---- One connection's extras, the same on every card: where "localhost" goes, the certificate remembered for this server
@@ -222,6 +249,50 @@ export const store = createStore('convoSetup', compose({
         return this.network?.in_docker ? `Inside Agent Zero’s container ${host} is the container itself, and host.docker.internal is not available here: use this computer’s LAN address.` : '';
     },
     connectionSuggestion(role) { return this.connectionResult(role).suggestion || null; },
+    // ---- Fixes Convo applies by itself after a check, each said in one quiet line with Undo. Only the two that cannot be a
+    // different server: the same computer answers on this provider's usual port (suggestion kind 'port'), and the server lists
+    // the model under a name that differs only in capital letters. Each is tried once per address or name, so Undo stays undone
+    // (the one-click offer then shows again). A changed certificate, a key for another machine and the "this computer answers
+    // privately" address stay a click.
+    fixes: {},
+    connectionAddress(role) { return (role === 'conversation' ? this.conversationUrl?.() : role === 'classifier' ? this.classifierUrl?.() : this.config?.roles?.[role]?.url) || ''; },
+    connectionModel(role) { return (role === 'classifier' ? this.classifierView?.()?.model : this.config?.roles?.[role]?.model) || ''; },
+    connectionUse(role, url, autosave) {
+        return role === 'conversation' ? this.conversationUseAddress(url, autosave) : role === 'classifier' ? this.classifierUseAddress(url) : this.speechUseAddress(url);
+    },
+    connectionFixNote(role) {
+        const fix = this.fixes[role];
+        if (!fix?.text) return '';
+        return ('address' in fix.to ? fix.to.address === this.connectionAddress(role) : fix.to.model === this.connectionModel(role)) ? fix.text : '';
+    },
+    async connectionAutoFix(role) {
+        if (!this.config?.roles?.[role]) return '';
+        const tried = this.fixes[role]?.tried || [], autosave = this.ui?.[role]?.autosave === true, hint = this.connectionSuggestion(role);
+        if (hint?.kind === 'port' && typeof hint.url === 'string' && hint.url && !tried.includes(hint.url)) {
+            const from = this.connectionAddress(role);
+            this.fixes[role] = { tried: [...tried, hint.url], from: { address: from }, to: { address: hint.url },
+                                 text: `Using ${hint.url}: nothing answers at ${from}, and this server’s usual port does.` };
+            await this.connectionUse(role, hint.url, autosave);
+            return 'address';
+        }
+        const close = role === 'tts' ? '' : this[role + 'CloseMatch']?.();
+        if (close && !tried.includes('model:' + close)) {
+            const from = this.connectionModel(role);
+            this.fixes[role] = { tried: [...tried, 'model:' + close], from: { model: from }, to: { model: close },
+                                 text: `Using “${close}”, the server’s spelling of the model name you entered.` };
+            this[role + 'ChooseModel'](close, autosave);
+            return 'model';
+        }
+        return '';
+    },
+    async connectionFixUndo(role) {
+        const fix = this.fixes[role], autosave = this.ui?.[role]?.autosave === true;
+        if (!fix?.from) return false;
+        this.fixes[role] = { tried: fix.tried };
+        if ('address' in fix.from) await this.connectionUse(role, fix.from.address, autosave);
+        else this[role + 'ChooseModel'](fix.from.model, autosave);
+        return true;
+    },
     certificateChanged(role) { return this.connectionResult(role).certificate_changed || null; },
     certificateNote(role) {
         const result = this.connectionResult(role), certificate = 'certificate' in result ? result.certificate : this.certificates?.[role];
@@ -302,7 +373,7 @@ export const store = createStore('convoSetup', compose({
                 if (value && typeof value === 'object' && !Array.isArray(value)) { target[key] ||= {}; reset(target[key],value); }
                 else target[key] = clone(value);
             } };
-            reset(this.config, defaults); this.keys = {};
+            reset(this.config, defaults); this.keys = {}; this.revealed = {};
         };
     },
 }, conversationSetup, classifierSetup, speechSetup, dictationSetup, synthesisSetup, voiceToolsSetup, hotkeysSetup));

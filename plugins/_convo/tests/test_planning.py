@@ -596,10 +596,11 @@ class Floor(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     ARGUMENTS = {'remember': {'text': 'x'}, 'delegate_task': {'task': 'x'}, 'steer_task': {'change': 'x'}, 'cancel_task': {}, 'set_timer': {'minutes': 5},
-                 'open': {'what': 'settings'}, 'voice_speed': {'speed': 'slower'}}
+                 'open': {'what': 'settings'}, 'voice_speed': {'speed': 'slower'}, 'change_setting': {'setting': 'microphone', 'value': 'off'}}
     CALLS = [(name, args) for name, args in ARGUMENTS.items()] + [
         ('voice_mode', {'mode': 'conversation'}), ('voice_mode', {'mode': 'conversation', 'plan': 'keep'}), ('voice_mode', {'mode': 'conversation', 'plan': 'finish'}),
-        ('voice_mode', {'mode': 'conversation', 'plan': 'hand_over'}), ('voice_mode', {'mode': 'planning'}), ('voice_mode', {'mode': 'planning', 'plan': 'new'})]
+        ('voice_mode', {'mode': 'conversation', 'plan': 'hand_over'}), ('voice_mode', {'mode': 'planning'}), ('voice_mode', {'mode': 'planning', 'plan': 'new'}),
+        ('change_setting', {'setting': 'answer_length', 'value': 'concise'})]                  # a saved setting: asked about like any change
 
     def test_the_table_names_every_tool_that_is_not_read_only(self):
         self.assertEqual({name for name, _ in self.CALLS}, {name for name in tools.CATALOG if tools.kind(name) != 'read'})
@@ -640,8 +641,8 @@ class Floor(unittest.IsolatedAsyncioTestCase):
             if modes.starts(name, args) and not puts_away:                             # it only makes Convo more careful
                 self.assertEqual(final, 'run' if conversing or convo_policy.verified(decision) else 'refuse', where)
                 continue
-            if name == 'voice_speed':
-                self.assertEqual(final, how, where)
+            if name == 'voice_speed' or (name == 'change_setting' and args['setting'] in modes.CONVERSATION_SETTINGS):
+                self.assertEqual(final, how, where)                                    # how the two of them talk: its own rule
                 continue
             if followup or not conversing or how == 'refuse':
                 self.assertEqual(final, 'refuse', where)                               # nothing widens a refusal

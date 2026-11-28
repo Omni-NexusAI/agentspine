@@ -92,13 +92,21 @@ CATALOG = {
         'group': 'tasks', 'kind': 'work', 'small': True, 'label': 'task hand-over', 'activity': 'Starting a task in Agent Zero…',
         'ask': 'Hand over a task',
         'description': "Hand a substantial task to the agent of an Agent Zero chat (the user may call it the main chat or the "
-                       "agent): anything that needs code, files, browsing several pages or many steps. It is queued and its "
-                       "result is reported later; never say it is done, or invent its result, before then.",
+                       "agent): anything that needs code, files, browsing several pages or many steps, and anything the user asks "
+                       "for that none of your own tools can do or reach (the user's own computer and its programs, for example: "
+                       "the agent has tools you do not). It is queued and its result is reported later; never say it is done, or "
+                       "invent its result, before then.",
         'primary': 'task', 'arguments': {'task': _text('The task, stated completely so it can be done without this conversation.',
                                                        limit=16000),
                                          'chat': _text('Only when the user names a particular chat by its title: that title, or "new" '
                                                        'when they ask for a new chat. "The main chat" and "the agent" are not titles: '
-                                                       'leave this out for them.', required=False, limit=200)}},
+                                                       'leave this out for them.', required=False, limit=200),
+                                         'relation': _choice("How this task relates to work the chat's agent is already doing. "
+                                                             "separate: it has nothing to do with that work and needs none of its "
+                                                             "results, so it may run at the same time in a chat of its own. after: it "
+                                                             "builds on that work, needs its result, or touches the same files, so it "
+                                                             "waits for it. Leave it out when nothing is running or you are not sure.",
+                                                             ('separate', 'after'), required=False)}},
     'steer_task': {
         'group': 'tasks', 'kind': 'work', 'small': False, 'label': 'task change', 'activity': 'Passing the change on…',
         'ask': 'Change work in progress',
@@ -128,14 +136,14 @@ CATALOG = {
                                          'kind': _choice('Whether it is a task or a timer, when the user says which.', ('task', 'timer'),
                                                          required=False)}},
     'system_status': {
-        'group': 'system', 'kind': 'read', 'small': True, 'label': 'system check', 'activity': 'Checking the system…',
+        'group': 'system', 'kind': 'read', 'small': True, 'own': True, 'label': 'system check', 'activity': 'Checking the system…',
         'description': "Check the computer Agent Zero runs on and the voice services: processor, memory, disk, graphics card, "
                        "uptime and busiest programs (machine); the models, speech server, classifier and search engines "
                        "(services); the network (network). Use it when the user asks how the system or a service is doing.",
         'primary': 'about', 'arguments': {'about': _choice('What to check; leave out for everything.',
                                                            ('machine', 'services', 'network', 'all'), required=False)}},
     'world_time': {
-        'group': 'system', 'kind': 'read', 'small': False, 'label': 'time lookup', 'activity': 'Checking the time…',
+        'group': 'system', 'kind': 'read', 'small': False, 'own': True, 'label': 'time lookup', 'activity': 'Checking the time…',
         'description': "The current date and time in another place, from the system's time-zone data (no search needed). Use it "
                        "whenever the user asks the time or date somewhere else.",
         'primary': 'place', 'arguments': {'place': _text('A city or a time zone, for example Tokyo or Europe/Paris.', limit=120)}},
@@ -167,11 +175,17 @@ CATALOG = {
                       'from_line': _number('For read: the line to start at, when a file is long.', 1, 1000000, required=False)}},
     'open': {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'opening', 'activity': 'Opening it…',
-        'description': "Open something in Agent Zero's interface for the user: a chat, Settings, the file browser, or a web page. "
-                       "Use it when the user asks to open, show or go to one of these.",
-        'primary': 'target', 'arguments': {'what': _choice('What to open.', ('chat', 'settings', 'files', 'page')),
-                                           'target': _text('For a chat: its name. For a page: its full address.', required=False,
-                                                           limit=2000)}},
+        'description': "Open or close something on the user's screen: a chat, Agent Zero's Settings, the file browser, a web "
+                       "page, or one of the voice agent's own places: its settings (voice_settings; the target may name the tab: "
+                       "connections, conversation, audio or advanced), the microphone and speaker controls (sound), Voice Studio "
+                       "(voice_studio) or the developer diagnostics (diagnostics). Use it when the user asks to open, show, go "
+                       "to or close one of these. To close a place, use close with the place as the target.",
+        'primary': 'target', 'arguments': {'what': _choice('What to open, or close to close a place.',
+                                                           ('chat', 'settings', 'files', 'page', 'voice_settings', 'sound', 'voice_studio',
+                                                            'diagnostics', 'close')),
+                                           'target': _text('For a chat: its name. For a page: its full address. For voice_settings: '
+                                                           'optionally the tab. For close: voice_settings, sound, voice_studio, '
+                                                           'diagnostics or settings.', required=False, limit=2000)}},
     'voice_speed': {
         'group': 'interface', 'kind': 'quick', 'small': False, 'label': 'voice speed', 'activity': 'Changing the voice…',
         'description': "Speak slower, faster or at the normal speed for the rest of this conversation, when the user asks.",
@@ -193,6 +207,20 @@ CATALOG = {
                                       ('new', 'finish', 'keep', 'hand_over'), required=False),
                       'chat': _text('For hand_over: a chat the user names by its title.', required=False, limit=200),
                       'change': _text('For hand_over, when they agree but with a change: the change.', required=False, limit=500)}},
+    'change_setting': {
+        'group': 'interface', 'kind': 'work', 'small': False, 'label': 'setting change', 'activity': 'Changing a setting…',
+        'ask': 'Change a voice setting',
+        'description': "Change one of the voice agent's own settings when the user asks for it: mute or unmute the microphone "
+                       "(microphone: off mutes it; once muted, the user unmutes with the button), silence or restore your spoken "
+                       "voice while your replies still appear as text (voice), start or stop sharing the camera (camera), how "
+                       "long your answers are (answer_length: concise, balanced or detailed), how often task progress is spoken "
+                       "(spoken_updates: completion, milestones or frequent), and the developer options (developer_mode, "
+                       "diagnostic_events, rejected_replies). Nothing else can be changed by voice: for anything else, open the "
+                       "voice settings for the user instead.",
+        'primary': 'setting', 'arguments': {'setting': _choice('Which setting.', ('microphone', 'voice', 'camera', 'answer_length',
+                                                                                   'spoken_updates', 'developer_mode',
+                                                                                   'diagnostic_events', 'rejected_replies')),
+                                            'value': _text('on or off; for answer_length and spoken_updates one of their values.', limit=40)}},
     'listen_back': {
         'group': 'senses', 'kind': 'read', 'small': False, 'label': 'listening back', 'activity': 'Listening again…',
         'description': "Hear again the last few things the microphone picked up (the user's recent speech and the sounds around "
@@ -374,14 +402,17 @@ def summary(name, arguments, limit=300):
     return '; '.join(parts)[:limit]
 
 
-def tool_mode(capabilities, record=None):
+def tool_mode(capabilities, record=None, override=False):
     """'native' when the conversation model's server takes tools, else 'text': the same tools described in the system text with a
-    written call format Convo reads back (parse_text_call). A request never carries both. The measured record (`measured`,
-    Test connection's probe: `tool_mode` 'native' | 'text' | 'ignored') decides; the declared `tool_calls` checkbox is an override
-    that turns native tools on whatever was measured. Nothing measured and nothing declared: 'text'."""
-    if isinstance(capabilities, dict) and capabilities.get('tool_calls'):
-        return 'native'
-    return 'native' if isinstance(record, dict) and record.get('tool_mode') == 'native' else 'text'
+    written call format Convo reads back (parse_text_call). A request never carries both. The measured record (`measured`, the
+    connection check's probe: `tool_mode` 'native' | 'text' | 'ignored') decides. The declared `tool_calls` setting counts while
+    nothing is measured (the check writes it to match, so an older Convo reads the same), and with `override` (developer mode) it
+    turns native tools on whatever was measured. Nothing measured and nothing declared: 'text'."""
+    declared = isinstance(capabilities, dict) and bool(capabilities.get('tool_calls'))
+    measured = record.get('tool_mode') if isinstance(record, dict) else None
+    if measured in ('native', 'text', 'ignored') and not (override and declared):
+        return 'native' if measured == 'native' else 'text'
+    return 'native' if declared else 'text'
 
 
 # The standalone fork's tool-use hint (TOOL_USE_HINT), added to the rules whenever tools are offered.
@@ -389,8 +420,16 @@ HINT = ("When the user's request calls for one of your tools, briefly acknowledg
         "request (never a stock phrase), then call the tool right away in the same reply: do not describe what you could do and do not "
         "wait for another turn. Never invent a tool's result; answer from it when it arrives. After the USER and LANGUAGE lines, your "
         "reply is either your answer or a short acknowledgement followed by a tool call. When you need several look-ups, or the user "
-        "asked for several things, make those calls together in the same reply. Do quick things yourself with your tools; hand over "
-        "only work that needs many steps.")
+        "asked for several things, make those calls together in the same reply. Do quick things yourself with your tools. Hand "
+        "over work that needs many steps, and also anything the user asks for that none of your tools can do, or that a tool's "
+        "result shows it cannot do or see: say that you are handing it to the chat's agent, and call the hand-over in the same "
+        "reply. Never answer that something cannot be done while the hand-over could do it.")
+
+
+def own_reading(name):
+    """Whether a tool's result is Convo's own reading (the system check, the clock) rather than text written by someone else
+    (a web page, a chat, a memory). Only someone else's text can carry instructions, so only that closes a reply to actions."""
+    return bool(CATALOG.get(name, {}).get('own'))
 TEXT_FORMAT = ("Your tools are called in writing: to call one, write on a line of its own exactly "
                '<tool_call>{"name": "<tool>", "arguments": {"<argument>": "<value>"}}</tool_call> '
                "and nothing after it. The call is never spoken.")
@@ -532,7 +571,7 @@ SAFE_REASONS = {
 
 
 # ── Measured model capabilities (the image check) ───────────────────────────────────────────────────────────────────────────
-# Whether the conversation model accepts images is measured (Test connection's probe, change 1), never assumed, and kept as a
+# Whether the conversation model accepts images is measured (the connection check's probe), never assumed, and kept as a
 # record in Convo's data folder, not in the settings' `capabilities` (an older Convo rejects unknown capability keys, which would
 # break a rollback). Until a record says so, the camera tool is not offered.
 MEASURED = 'model_capabilities.json'
@@ -810,6 +849,7 @@ def results_in(history):
     """Whether earlier turns in `history` (convo_history turn contents) carry a tool's result: text that is not the user's words and
     may hold instructions, so starting work then needs the classifier's explicit request (api/realtime.py)."""
     return any(isinstance(turn, dict) and any(isinstance(entry, dict) and entry.get('name') and entry.get('result')
+                                              and not own_reading(entry.get('name'))          # Convo's own readings are not someone else's text
                                               for entry in (turn.get('tools') or [])[:HISTORY_LIMIT])
                for turn in history or ())
 

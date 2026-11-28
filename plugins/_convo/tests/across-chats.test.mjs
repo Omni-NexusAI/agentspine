@@ -137,18 +137,18 @@ test('A selection is not sent while the conversation starts, and several quick c
     assert.equal(sent('work').length, 1);                                                  // voice is off: there is nobody to tell
 });
 
-test('In a chat\'s own conversation a chat switch sends no `work`; "Use selected chat" still retargets as before', async () => {
+test('In a chat\'s own conversation a chat switch carries the conversation on and sends its work to the open chat; no button is needed', async () => {
     const { f, sent, select, header } = await rig({ scope: 'chat', chat: 'a' });
     await f.store.start();
     await select('b');
-    assert.equal(sent('work').length, 0);
-    assert.deepEqual([f.store.target, header(), f.store.canRetarget], ['a', 'Chat · Chat a', true]);   // not followed silently
     await f.store.sendWork();
-    assert.equal(sent('work').length, 0);
+    assert.deepEqual(sent('work').at(-1), { session_id: 's', epoch: 0, chat: 'b' });       // only where work goes
+    assert.deepEqual([f.store.target, f.store.canRetarget, sent('retarget').length, f.audios.length], ['a', false, 0, 1]);   // the same conversation, nothing rebuilt
+    assert.match(header(), /^Chat · Chat a · work goes to /);
     await f.store.retarget();
     assert.deepEqual(sent('retarget'), [{ session_id: 's', epoch: 0, target: 'b' }]);
-    assert.deepEqual([f.store.target, header(), f.store.canRetarget], ['b', 'Chat · Chat b', false]);
-    assert.equal(f.audios.length, 2);                                                      // the chat's own conversation is rebuilt, as before
+    assert.deepEqual([f.store.target, f.store.canRetarget], ['b', false]);                 // the explicit switch still exists for code that asks for it
+    assert.equal(f.audios.length, 2);
     await f.store.stop();
 });
 
@@ -256,11 +256,11 @@ test('"Take over here" says when the voice running elsewhere is the conversation
     assert.equal(f.store.ownerText, 'Voice is running on Chrome on Android (in another chat).');
 });
 
-test('The panel shows the chat line from the store, keeps "Use selected chat" for a chat\'s own conversation, and names a task\'s chat', () => {
+test('The panel shows the chat line from the store, has no "Use selected chat" button any more, and names a task\'s chat', () => {
     const html = readFileSync(new URL('../webui/main.html', import.meta.url), 'utf8');
     const line = html.slice(html.indexOf('<div class="convo-target">'), html.indexOf('</div>', html.indexOf('<div class="convo-target">')));
     assert.match(line, /<span class="convo-target-name"><span x-text="\$store\.convo\.targetPrefix"><\/span><strong x-text="\$store\.convo\.targetLabel"><\/strong><\/span>/);
-    assert.match(line, /x-show="\$store\.convo\.canRetarget" @click="\$store\.convo\.retarget\(\)"[^>]*>Use selected chat<\/button>/);
+    assert.doesNotMatch(html, /Use selected chat/);
     assert.doesNotMatch(html, /Select a chat to begin|Select or create a chat/);
     assert.match(html, /<span class="convo-activity-chat" x-show="\$store\.convo\.jobChat\(job\)" x-text="'in ' \+ \$store\.convo\.jobChat\(job\)"><\/span>/);
 });
@@ -287,43 +287,35 @@ test('The defaults keep the conversation with the selected chat and send unnamed
     assert.deepEqual([namespace.fillDefaults(older).conversation_scope, older.task_chat], ['chat', 'new']);   // a saved file from before the settings
 });
 
-test('The Conversation section has the two selects near its top, each with its options and hint, bound to the shared draft', async () => {
+test('The Advanced section has one switch for the conversation across chats; the task place shows only with it on', async () => {
     const shell = readFileSync(new URL('../webui/settings-controls.html', import.meta.url), 'utf8');
-    const start = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Conversation'" class="convo-stack">`);
-    const section = shell.slice(start, shell.indexOf(`section === 'Voice & Audio'`));
-    const scope = section.indexOf('<label>Conversation<select x-model="$store.convoSetup.config.conversation_scope">');
-    const tasks = section.indexOf('<label>Tasks with no chat named<select x-model="$store.convoSetup.config.task_chat">');
-    assert.ok(scope > 0 && tasks > scope);
-    assert.ok(tasks < section.indexOf('config.transcription_enabled'));                    // near the top: right after "Enable Convo"
-    assert.ok(section.indexOf('config.enabled"') < scope);
+    const start = shell.indexOf(`<div x-show="$store.convoSetup.section === 'Advanced'" class="convo-stack">`);
+    const section = shell.slice(start, shell.indexOf('<p role="alert"', start));
+    const scope = section.indexOf('<div class="field-title">Keep one voice conversation for all chats</div>');
+    const tasks = section.indexOf(`<label x-show="$store.convoSetup.config.conversation_scope === 'global'">Tasks with no chat named<select x-model="$store.convoSetup.config.task_chat">`);
+    assert.ok(start > 0 && scope > 0 && tasks > scope);
+    assert.ok(section.includes(`:checked="$store.convoSetup.config.conversation_scope === 'global'" @change="$store.convoSetup.config.conversation_scope = $event.target.checked ? 'global' : 'chat'"`));
+    assert.doesNotMatch(section, /<select x-model="\$store\.convoSetup\.config\.conversation_scope"/);     // chats follow you: no chat select any more
     const options = from => [...section.slice(from, section.indexOf('</select>', from)).matchAll(/\['(\w+)','([^']+)'\]/g)].map(match => [match[1], match[2]]);
-    assert.deepEqual(options(scope), [['chat', 'Follows the selected chat'], ['global', 'One conversation across chats']]);
     assert.deepEqual(options(tasks), [['new', 'Open a new chat'], ['selected', 'Use the selected chat']]);
-    // Like the neighbouring selects: every option binds its selected state, so a saved value never shows as the first option.
-    assert.match(section.slice(scope, tasks), /:selected="option\[0\] === \$store\.convoSetup\.config\.conversation_scope"/);
     assert.match(section.slice(tasks), /:selected="option\[0\] === \$store\.convoSetup\.config\.task_chat"/);
-    assert.match(section.slice(scope, tasks), /<p class="convo-hint">Across chats, the conversation and its memory stay the same whichever chat is open; tasks go to a chat you name, or to the place chosen below\. Voice started with no chat selected is always the conversation across chats\.<\/p>/);
-    assert.match(section.slice(tasks), /<p class="convo-hint">Applies to a conversation across chats\. A new chat is reused for the later tasks of the same voice session\.<\/p>/);
-    assert.doesNotMatch(section.slice(scope, section.indexOf('</p>', tasks)), /x-show/);   // both are always shown
     const markup = await settingsMarkup();
-    for (const key of ['conversation_scope', 'task_chat']) assert.equal(markup.split(`x-model="$store.convoSetup.config.${key}"`).length - 1, 1, key);
+    assert.equal(markup.split('x-model="$store.convoSetup.config.task_chat"').length - 1, 1);
 });
 
-test('The two selects change the draft and Save sends them', async () => {
+test('The switch and the task place change the draft and Save sends them', async () => {
     const shell = readFileSync(new URL('../webui/settings-controls.html', import.meta.url), 'utf8');
-    const f = await setup(), assigned = [];
-    for (const [key, value, original] of [['conversation_scope', 'global', 'chat'], ['task_chat', 'selected', 'new']]) {
-        const expression = shell.match(new RegExp(`<select x-model="([^"]*\\.${key})"`))[1];
-        const assign = new Function('$store', 'value', `${expression} = value`);          // what x-model does on a change
-        assert.equal(f.store.config[key], original);
-        assign({ convoSetup: f.store }, value);
-        assert.equal(f.store.config[key], value);
-        assert.equal(f.store.dirty, true);
-        assign({ convoSetup: f.store }, original);
-        assert.equal(f.store.dirty, false);
-        assigned.push(() => assign({ convoSetup: f.store }, value));
-    }
-    for (const again of assigned) again();
+    const f = await setup();
+    const change = shell.match(/@change="(\$store\.convoSetup\.config\.conversation_scope = [^"]*)"/)[1];
+    const flip = on => new Function('$store', '$event', change)({ convoSetup: f.store }, { target: { checked: on } });
+    assert.equal(f.store.config.conversation_scope, 'chat');
+    flip(true);
+    assert.deepEqual([f.store.config.conversation_scope, f.store.dirty], ['global', true]);
+    flip(false);
+    assert.deepEqual([f.store.config.conversation_scope, f.store.dirty], ['chat', false]);
+    flip(true);
+    const expression = shell.match(/<select x-model="([^"]*\.task_chat)"/)[1];
+    new Function('$store', 'value', `${expression} = value`)({ convoSetup: f.store }, 'selected');
     assert.equal(await f.store.save(), true);
     const saved = f.server.calls.at(-1);
     assert.equal(saved.action, 'setup_save');

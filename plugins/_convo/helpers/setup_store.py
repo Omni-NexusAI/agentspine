@@ -143,7 +143,19 @@ def normalize(value):
     result is validated again. Every settings writer stores this, never an unnormalized copy."""
     from . import convo_classifier_catalog, convo_model_catalog, speech_providers
     return validate_settings(speech_providers.normalize(convo_classifier_catalog.normalize(
-        convo_model_catalog.normalize(validate_settings(_own_runtime(value))))))
+        convo_model_catalog.normalize(validate_settings(_budget(_own_runtime(value)))))))
+
+
+def _budget(value):
+    """The compaction threshold (`compaction.trigger`) is the one budget setting people change. `compaction.target` is not used on
+    its own any more, but the contract (and an older Convo after a rollback) requires it under the threshold, so it is written
+    to follow it: a fifth of the window below, never under a tenth. A threshold that is not a usable number is left for the
+    contract to refuse with its reason."""
+    compaction = value.get('compaction') if isinstance(value, dict) else None
+    trigger = compaction.get('trigger') if isinstance(compaction, dict) else None
+    if type(trigger) in (int, float) and 0.3 <= trigger <= 0.9:
+        compaction['target'] = round(max(0.1, trigger - 0.2), 2)
+    return value
 
 
 def _own_runtime(value):

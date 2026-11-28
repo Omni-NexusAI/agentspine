@@ -72,13 +72,15 @@ export function soundSource(key, storage) {
 // microphone, so the per-device sound key is the microphone and that output), the browser's noise suppression and auto gain (Call
 // mode and desktops; Media mode turns them off), and the phone audio mode ('auto' | 'media' | 'call').
 export const DEVICE_PREFIX = 'convo.device.v1:';
-export const DEVICE_DEFAULTS = Object.freeze({ output: '', noise_suppression: true, auto_gain: true, phone_mode: 'auto' });
+export const DEVICE_DEFAULTS = Object.freeze({ output: '', output_label: '', noise_suppression: true, auto_gain: true, phone_mode: 'auto' });
 export const PHONE_MODES = ['auto', 'media', 'call'];
 export const deviceKey = input => `${DEVICE_PREFIX}${String(input || 'default').slice(0, 200)}`;
 export function normalizeChoices(values = {}) {
     const source = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
     return {
         output: typeof source.output === 'string' ? source.output.slice(0, 200) : '',
+        // The chosen output's name as the browser gave it, so the choice can be shown before (or without) the device list.
+        output_label: typeof source.output === 'string' && source.output && typeof source.output_label === 'string' ? source.output_label.slice(0, 80) : '',
         noise_suppression: source.noise_suppression !== false,
         auto_gain: source.auto_gain !== false,
         phone_mode: PHONE_MODES.includes(source.phone_mode) ? source.phone_mode : 'auto',
@@ -145,6 +147,27 @@ export function measuredThreshold(levels) {
 }
 
 // ---- the store --------------------------------------------------------------------------------------------------------------
+// What this browser shows the model, kept per browser (not per microphone): the camera to share ('' = the browser's default; its
+// name is kept so the choice can be shown before the list is read) and the longest edge of a picture taken from the camera and
+// from a shared screen. A smaller picture is fewer tokens and a faster look; the server's own limit still applies.
+export const PICTURE_KEY = 'convo.picture.v1';
+export const PICTURE_EDGES = [384, 512, 768];
+export const PICTURE_DEFAULTS = Object.freeze({ camera: '', camera_label: '', camera_edge: 768, screen_edge: 768 });
+export function normalizePicture(values = {}) {
+    const source = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+    const edge = value => (PICTURE_EDGES.includes(Number(value)) ? Number(value) : 768);
+    const camera = typeof source.camera === 'string' ? source.camera.slice(0, 200) : '';
+    return { camera, camera_label: camera && typeof source.camera_label === 'string' ? source.camera_label.slice(0, 80) : '',
+             camera_edge: edge(source.camera_edge), screen_edge: edge(source.screen_edge) };
+}
+export function readPicture(storage) {
+    try { const raw = storageOf(storage)?.getItem(PICTURE_KEY); return normalizePicture(raw ? JSON.parse(raw) : {}); }
+    catch { return normalizePicture({}); }
+}
+export function writePicture(values, storage) {
+    try { storageOf(storage)?.setItem(PICTURE_KEY, JSON.stringify(normalizePicture(values))); return true; } catch { return false; }
+}
+
 // createStore and the stores it talks to are passed in (sound-panel.html imports the host's AlpineStore), so this file has no
 // host imports and node tests build it directly.
 export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms) => setTimeout(fn, ms), cancel = id => clearTimeout(id) }) {
@@ -152,6 +175,7 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
     return {
         open: false, values: { ...SOUND_DEFAULTS }, key: soundKey('', ''), own: {}, message: '', error: '', measuring: false, levels: [],
         choices: normalizeChoices({}), outputs: [], outputNote: '', testNote: '', recordNote: '', recordings: [], recording: false,
+        picture: readPicture(storage), cameras: [], camerasListed: false, microphones: [], microphone: '', microphoneNote: '',
         get convo() { return convo(); },
         get setup() { return setup(); },
         // Re-read this device's values (the panel opening, the device changing, a conversation starting with its real microphone).
@@ -168,7 +192,8 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
         setChoice(name, value) {
             if (!(name in DEVICE_DEFAULTS)) return this.choices;
             const input = this.convo?.soundInput?.() || '';
-            this.choices = normalizeChoices({ ...this.choices, [name]: value });
+            const named = name === 'output' ? { output_label: this.outputs.find(device => device.id === value)?.label || '' } : {};
+            this.choices = normalizeChoices({ ...this.choices, [name]: value, ...named });
             this.error = '';
             if (!writeChoices(input, this.choices, storage)) this.message = 'This browser is not keeping settings, so this change lasts until the page is reloaded.';
             else this.message = name !== 'output' && this.convo?.active ? 'This applies the next time you start a conversation (the microphone is opened with it).' : '';
@@ -183,8 +208,40 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
             return result;
         },
         // The real output names (the browser gives names once the microphone was allowed); hidden where a browser cannot choose.
-        async listOutputs() { this.outputs = (await this.convo?.listOutputs?.()) || []; return this.outputs; },
+        async listOutputs() { this.outputs = (await this.convo?.listOutputs?.()) || []; this.outputsListed = true; return this.outputs; },
+        outputsListed: false,
+        // The saved output when the list does not hold it: by its name, and "not connected" only once the list was really read.
+        savedOutputLabel() {
+            const name = this.choices.output_label || 'Saved output';
+            return this.outputsListed ? name + ' (not connected)' : name;
+        },
         get canChooseOutput() { return !!this.convo?.outputView?.().can_choose; },
+        // ---- the microphone: Agent Zero's own speech setting (one microphone for dictation and for Convo), read and changed here
+        async listMicrophones() {
+            const found = (await this.convo?.microphones?.()) || { chosen: '', list: [] };
+            this.microphones = found.list || []; this.microphone = found.chosen || '';
+            return this.microphones;
+        },
+        async chooseMicrophone(id) {
+            const result = (await this.convo?.chooseMicrophone?.(id)) || { ok: false, message: 'The microphone could not be changed here.' };
+            this.microphoneNote = result.message || '';
+            if (result.ok) this.microphone = id;
+            return result;
+        },
+        // ---- camera and screen: which camera, and how large a picture the model gets
+        async listCameras() { this.cameras = (await this.convo?.cameras?.()) || []; this.camerasListed = true; return this.cameras; },
+        savedCameraLabel() {
+            const name = this.picture.camera_label || 'Saved camera';
+            return this.camerasListed ? name + ' (not connected)' : name;
+        },
+        setPicture(name, value) {
+            if (!(name in PICTURE_DEFAULTS) || name === 'camera_label') return this.picture;
+            const named = name === 'camera' ? { camera_label: this.cameras.find(device => device.id === value)?.label || '' } : {};
+            this.picture = normalizePicture({ ...this.picture, [name]: value, ...named });
+            if (!writePicture(this.picture, storage)) this.message = 'This browser is not keeping settings, so this change lasts until the page is reloaded.';
+            else this.message = name === 'camera' && this.convo?.cameraShared ? 'The camera changes the next time you share it.' : '';
+            return this.picture;
+        },
         output() { return this.convo?.outputView?.() || { label: 'System default', state: '', can_choose: false, missing: false, phone: false, mode: '' }; },
         async testSound() {
             const result = await this.convo?.playTestSound?.();
@@ -200,7 +257,11 @@ export function soundStoreDefinition({ convo, setup, storage, schedule = (fn, ms
         },
         async listRecordings() { this.recordings = (await this.convo?.recordingList?.()) || []; return this.recordings; },
         async deleteRecording(id) { await this.convo?.recordingDelete?.(id); return this.listRecordings(); },
-        show() { this.open = true; this.message = ''; this.error = ''; this.refresh(); void this.setup?.load?.(); },   // the voice row needs the settings
+        // Opening the drawer reads the device lists (a saved device then shows by its name, not as "the chosen device").
+        show() {
+            this.open = true; this.message = ''; this.error = ''; this.refresh(); void this.setup?.load?.();
+            for (const list of ['listOutputs', 'listMicrophones', 'listCameras']) { try { void this[list]?.()?.catch?.(() => {}); } catch { /* a list is optional */ } }
+        },   // the voice row needs the settings
         hide() { this.open = false; this.stopMeasure(); },
         toggle() { if (this.open) this.hide(); else this.show(); },
         overridden(key) { return key in this.own; },

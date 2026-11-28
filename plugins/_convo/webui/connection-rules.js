@@ -25,7 +25,7 @@ export function isLocalHost(hostname) {
 }
 
 // How to reach a server on another computer: the hint every server-address field shows.
-export const NETWORK_HINT = 'On another computer, use its LAN or Tailscale address, for example http://192.168.1.50:8080/v1 or http://my-desktop.tail1234.ts.net:8080/v1; no consent is needed for your own network.';
+export const NETWORK_HINT = 'On another computer, use its LAN or Tailscale address, for example http://<address>:<port>/v1; no consent is needed for your own network.';
 
 // Why a credential environment reference would be refused ('' when it would not): it names an environment variable. The value is
 // never repeated, so a key pasted here does not show up again.

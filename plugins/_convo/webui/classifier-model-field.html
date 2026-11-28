@@ -6,12 +6,12 @@
 <fieldset class="convo-card convo-model-card convo-classifier-card" x-data="{ role: 'classifier' }" x-init="$store.convoSetup.classifierInit()">
   <legend x-text="$store.convoSetup.label(role)"></legend>
   <template x-if="$store.convoSetup.config"><div class="convo-model-fields">
-    <p class="convo-model-note"><x-icon name="hearing" aria-hidden="true"></x-icon><span>Decides whether speech is meant for Convo and whether to answer. A decision model (System One style) or a chat model that accepts audio.</span></p>
+    <p class="convo-model-note"><x-icon name="hearing" aria-hidden="true"></x-icon><span>Decides whether speech is meant for the assistant and whether to answer: a decision model, or a chat model that accepts audio.</span></p>
 
     <template x-if="!$store.convoSetup.classifierUsesSystemOne()"><div class="convo-classifier-block" data-convo-classifier="own">
       <p class="field-description convo-model-alert" role="note" x-show="$store.convoSetup.classifierCatalogMissing()">This Convo server did not describe its classifier providers, so only Agent Zero’s own list is shown. Update Convo’s server files to choose a decision server here.</p>
       <div class="field" x-id="['convo-classifier-provider']">
-        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-provider', 'title')">Provider</div><div class="field-description" :id="$id('convo-classifier-provider', 'hint')">Where the classifier runs: a decision server on your machine, a cloud provider, or another server. Providers that cannot classify your speech are listed with the reason.</div></div>
+        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-provider', 'title')">Provider</div><div class="field-description" :id="$id('convo-classifier-provider', 'hint')">Where the classifier runs. Providers that cannot classify speech are greyed out.</div></div>
         <div class="field-control"><select data-convo-field="classifier-provider" :aria-labelledby="$id('convo-classifier-provider', 'title')" :aria-describedby="$id('convo-classifier-provider', 'hint')"
             :value="$store.convoSetup.classifierMigration()?.provider ?? $store.convoSetup.config.roles.classifier.provider"
             @change="$event.target.value = $store.convoSetup.classifierSetProvider($event.target.value)">
@@ -46,7 +46,7 @@
           choose(id) { $store.convoSetup.classifierChooseModel(id); this.close(); this.$refs.model.focus(); },
           typed() { clearTimeout(this.timer); this.timer = setTimeout(() => this.search(), 300); },
           close() { this.open = false; this.index = -1; } }">
-        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-model', 'title')">Model name</div><div class="field-description">Model identifier. The models your server serves are listed as you type or click; any name can be typed. Arrow keys move through the list, Enter chooses.</div></div>
+        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-model', 'title')">Model name</div><div class="field-description">Pick from the server’s list or type a name.</div></div>
         <div class="field-control convo-model-search">
           <input type="text" x-ref="model" data-convo-field="classifier-model" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list"
                  :aria-labelledby="$id('convo-classifier-model', 'title')" :aria-controls="$id('convo-classifier-model', 'list')" :aria-expanded="open ? 'true' : 'false'"
@@ -75,9 +75,10 @@
       <template x-if="$store.convoSetup.classifierUsesConvoKey()"><div class="field" x-id="['convo-classifier-own-key']">
         <div class="field-label"><div class="field-title" :id="$id('convo-classifier-own-key', 'title')">API key</div><div class="field-description" x-text="$store.convoSetup.classifierConvoKeyHint()"></div></div>
         <div class="field-control convo-model-stack">
-          <input type="password" data-convo-field="classifier-convo-key" autocomplete="new-password" :aria-labelledby="$id('convo-classifier-own-key', 'title')"
-                 :placeholder="$store.convoSetup.credentials[role] ? 'Key saved securely' : 'Optional key'" :value="$store.convoSetup.keys[role] || ''"
-                 @input="$store.convoSetup.setKey(role, $event.target.value)">
+          <div class="convo-key-line"><input :type="$store.convoSetup.keyShown(role) ? 'text' : 'password'" data-convo-field="classifier-convo-key" autocomplete="new-password" spellcheck="false" :aria-labelledby="$id('convo-classifier-own-key', 'title')"
+                 :placeholder="$store.convoSetup.credentials[role] ? 'Key saved securely' : 'Optional key'" :value="$store.convoSetup.keyValue(role)"
+                 @input="$store.convoSetup.setKey(role, $event.target.value)"><button type="button" class="button convo-key-eye" data-convo-field="classifier-key-eye" :aria-pressed="$store.convoSetup.keyShown(role) ? 'true' : 'false'" :aria-label="$store.convoSetup.keyShown(role) ? 'Hide the key' : 'Show the key'" @click="$store.convoSetup.toggleKey(role)"><x-icon :name="$store.convoSetup.keyShown(role) ? 'visibility_off' : 'visibility'" aria-hidden="true"></x-icon></button></div>
+        <p class="field-description" role="status" data-convo-field="classifier-key-note" x-show="$store.convoSetup.keyNote(role)" x-text="$store.convoSetup.keyNote(role)"></p>
           <button type="button" class="button" x-show="$store.convoSetup.credentials[role]" @click="$store.convoSetup.clearKey(role)">Remove the saved key</button>
           <p class="field-description" x-show="$store.convoSetup.keys[role] === ''">The saved key will be removed when you save.</p>
         </div>
@@ -86,27 +87,24 @@
       <div class="convo-model-connection" data-convo-field="classifier-connection">
         <p class="field-description" data-convo-field="classifier-this-computer" x-show="$store.convoSetup.thisComputerText($store.convoSetup.classifierUrl())" x-text="$store.convoSetup.thisComputerText($store.convoSetup.classifierUrl())"></p>
         <p class="field-description convo-model-alert" data-convo-field="classifier-key-move" x-show="$store.convoSetup.classifierKeyMoveOffer()"><span x-text="'Convo’s saved key is for ' + $store.convoSetup.classifierKeyMoveOffer() + '.'"></span> <button type="button" class="button" @click="$store.convoSetup.keyMove(role)">Use it for this address</button></p>
-        <div class="convo-model-actions"><button type="button" class="button" data-convo-field="classifier-check" :disabled="$store.convoSetup?.ui?.classifier?.checking === true" @click="$store.convoSetup.classifierCheck()">Check server</button><button type="button" class="button" data-convo-field="classifier-use-kind" x-show="$store.convoSetup.classifierCheckSuggests()" @click="$store.convoSetup.classifierUseCheckedKind()" x-text="$store.convoSetup.classifierCheckSuggests() === 'decision' ? 'Use it as a decision model' : 'Use it as a chat model'"></button></div>
+        <div class="convo-model-actions" x-show="$store.convoSetup.classifierCheckSuggests()"><button type="button" class="button" data-convo-field="classifier-use-kind" x-show="$store.convoSetup.classifierCheckSuggests()" @click="$store.convoSetup.classifierUseCheckedKind()" x-text="$store.convoSetup.classifierCheckSuggests() === 'decision' ? 'Use it as a decision model' : 'Use it as a chat model'"></button></div>
         <p class="field-description convo-model-probe" role="status" data-convo-field="classifier-check-result" :data-state="$store.convoSetup.classifierCheckView().state"><x-icon :name="$store.convoSetup.classifierCheckView().icon" aria-hidden="true"></x-icon><strong x-text="$store.convoSetup.classifierCheckView().label"></strong><span x-text="$store.convoSetup.classifierCheckView().message"></span></p>
+        <p class="field-description" role="status" data-convo-field="classifier-fix-note" x-show="$store.convoSetup.connectionFixNote(role)"><span x-text="$store.convoSetup.connectionFixNote(role)"></span> <button type="button" class="text-button" data-convo-field="classifier-fix-undo" @click="$store.convoSetup.connectionFixUndo(role)">Undo</button></p>
         <template x-if="$store.convoSetup.connectionSuggestion(role)"><p class="field-description convo-model-alert" data-convo-field="classifier-connection-suggestion"><span x-text="$store.convoSetup.connectionSuggestion(role)?.message"></span> <button type="button" class="button" @click="(url => $store.convoSetup.classifierUseAddress(url))($store.convoSetup.connectionSuggestion(role)?.url)" x-text="$store.convoSetup.connectionSuggestion(role)?.label"></button></p></template>
         <template x-if="$store.convoSetup.certificateChanged(role)"><p class="field-description convo-model-alert" data-convo-field="classifier-certificate-changed"><button type="button" class="button" data-convo-field="classifier-certificate-accept" @click="$store.convoSetup.certificateAccept(role, $store.convoSetup.certificateChanged(role)?.url)">Accept the new certificate</button></p></template>
         <p class="field-description" data-convo-field="classifier-certificate-note" x-show="$store.convoSetup.certificateNote(role)"><span x-text="$store.convoSetup.certificateNote(role)"></span> <button type="button" class="text-button" data-convo-field="classifier-certificate-forget" @click="$store.convoSetup.certificateForget(role, $store.convoSetup.classifierUrl())">Forget</button></p>
-        <p class="field-description">Check server lists the models at this address and, for a decision server, sends one short text decision, only when you click it. It uses what is shown here (a key typed here included); nothing is saved and no audio is sent.</p>
       </div>
       <div class="field" x-id="['convo-classifier-context']">
-        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-context', 'title')">Context window (tokens)</div><div class="field-description">How much the classifier model reads at once, from 1024 to 1000000 (System One’s decider uses 8192). Separate from the conversation’s context window.</div></div>
+        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-context', 'title')">Context window (tokens)</div><div class="field-description">How much the classifier reads at once.</div></div>
         <div class="field-control convo-model-stack"><input type="number" min="1024" max="1000000" step="1" data-convo-field="classifier-context" :aria-labelledby="$id('convo-classifier-context', 'title')"
             :aria-invalid="$store.convoSetup.classifierContextProblem() ? 'true' : 'false'" x-model.number="$store.convoSetup.config.roles.classifier.context_window">
           <p class="field-description convo-model-alert" role="note" x-show="$store.convoSetup.classifierContextProblem()" x-text="$store.convoSetup.classifierContextProblem()"></p></div>
       </div>
-      <div class="field" x-id="['convo-classifier-audio']">
+      <div class="field" x-id="['convo-classifier-audio']" x-show="$store.convoSetup.config.developer_mode === true">
         <div class="field-label"><div class="field-title" :id="$id('convo-classifier-audio', 'title')">Accepts audio input</div><div class="field-description">On: the classifier hears the audio of what you said. Off: it reads text only, and Convo refuses to start an audio conversation with it rather than turning your speech into text for it. A model list does not prove audio support.</div></div>
         <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="classifier-audio" :aria-labelledby="$id('convo-classifier-audio', 'title')" x-model="$store.convoSetup.config.roles.classifier.capabilities.audio_input"><span class="toggler"></span></label></div>
       </div>
-      <template x-if="$store.convoSetup.classifierRemoteShown()"><div class="field" x-id="['convo-classifier-remote']">
-        <div class="field-label"><div class="field-title" :id="$id('convo-classifier-remote', 'title')">Allow remote processing</div><div class="field-description" x-text="$store.convoSetup.classifierRemoteText()"></div></div>
-        <div class="field-control"><label class="toggle"><input type="checkbox" data-convo-field="classifier-remote" :aria-labelledby="$id('convo-classifier-remote', 'title')" x-model="$store.convoSetup.config.roles.classifier.remote"><span class="toggler"></span></label></div>
-      </div></template>
+      <p class="field-description convo-model-remote" role="note" data-convo-field="classifier-remote-note" x-effect="$store.convoSetup.classifierRemoteSync()" x-show="$store.convoSetup.classifierRemoteNote()" x-text="$store.convoSetup.classifierRemoteNote()"></p>
 
       <div class="advanced-section convo-model-advanced" x-data="{ advOpen: false }" x-id="['convo-classifier-advanced']">
         <button type="button" class="advanced-toggle" :aria-expanded="advOpen ? 'true' : 'false'" :aria-controls="$id('convo-classifier-advanced', 'body')" @click="advOpen = !advOpen"><x-icon class="advanced-toggle-icon" name="chevron_right" aria-hidden="true" :class="{ 'is-open': advOpen }"></x-icon><span>Advanced Settings</span></button>
@@ -141,6 +139,10 @@
             <div class="field-control convo-model-stack"><input type="text" data-convo-field="classifier-token-env" autocomplete="off" spellcheck="false" placeholder="e.g. MY_DECIDER_KEY" :aria-labelledby="$id('convo-classifier-env', 'title')"
                 :aria-invalid="$store.convoSetup?.classifierReferenceProblem?.() ? 'true' : 'false'" x-model="$store.convoSetup.config.roles.classifier.token_env">
               <p class="field-description convo-model-alert" role="note" data-convo-field="classifier-token-env-problem" x-show="!!$store.convoSetup?.classifierReferenceProblem?.()"><span x-text="$store.convoSetup?.classifierReferenceProblem?.()"></span> <button type="button" class="button" data-convo-field="classifier-token-env-clear" @click="$store.convoSetup.classifierClearReference()">Clear</button></p></div>
+          </div>
+          <div class="convo-model-checks">
+            <div class="convo-model-actions"><button type="button" class="button" data-convo-field="classifier-check" :disabled="$store.convoSetup?.ui?.classifier?.checking === true" @click="$store.convoSetup.classifierCheck()">Check server</button></div>
+            <p class="field-description">Lists the models at this address and, for a decision server, sends one short text decision, only when you click it. It uses what is shown here (a key typed here included); nothing is saved and no audio is sent. The answer shows under the address.</p>
           </div>
         </div>
       </div>
@@ -179,11 +181,11 @@
           :disabled="!$store.convoSetup.classifierInheritAvailable()" :checked="$store.convoSetup.config.decider.source === 'system_one'"
           @change="$event.target.checked = $store.convoSetup.classifierSetSystemOne($event.target.checked)"><span class="toggler"></span></label></div>
     </div>
-    <template x-if="$store.convoSetup.classifierRows().length"><div class="convo-classifier-block">
-      <p class="field-description">Saved state (updated when you save):</p>
-      <template x-for="row in $store.convoSetup.classifierRows()" :key="row.id"><p class="field-description convo-model-row" :data-state="row.state"><x-icon :name="row.state === 'ready' ? 'check_circle' : (['unverified', 'idle'].includes(row.state) ? 'help' : (row.state === 'warning' ? 'warning' : 'error'))" aria-hidden="true"></x-icon><strong x-text="row.label + ' · ' + $store.convoSetup.classifierStateText(row.state) + ': '"></strong><span x-text="row.detail"></span></p></template>
+    <template x-if="$store.convoSetup.classifierRows().some(row => ['warning', 'error'].includes(row.state) || $store.convoSetup.config.developer_mode === true)"><div class="convo-classifier-block">
+      <p class="field-description" x-show="$store.convoSetup.config.developer_mode === true">Saved state (updated when you save):</p>
+      <template x-for="row in $store.convoSetup.classifierRows().filter(row => ['warning', 'error'].includes(row.state) || $store.convoSetup.config.developer_mode === true)" :key="row.id"><p class="field-description convo-model-row" :data-state="row.state"><x-icon :name="row.state === 'ready' ? 'check_circle' : (['unverified', 'idle'].includes(row.state) ? 'help' : (row.state === 'warning' ? 'warning' : 'error'))" aria-hidden="true"></x-icon><strong x-text="row.label + ' · ' + $store.convoSetup.classifierStateText(row.state) + ': '"></strong><span x-text="row.detail"></span></p></template>
     </div></template>
-    <p class="field-description">Developers: the registered decision backends are with the developer tuning controls.</p>
+    <p class="field-description" x-show="$store.convoSetup.config.developer_mode === true">The registered decision backends are in the diagnostics panel’s Tune section.</p>
   </div></template>
 </fieldset>
 <style>

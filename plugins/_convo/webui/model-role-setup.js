@@ -18,7 +18,8 @@ const PROVIDER_ID = /^[a-z0-9_]{1,64}$/;                         // convo_contra
 // Private to this module, never in reactive state: Agent Zero's store (one for every card) and, per role, the debounce timer and
 // the autosave in flight.
 let host = null, hostLoading = null;
-const timers = {}, flushing = {};
+const timers = {}, flushing = {}, checks = {};
+export const CHECK_MS = 600;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // convo_contract.endpoint's locality rule (connection-rules.js), for advice only: the server decides.
@@ -186,8 +187,41 @@ export function modelRoleSetup(role, spec) {
             this.choices[role] = {}; this.searches[role] = '';                 // discovery belonged to the old provider
             spec.afterProvider?.(this, next);
             this[n('Edited')]([prefix + 'provider', prefix + 'api_base', ...(spec.providerPaths || [])], autosave);
+            this[n('RemoteSync')](autosave);
             void this[n('ProviderHook')](previous, bases[previous], autosave);
+            this[n('AutoCheck')](autosave);
             return next;
+        },
+        // ---- The check that runs by itself (spec.autoCheck): the same request as Test connection, once an address or a model
+        // name is committed (a change event, a choice from the list; never per keystroke and never because Settings opened), once
+        // per address and model. An address the settings would refuse is not contacted.
+        AutoCheck(autosave = false) {
+            if (!spec.autoCheck || !this.config?.roles?.[role]) return false;
+            const url = this[n('Url')](), model = (this[n('Role')]().model || '').trim(), ui = view(this), key = url + '|' + model;
+            ui.autosave = autosave === true;                                    // a fix applied after the check is saved the same way
+            if (!url || !model || ui.checkedFor === key || this[n('AddressProblem')]()) return false;
+            clearTimeout(checks[role]);
+            checks[role] = setTimeout(async () => {
+                checks[role] = null;
+                ui.checkedFor = key;
+                await this.discover(role, true);
+                this[n('Adopt')](autosave);
+            }, CHECK_MS);
+            return true;
+        },
+        // What a check measured becomes the declaration (the two settings an older Convo reads), so nobody has to know what a
+        // model can do. In developer mode the switches are yours and nothing is written. No clear answer changes nothing.
+        Adopt(autosave = false) {
+            const found = this.choices?.[role]?.capabilities, declared = this.config?.roles?.[role]?.capabilities;
+            if (!found || !declared || this.config.developer_mode === true) return [];
+            const next = { ...(typeof found.audio_input === 'boolean' ? { audio_input: found.audio_input } : {}),
+                           ...(typeof found.tool_mode === 'string' ? { tool_calls: found.tool_mode === 'native' } : {}) };
+            const changed = Object.keys(next).filter(name => declared[name] !== next[name]);
+            if (!changed.length) return [];
+            spec.beforeEdit?.(this);
+            for (const name of changed) declared[name] = next[name];
+            this[n('Edited')](changed.map(name => prefix + 'capabilities.' + name), autosave);
+            return changed;
         },
         // Agent Zero's provider-change hook, when its store has one (Provider Profiles: address defaults, the model last used with
         // each provider). It gets this role as one of its model slots: `name` is Convo's model, `ctx_length` the context window,
@@ -221,6 +255,7 @@ export function modelRoleSetup(role, spec) {
             if (!autosave || !this.config) return;
             const ui = view(this);
             ui.edited = { ...(ui.edited || {}), ...Object.fromEntries([].concat(paths).map(path => [path, true])) };
+            this[n('RemoteSync')](autosave);                                   // the consent goes with the address it belongs to
             this[n('Schedule')]();
         },
         Schedule() {
@@ -240,7 +275,7 @@ export function modelRoleSetup(role, spec) {
             await this[n('Flush')]();
             Object.assign(view(this), { edited: {}, status: 'idle', held: '', error: '' });
         },
-        AddressProblem() { return addressProblem(this[n('Url')](), !!this[n('Role')]().remote); },
+        AddressProblem() { return addressProblem(this[n('Url')](), true); },
         // A credential environment reference that is not a variable name (an address or a key typed into it) is held, not saved;
         // the server refuses it too and reports one saved earlier until it is cleared.
         ReferenceProblem() { return credentialReferenceProblem((this[n('Role')]().token_env || '').trim()); },
@@ -380,6 +415,7 @@ export function modelRoleSetup(role, spec) {
             spec.beforeEdit?.(this);
             this.config.roles[role].model = id;
             this[n('Edited')](prefix + 'model', autosave);
+            this[n('AutoCheck')](autosave);
         },
 
         // ---- Keys. A provider Agent Zero holds keys for uses Agent Zero's key, entered the Agent Zero way (its key store); Other,
@@ -442,16 +478,30 @@ export function modelRoleSetup(role, spec) {
             if (!this[n('UsesHostKey')]() || current.token_env || !(current.api_base || '').trim() || info.url === info.base) return '';
             return `Agent Zero’s ${info.label} key will be sent to ${hostnameOf(info.url) || info.url}. Choose Convo’s own key as the key source if that address should not receive it.`;
         },
-        RemoteText() {
+        // The address is the consent: there is no switch. An address outside this machine and its network is said in one line,
+        // and the stored `remote` flag (which the server still requires, and an older Convo reads) follows the address.
+        RemoteNeeded() {
             const hostname = hostnameOf(this[n('Url')]());
-            if (!hostname) return 'Required only when the address is outside this machine and your network (LAN or Tailscale).';
-            return isLocalHost(hostname) ? `${hostname} is on this machine or your network (LAN or Tailscale); consent is not needed for it.`
-                : `Required: your speech is sent to ${hostname}.`;
+            return !!hostname && !isLocalHost(hostname);
         },
-        // Whether the consent switch is needed here: an address off this machine and its network, or a consent already given.
-        RemoteShown() {
-            const hostname = hostnameOf(this[n('Url')]());
-            return this[n('Role')]().remote === true || (!!hostname && !isLocalHost(hostname));
+        RemoteNote() {
+            if (!this[n('RemoteNeeded')]()) return '';
+            return `${hostnameOf(this[n('Url')]())} is outside this computer and your network: your speech is sent there. Choosing this address is your consent.`;
+        },
+        // Called from the card as an effect. It raises the flag whenever the address needs it, and lowers it only when the address
+        // was changed here, so opening the settings never makes an edit by itself.
+        RemoteSync(autosave = false) {
+            const current = this[n('Role')]();
+            if (!this.config || !current) return false;
+            const needed = this[n('RemoteNeeded')]();
+            if (needed === (current.remote === true)) return false;
+            if (!needed) {
+                const saved = this[n('Saved')]();
+                if (this[n('Url')]() === roleUrl(saved, this[n('Provider')](saved.provider || ''))) return false;
+            }
+            current.remote = needed;
+            this[n('Edited')](`roles.${role}.remote`, autosave);
+            return true;
         },
     };
     if (spec.keyCopy) Object.assign(methods, {

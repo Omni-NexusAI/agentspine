@@ -54,6 +54,8 @@ class CandidateTests(RealtimeTests):
         self.assertEqual(state['sidecar'].calls.count('policy'), 1)
 
     async def test_probe_is_not_independent_turn_and_full_audio_reaches_answer(self):
+        # These count the model's requests: the separate reading of what a reply left open (left_open) is not part of them.
+        self.enterContext(__import__('unittest.mock').mock.patch('plugins._convo.helpers.convo_voice_tools.left_open', new=__import__('unittest.mock').mock.AsyncMock(return_value='')))
         state, reply = await self.active_reply()
         await self.candidate(final=False); await state['candidate_task']
         self.assertTrue(reply.cancelled())

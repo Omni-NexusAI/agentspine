@@ -115,6 +115,15 @@ export function announce(text) {
 }
 export const resetAnnouncer = () => { liveRegion?.remove?.(); liveRegion = null; };
 
+// The panel's orb (and the floating one) is the standalone speech interface's orb: a glow, two rings, a core and one indicator per
+// state (spinner, thinking dots, level bars, an error mark). Ready, speaking and muted show no indicator: the orb itself moves.
+const FULL = '<i class="cf-glow"></i><i class="cf-ring"></i><i class="cf-ring2"></i><i class="cf-core"><span class="cf-ind">'
+    + '<span class="cf-spin"></span><span class="cf-dots"><b></b><b></b><b></b></span>'
+    + '<span class="cf-bars"><b></b><b></b><b></b><b></b><b></b></span>'
+    + '<svg class="cf-err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.01"/></svg>'
+    + '</span></i>';
+const isFull = mic => !!mic?.classList?.contains?.('convo-panel-orb');
+
 const saved = new WeakMap();      // native attributes, the last view, and the watcher that keeps ours in place
 
 function layers(mic) {
@@ -124,7 +133,7 @@ function layers(mic) {
         orb = doc.createElement('span');
         orb.className = 'convo-orb';
         orb.setAttribute('aria-hidden', 'true');
-        orb.innerHTML = '<i class="co-glow"></i><i class="co-ring"></i><i class="co-ring2"></i><i class="co-core">' + GLYPHS + '</i>';
+        orb.innerHTML = isFull(mic) ? FULL : '<i class="co-glow"></i><i class="co-ring"></i><i class="co-ring2"></i><i class="co-core">' + GLYPHS + '</i>';
         mic.appendChild(orb);
     }
     return orb;

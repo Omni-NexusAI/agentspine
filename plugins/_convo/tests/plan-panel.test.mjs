@@ -493,7 +493,7 @@ test('The markup: a labelled button, a labelled field that is not a second scrol
     assert.doesNotMatch(card, /x-model|<details|onclick=/);
     assert.equal((html.match(/overflow-y:auto/g) || []).length, 1);
     for (const button of card.match(/<button[^>]*>/g)) assert.match(button, /type="button"/);
-    assert.match(html, /<button type="button" class="button convo-plan-button"[^>]*:aria-pressed=/);
+    // (The Plan button of the earlier panel is gone with it; planning is begun from the Permissions menu, checked with that menu.)
 });
 
 test('Going on with a plan whose task waited says that it was taken back', async () => {

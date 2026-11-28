@@ -23,8 +23,9 @@ PENDING = re.compile(r'<!--\s*convo-settings-pending:\s*(.*?)\s*\|\s*(.*?)\s*-->
 
 # Stored on purpose but not edited in the interface, each with its reason.
 EXCLUDED = {
-    'compaction.trigger': 'Compaction thresholds are tuned together; the context window and response reserve are exposed instead.',
-    'compaction.target': 'Compaction thresholds are tuned together; the context window and response reserve are exposed instead.',
+    'roles.conversation.remote': 'The address is the consent: the page sets this flag from the address (conversationRemoteSync / speechRemoteSync) and says so in one line; there is no switch.',
+    'roles.tts.remote': 'The address is the consent: the page sets this flag from the address (conversationRemoteSync / speechRemoteSync) and says so in one line; there is no switch.',
+    'compaction.target': 'Not used on its own: where a summary brings the conversation back to follows the threshold (compaction.trigger).',
     'compaction.recent_exchanges': 'A safety floor for what compaction never touches, not a preference.',
     'direct_timeout': 'Bounds a read-only tool call; changing it is a developer decision, not a setting.',
     'clarification_cooldown': 'Part of the clarification policy gate; the contract fixes its floor.',
@@ -32,6 +33,8 @@ EXCLUDED = {
     'decider.kind': 'The decision plugin backend id (one value today); the classifier normalizer selects it, nobody chooses it.',
     'decider.url': 'Derived by the classifier normalizer from roles.classifier.provider/api_base; a saved one is shown through the Classifier card.',
     'decider.model': 'Derived by the classifier normalizer from roles.classifier.model; a saved one is shown through the Classifier card.',
+    'noise_gate_db': 'The saved default of a per-device value: the Sound panel sets it for this microphone and its "Use as default" saves it.',
+    'end_of_turn_seconds': 'The saved default of a per-device value: the Sound panel sets it for this microphone and its "Use as default" saves it.',
     'roles.tts.capabilities.audio_output': 'Always true for a speech output.',
     'roles.tts.capabilities.cloning': 'Declared by the managed audio adapter; clones are created in Voice Studio.',
 }
@@ -156,7 +159,7 @@ class Coverage(unittest.TestCase):
         markup = re.sub(r'\s+', '', '\n'.join((WEBUI / name).read_text(encoding='utf-8') for name in settings_files()))
         for role in DEFAULTS['roles']:
             self.assertIn(role, re.sub(r'\s+', '', (WEBUI / 'setup-store.js').read_text(encoding='utf-8')), role)
-        for section in ('Connections', 'Conversation', 'Voice&Audio'):
+        for section in ('Connections', 'Conversation', 'Audio&Video'):
             self.assertIn("section==='" + section + "'", markup)
 
 
