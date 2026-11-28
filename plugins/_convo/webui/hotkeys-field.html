@@ -1,0 +1,21 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<fieldset class="convo-card convo-hotkeys" x-data x-destroy="$store.convoSetup?.hotkeyCancel()"><legend>Hotkeys</legend>
+  <p class="convo-hint">Hotkeys work while the Agent Zero page is focused, also while you type in the composer; other windows and tabs never hear them. A key is remembered by its place on the keyboard.</p>
+  <template x-for="row in ($store.convoSetup?.hotkeyRows() || [])" :key="row.id"><div class="convo-hotkey">
+    <span class="convo-hotkey-name"><span x-text="row.label"></span><small x-show="row.hint" x-text="row.hint"></small></span>
+    <span class="convo-hotkey-buttons">
+      <button type="button" class="button convo-hotkey-key" :data-hotkey="row.id" :data-recording="$store.convoSetup.hotkeyRecording(row.id) ? '' : null" :value="row.id === 'hotkey' ? $store.convoSetup.config.hotkey : $store.convoSetup.config.hotkeys[row.id]" :aria-pressed="$store.convoSetup.hotkeyRecording(row.id) ? 'true' : 'false'" :aria-label="$store.convoSetup.hotkeyName(row.id)" @click="$store.convoSetup.hotkeyRecord(row.id)" x-text="$store.convoSetup.hotkeyText(row.id)"></button>
+      <button type="button" class="button" :aria-label="'Reset: ' + row.label" :disabled="$store.convoSetup.hotkeyValue(row.id) === $store.convoSetup.hotkeyDefault(row.id)" @click="$store.convoSetup.hotkeyReset(row.id)">Reset</button>
+    </span>
+    <p class="convo-hotkey-note" role="status" x-show="$store.convoSetup.hotkeyNote(row.id)" x-text="$store.convoSetup.hotkeyNote(row.id)"></p>
+  </div></template>
+  <p class="convo-hint">Press a button, then the keys. Escape keeps the old ones, Backspace turns the hotkey off. Saved with the other settings.</p>
+</fieldset>
+<style>
+.convo-hotkey{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .75rem}
+.convo-hotkey-name{flex:1 1 12rem;min-width:0;display:flex;flex-direction:column;font-size:.9rem}.convo-hotkey-name small{margin-top:.15rem;font-size:.82rem;line-height:1.4;opacity:.8}
+.convo-hotkey-buttons{display:flex;gap:.5rem;flex:0 0 auto}.convo-hotkey-key{min-width:10.5rem}
+.convo-hotkey-key[data-recording]{border-color:var(--color-text);border-style:dashed}
+.convo-hotkey-note{flex:1 1 100%;margin:0;font-size:.82rem;color:var(--color-error,#da6868);overflow-wrap:anywhere}
+</style>
+</body></html>

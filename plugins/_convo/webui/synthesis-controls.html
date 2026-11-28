@@ -1,0 +1,96 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<!-- The voice row (the fork's TTS profile row) for your own audio.cpp server (synthesis-setup.js): the same component in the sound drawer
+     and in the diagnostics Tune card. Opening it reads the server's profiles and resolves each one (read-only) to pre-fill the fields.
+     The row edits its own choice, never the Settings draft: a click or edit applies to the running conversation from its next reply
+     (convo.tune, queued, resolved with the speech server at once); "Save as default" checks it with the server and patches
+     roles.tts.tuning. What this conversation uses and the saved default are shown separately. Nothing is created or selected on the
+     server from here. -->
+<template x-if="$store.convoSetup?.config && $store.convoSetup.synthesisApplies()">
+<fieldset class="convo-card convo-synthesis convo-voice-row" data-convo-synthesis x-init="$store.convoSetup.synthesisInit(); $store.convoSetup.synthesisOpen()">
+  <legend>Voice</legend>
+  <div class="convo-voice-status" aria-live="polite">
+    <p x-text="$store.convoSetup.synthesisStatus().conversation"></p>
+    <p x-text="$store.convoSetup.synthesisStatus().saved"></p>
+    <p class="convo-error" x-show="$store.convoSetup.synthesisStatus().error" x-text="$store.convoSetup.synthesisStatus().error"></p>
+  </div>
+  <div class="convo-voice-profiles" role="radiogroup" aria-label="Speech preset" x-show="$store.convoSetup.synthesisChoices().length">
+    <template x-for="choice in $store.convoSetup.synthesisChoices()" :key="choice.id"><button type="button" class="button" role="radio" :aria-checked="choice.active ? 'true' : 'false'" @click="$store.convoSetup.synthesisChoose(choice.id)"><strong x-text="choice.label"></strong><small x-text="choice.buffer"></small><small x-show="choice.active" x-text="$store.convoSetup.synthesisFirstAudio()"></small></button></template>
+  </div>
+  <p class="convo-hint" x-show="!$store.convoSetup.synthesisChoices().length">Presets are read from your speech server when this opens. A blank field uses the preset’s own value (shown greyed); a blank seed is a new random seed for each reply, shared by all its phrases.</p>
+  <table class="convo-voice-defaults" x-show="$store.convoSetup.synthesisChoices().length">
+    <caption>The voice model’s own defaults beside each preset</caption>
+    <thead><tr><th scope="col">Setting</th><th scope="col">Model default</th><template x-for="preset in $store.convoSetup.synthesisPresetNames()" :key="preset.id"><th scope="col" x-text="preset.label"></th></template></tr></thead>
+    <tbody><template x-for="row in $store.convoSetup.synthesisDefaultsTable()" :key="row.key"><tr><th scope="row" x-text="row.label"></th><td x-text="row.model"></td><template x-for="cell in row.presets" :key="cell.id"><td x-text="cell.value"></td></template></tr></template></tbody>
+  </table>
+  <div class="convo-grid">
+    <template x-if="$store.convoSetup.synthesisNativePcm()"><div class="convo-grid convo-voice-sampler" data-convo-synthesis-sampler>
+    <label><span class="convo-voice-name">Temperature<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('temperature')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('temperature')"> (changed from the preset)</span></span><input type="number" step="0.05" :min="$store.convoSetup.synthesisBounds('temperature')[0]" :max="$store.convoSetup.synthesisBounds('temperature')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('temperature')" x-model.number="$store.convoSetup.synthesisWork().overrides.temperature" @input="$store.convoSetup.synthesisChanged()"></label>
+    <label><span class="convo-voice-name">Top-k<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('top_k')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('top_k')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('top_k')[0]" :max="$store.convoSetup.synthesisBounds('top_k')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('top_k')" x-model.number="$store.convoSetup.synthesisWork().overrides.top_k" @input="$store.convoSetup.synthesisChanged()"></label>
+    <label><span class="convo-voice-name">Top-p<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('top_p')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('top_p')"> (changed from the preset)</span></span><input type="number" step="0.01" :min="$store.convoSetup.synthesisBounds('top_p')[0]" :max="$store.convoSetup.synthesisBounds('top_p')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('top_p')" x-model.number="$store.convoSetup.synthesisWork().overrides.top_p" @input="$store.convoSetup.synthesisChanged()"></label>
+    <label><span class="convo-voice-name">Repetition penalty<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('repetition_penalty')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('repetition_penalty')"> (changed from the preset)</span></span><input type="number" step="0.01" :min="$store.convoSetup.synthesisBounds('repetition_penalty')[0]" :max="$store.convoSetup.synthesisBounds('repetition_penalty')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('repetition_penalty')" x-model.number="$store.convoSetup.synthesisWork().overrides.repetition_penalty" @input="$store.convoSetup.synthesisChanged()"></label>
+    </div></template>
+    <label><span class="convo-voice-name">Reference length (s)<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('max_reference_seconds')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('max_reference_seconds')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('max_reference_seconds')[0]" :max="$store.convoSetup.synthesisBounds('max_reference_seconds')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('max_reference_seconds')" x-model.number="$store.convoSetup.synthesisWork().overrides.max_reference_seconds" @input="$store.convoSetup.synthesisChanged()"></label>
+    <label><span class="convo-voice-name">Seed<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('seed')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('seed')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('seed')[0]" :max="$store.convoSetup.synthesisBounds('seed')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('seed')" x-model.number="$store.convoSetup.synthesisWork().overrides.seed" @input="$store.convoSetup.synthesisChanged()"></label>
+  </div>
+  <p class="convo-hint" x-show="!$store.convoSetup.synthesisNativePcm()">Native PCM playback is off: the speech server then uses Quality’s sampler whatever the preset, so only the seed and the reference length apply here.</p>
+  <template x-if="$store.convoSetup.synthesisNativePcm()"><div class="convo-stack" data-convo-synthesis-native>
+    <div class="convo-grid">
+    <label><span class="convo-voice-name">First block (80 ms frames)<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('first_block_frames')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('first_block_frames')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('first_block_frames')[0]" :max="$store.convoSetup.synthesisBounds('first_block_frames')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('first_block_frames')" x-model.number="$store.convoSetup.synthesisWork().overrides.first_block_frames" @input="$store.convoSetup.synthesisChanged()"></label>
+    <label><span class="convo-voice-name">Steady block (80 ms frames)<span class="convo-voice-dot" x-show="$store.convoSetup.synthesisOverridden('steady_block_frames')" aria-hidden="true"></span><span class="convo-sr" x-show="$store.convoSetup.synthesisOverridden('steady_block_frames')"> (changed from the preset)</span></span><input type="number" step="1" :min="$store.convoSetup.synthesisBounds('steady_block_frames')[0]" :max="$store.convoSetup.synthesisBounds('steady_block_frames')[1]" :placeholder="$store.convoSetup.synthesisPlaceholder('steady_block_frames')" x-model.number="$store.convoSetup.synthesisWork().overrides.steady_block_frames" @input="$store.convoSetup.synthesisChanged()"></label>
+    </div>
+    <label class="convo-toggle-line"><span>Unlock the decoder context</span><span class="toggle"><input type="checkbox" :checked="$store.convoSetup.synthesisUnlocked()" @change="$event.target.checked = $store.convoSetup.synthesisUnlock($event.target.checked)"><span class="toggler"></span></span></label>
+    <label x-show="$store.convoSetup.synthesisUnlocked()">Decoder context (80 ms frames)<input type="number" step="1" min="1" max="300" placeholder="25" x-model.number="$store.convoSetup.synthesisWork().overrides.left_context_frames" @input="$store.convoSetup.synthesisChanged()"></label>
+    <p class="convo-hint">Native PCM playback only: the first block sets how soon a reply starts, the steady block how big each later piece is. The decoder context stays at 25 frames unless unlocked; less context is faster and may sound rougher. The steady block must be at least the first, and context plus steady block at most 300 frames.</p>
+  </div></template>
+  <ul class="convo-synthesis-problems" x-show="$store.convoSetup.synthesisProblems().length"><template x-for="problem in $store.convoSetup.synthesisProblems()" :key="problem.key + problem.text"><li x-text="problem.text"></li></template></ul>
+  <div class="convo-actions">
+    <button type="button" class="button" :disabled="!$store.convoSetup.synthesisCan('reset')" @click="$store.convoSetup.synthesisResetToProfile()">Reset to profile</button>
+    <button type="button" class="button" :disabled="!$store.convoSetup.synthesisCan('save')" @click="$store.convoSetup.synthesisSaveDefault()" x-text="$store.convoSetup?.ui?.synthesis?.busy === 'save' ? 'Checking with the server…' : 'Save as default'">Save as default</button>
+    <button type="button" class="button" :disabled="!$store.convoSetup.synthesisCan('apply')" @click="$store.convoSetup.synthesisApply()">Apply to this conversation</button>
+  </div>
+  <p class="convo-hint">A choice applies to the running conversation from its next reply, never to a reply already speaking; Save as default keeps it for new conversations.</p>
+  <details class="convo-voice-more"><summary>More</summary><div class="convo-stack">
+    <label>Tuning profile<select :value="$store.convoSetup.synthesisDraft().profile_id" @change="$event.target.value = $store.convoSetup.synthesisChoose($event.target.value)">
+      <option value="" :selected="!$store.convoSetup.synthesisDraft().profile_id">The speech server’s own current selection</option>
+      <template x-for="option in $store.convoSetup.synthesisProfiles()" :key="option.id"><option :value="option.id" :selected="option.id === $store.convoSetup.synthesisDraft().profile_id" x-text="option.label"></option></template>
+    </select></label>
+    <label>Saved default<input type="text" readonly :value="$store.convoSetup.synthesisDescribe($store.convoSetup.config.roles.tts.tuning.profile_id, $store.convoSetup.config.roles.tts.tuning.overrides)"></label>
+    <div class="convo-actions">
+      <button type="button" class="button" :disabled="!$store.convoSetup.synthesisCan('load')" @click="$store.convoSetup.synthesisLoad()" x-text="$store.convoSetup?.ui?.synthesis?.busy === 'load' ? 'Reading…' : 'Read profiles from the speech server'">Read profiles from the speech server</button>
+      <button type="button" class="button" :disabled="!$store.convoSetup.synthesisCan('check')" @click="$store.convoSetup.synthesisCheck()">Check with the server</button>
+    </div>
+  </div></details>
+  <p role="alert" class="convo-error" x-show="$store.convoSetup?.ui?.synthesis?.error" x-text="$store.convoSetup?.ui?.synthesis?.error"></p>
+  <p class="convo-hint" x-show="$store.convoSetup?.ui?.synthesis?.message" x-text="$store.convoSetup?.ui?.synthesis?.message"></p>
+  <template x-if="$store.convoSetup.synthesisEffective()"><div class="convo-stack convo-synthesis-effective">
+    <h4 x-text="$store.convoSetup.synthesisEffective()?.title + ($store.convoSetup.synthesisEffective()?.stale ? ' (before your latest changes)' : '')"></h4>
+    <ul><template x-for="item in ($store.convoSetup.synthesisEffective()?.items || [])" :key="item.key"><li><span x-text="item.label"></span> <strong x-text="item.value"></strong></li></template></ul>
+  </div></template>
+</fieldset>
+</template>
+<style>
+.convo-toggle-line{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:.75rem;min-height:40px}.convo-toggle-line .toggle{flex:none}.convo-toggle-line input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}
+.convo-synthesis .convo-synthesis-problems,.convo-synthesis-effective ul{margin:0;padding-left:1.1rem;font-size:.82rem;line-height:1.5}
+.convo-synthesis .convo-synthesis-problems{color:var(--color-error,currentColor)}
+.convo-synthesis-effective h4{margin:0;font-size:.82rem}
+.convo-synthesis-effective strong{font-variant-numeric:tabular-nums}
+.convo-voice-status p{margin:0;font-size:.82rem;line-height:1.45}
+.convo-voice-profiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:.4rem}
+.convo-voice-profiles .button{display:flex;flex-direction:column;align-items:flex-start;gap:.1rem;text-align:left;min-height:44px;padding:.35rem .6rem}
+.convo-voice-profiles .button[aria-checked=true]{border-color:var(--color-text);background:var(--color-highlight,var(--color-panel))}
+.convo-voice-profiles small{font-size:.72rem;opacity:.85}
+.convo-voice-defaults{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;font-size:.76rem;font-variant-numeric:tabular-nums}
+.convo-voice-defaults caption{text-align:left;font-size:.78rem;opacity:.85;padding-bottom:.2rem}
+.convo-voice-defaults th,.convo-voice-defaults td{padding:.15rem .5rem .15rem 0;text-align:left;white-space:nowrap;font-weight:normal}
+.convo-voice-defaults thead th{opacity:.8}
+.convo-voice-row .convo-grid{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.5rem}
+.convo-voice-row .convo-voice-sampler{grid-column:1/-1}
+.convo-voice-row label{display:flex;flex-direction:column;gap:.25rem;font-size:.8rem;min-width:0}
+.convo-voice-row input:not([type=checkbox]),.convo-voice-row select{box-sizing:border-box;width:100%;min-width:0;min-height:36px;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:8px;padding:.35rem .5rem;font:inherit}
+.convo-voice-row input::placeholder{color:var(--color-text);opacity:.72}
+.convo-voice-name{display:inline-flex;align-items:center;gap:.3rem}
+.convo-voice-dot{width:.45rem;height:.45rem;border-radius:50%;background:currentColor}
+.convo-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.convo-voice-more summary{cursor:pointer;font-size:.82rem}
+</style>
+</body></html>

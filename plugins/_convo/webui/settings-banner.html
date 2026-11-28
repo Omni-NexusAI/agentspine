@@ -1,0 +1,11 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<div class="convo-banner" role="alert" x-show="$store.convoSetup.stale">
+  <strong>These settings changed elsewhere.</strong>
+  <p class="convo-hint">Merge brings in the other change and keeps what you edited. Discarding drops your edits and loads what is saved.</p>
+  <div class="convo-actions"><button type="button" class="button" @click="$store.convoSetup.mergeLatest()">Merge changes</button><button type="button" class="button" @click="$store.convoSetup.discardAndReload()">Discard mine and reload</button></div>
+</div>
+<div class="convo-banner" role="status" x-show="$store.convoSetup.conflicts.length">
+  <strong>Changed in both places</strong>
+  <template x-for="item in $store.convoSetup.conflicts" :key="item.path"><div class="convo-conflict"><code x-text="item.path"></code><small x-text="'Mine: ' + $store.convoSetup.display(item.mine) + ' · Theirs: ' + $store.convoSetup.display(item.theirs)"></small><div class="convo-actions"><button type="button" class="button" @click="$store.convoSetup.keepMine(item.path)">Keep mine</button><button type="button" class="button" @click="$store.convoSetup.takeTheirs(item.path)">Take theirs</button></div></div></template>
+</div>
+</body></html>

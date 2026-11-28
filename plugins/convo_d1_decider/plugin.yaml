@@ -1,0 +1,6 @@
+name: convo_d1_decider
+title: Convo decision model (System One core)
+description: Development version. Registers a locally served d1-omni decision model (llama.cpp /v1/systemone) as the System One decision backend for Convo only. Touches no Agent Zero chat, tool or model call.
+version: 0.1.0
+always_enabled: false
+settings_sections: []

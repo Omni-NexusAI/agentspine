@@ -1,4 +1,19 @@
-# Enhanced Speech
+# Enhanced Speech compatibility bridge
+
+The active built-in implementation now lives in `plugins/_convo` (display name
+Convo). This directory retains legacy API/import paths required by older hosts;
+its microphone and lifecycle extensions are intentionally inactive. Deploy the
+bridge and Convo together, not as independent replacements.
+
+Existing user configuration is not deleted. Use Convo's explicit migration
+preview/apply/rollback workflow; newer Convo values win and rollback refuses to
+overwrite subsequent edits. User-installed legacy variants require a separate
+cutover check so only one plugin owns microphone integration.
+
+The historical feature description below documents the old compatibility API,
+not a second active speech plugin.
+
+## Historical Enhanced Speech behavior
 
 Builtin Agentspine speech enhancement plugin.
 

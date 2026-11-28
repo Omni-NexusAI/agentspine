@@ -1,0 +1,60 @@
+# Development packaging only. Does not alter or manage existing speech services.
+name: convo
+services:
+  convo-runtime:
+    build:
+      context: ..
+      dockerfile: sidecar/Dockerfile
+    environment:
+      CONVO_SIDECAR_TOKEN: ${CONVO_SIDECAR_TOKEN:?Set a fresh token shared with the host}
+      CONVO_AUDIO_TOKEN: ${CONVO_AUDIO_TOKEN:-}
+      CONVO_DATA_DIR: /convo-data
+    networks:
+      - host-network
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    read_only: true
+    volumes:
+      - convo-data:/convo-data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    # No public ports, GPU claims, model downloads or service discovery fallback.
+  convo-audio:
+    profiles: [managed-audio]
+    build:
+      context: ..
+      dockerfile: sidecar/audiocpp/Dockerfile
+      args:
+        AUDIO_CPP_CUDA_ARCHITECTURES: ${CONVO_CUDA_ARCHITECTURES:-86}
+    environment:
+      CONVO_AUDIO_TOKEN: ${CONVO_AUDIO_TOKEN:-}
+    networks: [host-network]
+    volumes:
+      - convo-models:/opt/models
+      - convo-voices:/voices
+    read_only: true
+    tmpfs:
+      - /run:size=16m,uid=10001,gid=10001,mode=0700
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Separate explicit profile. Startup loads no model and downloads nothing.
+volumes:
+  convo-data:
+  convo-models:
+  convo-voices:
+networks:
+  host-network:
+    external: true
+    name: ${CONVO_HOST_NETWORK:?Select the existing host network explicitly}

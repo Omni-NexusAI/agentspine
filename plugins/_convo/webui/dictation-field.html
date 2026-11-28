@@ -1,0 +1,15 @@
+<html><head><script type="module">import { store } from '/plugins/_convo/webui/setup-store.js';</script></head><body>
+<section class="convo-card convo-native">
+  <h4>Dictation and transcripts</h4>
+  <p class="convo-hint">Dictation and the optional parallel transcripts use Agent Zero’s native speech-to-text. Its model, device and language are managed in Agent Zero’s speech settings.</p>
+  <label>Voice message handling<select :value="$store.convoSetup.messageMode($store.convoSetup.config.voice_message_draft, $store.convoSetup.native.whisper?.summary?.message_mode)" @change="$store.convoSetup.applyMessageMode($event.target.value, $event.target)" :disabled="!$store.convoSetup?.native?.whisper?.summary || $store.convoSetup?.ui?.dictation?.applying === true"><option value="send">Send immediately</option><option value="draft">Draft in composer</option><option value="continuous">Draft in composer (continuous)</option></select></label>
+  <p class="convo-hint">Applies at once, here and in Agent Zero’s speech settings. Draft in composer leaves one phrase for you to review. Continuous keeps listening and adds each phrase you finish to the composer until you send the message or stop the microphone; nothing is sent for you. Escape stops it and drops only the phrase in progress.</p>
+  <dl class="convo-facts" x-show="$store.convoSetup.native.whisper?.summary">
+    <dt>Model</dt><dd x-text="$store.convoSetup.native.whisper?.summary?.model_size"></dd>
+    <dt>Device</dt><dd x-text="$store.convoSetup.native.whisper?.summary?.device"></dd>
+    <dt>Language</dt><dd x-text="$store.convoSetup.native.whisper?.summary?.language"></dd>
+  </dl>
+  <p class="convo-hint" x-show="$store.convoSetup.native.whisper && !$store.convoSetup.native.whisper.enabled">Native speech-to-text is off or missing in this host, so dictation and parallel transcripts are unavailable.</p>
+  <div class="convo-actions"><button class="button" x-show="!$store.convoSetup.inConfigModal" @click="$store.convoSetup.openNative('_whisper_stt')">Open native speech-to-text settings</button></div>
+</section>
+</body></html>

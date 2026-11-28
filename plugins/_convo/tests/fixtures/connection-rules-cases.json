@@ -1,0 +1,13 @@
+{
+  "comment": "One table for every copy of the connection rules: convo_contract.local_host / credential_reference_problem, the decision plugin's local_host and webui/connection-rules.js. Hosts are bare (no brackets), as a URL parser returns them.",
+  "local_hosts": ["localhost", "host.docker.internal", "convo-audio", "LOCALHOST", "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255",
+                  "192.168.1.20", "::1", "fd12:3456::1", "fd7a:115c:a1e0::1", "100.64.0.1", "100.101.102.103", "100.127.255.254",
+                  "desktop", "nas", "my-pc", "desktop.", "desktop.local", "DESKTOP.LOCAL", "pc.lan", "nas.home.arpa", "box.internal",
+                  "gpu.localhost", "my-desktop.tail1234.ts.net"],
+  "public_hosts": ["api.openai.com", "example.com", "localhost.evil.com", "ts.net", "evil.ts.net.example.com", "local.example.com",
+                   "172.32.0.1", "169.254.1.1", "8.8.8.8", "0.0.0.0", "100.63.255.255", "100.128.0.1", "fe80::1", "2001:4860:4860::8888",
+                   "1234", "134744072", "0x7f000001", "my_pc", "-pc", "pc-", "300.1.1.1", ""],
+  "references_ok": ["", "MY_KEY", "API_KEY_OPENROUTER", "CONVO_SIDECAR_TOKEN", "a", "1KEY"],
+  "references_bad": [["http://host.docker.internal:8081/v1", "looks like an address"], ["https://my-desktop.tail1234.ts.net/v1", "looks like an address"],
+                     ["sk-or-v1-0123456789abcdef0123", "looks like a key itself"], ["my key", ""], ["MY-KEY", ""], ["$MY_KEY", ""]]
+}

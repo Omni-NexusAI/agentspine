@@ -1,5 +1,5 @@
 from helpers.api import ApiHandler, Request, Response
-from plugins._enhanced_speech.helpers.runtime_capabilities import transcribe
+from plugins._convo.helpers.runtime_capabilities import transcribe
 
 
 class EnhancedSpeechTranscribe(ApiHandler):

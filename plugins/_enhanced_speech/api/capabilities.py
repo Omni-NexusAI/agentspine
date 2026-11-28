@@ -1,5 +1,5 @@
 from helpers.api import ApiHandler, Request, Response
-from plugins._enhanced_speech.helpers.runtime_capabilities import get_capabilities
+from plugins._convo.helpers.runtime_capabilities import get_capabilities
 
 
 class EnhancedSpeechCapabilities(ApiHandler):

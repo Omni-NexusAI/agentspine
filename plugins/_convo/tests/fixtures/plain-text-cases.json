@@ -1,0 +1,184 @@
+{
+  "_about": "Markdown removed before speech and history (helpers/convo_plaintext.py) and in the live draft (webui/plain-text.js): both must give exactly `out` for `in`. Written by hand; whitespace and every non-markup character are kept. `line_start` (default true) says whether `in` begins a line of the reply; the server cleans pieces cut mid-line with it false.",
+  "cases": [
+    {
+      "name": "plain text is unchanged",
+      "in": "Saturn has rings. Jupiter has faint ones too!",
+      "out": "Saturn has rings. Jupiter has faint ones too!"
+    },
+    {
+      "name": "bold",
+      "in": "**Saturn** has the most famous rings.",
+      "out": "Saturn has the most famous rings."
+    },
+    {
+      "name": "italic with stars",
+      "in": "It is *really* big.",
+      "out": "It is really big."
+    },
+    {
+      "name": "italic with underscores",
+      "in": "It is _really_ big.",
+      "out": "It is really big."
+    },
+    {
+      "name": "bold underscores and strikethrough",
+      "in": "__Bold__ and ~~old~~ text.",
+      "out": "Bold and old text."
+    },
+    {
+      "name": "bold italic",
+      "in": "***Very*** important.",
+      "out": "Very important."
+    },
+    {
+      "name": "arithmetic stars stay",
+      "in": "5 * 3 = 15, and 2*3 is 6.",
+      "out": "5 * 3 = 15, and 2*3 is 6."
+    },
+    {
+      "name": "underscores inside names stay",
+      "in": "Open my_file_name.txt now.",
+      "out": "Open my_file_name.txt now."
+    },
+    {
+      "name": "heading",
+      "in": "## Planets\nSaturn has rings.",
+      "out": "Planets\nSaturn has rings."
+    },
+    {
+      "name": "hash signs that are not headings stay",
+      "in": "C# and F# are languages; #1 was a hit.",
+      "out": "C# and F# are languages; #1 was a hit."
+    },
+    {
+      "name": "bullets",
+      "in": "Planets with rings:\n- Saturn\n- Jupiter\n* Uranus\n+ Neptune\n• Pluto has none",
+      "out": "Planets with rings:\nSaturn\nJupiter\nUranus\nNeptune\nPluto has none"
+    },
+    {
+      "name": "nested bullets keep their indentation",
+      "in": "- Gas giants\n  - **Saturn**",
+      "out": "Gas giants\n  Saturn"
+    },
+    {
+      "name": "numbered items keep their numbers",
+      "in": "1. Saturn\n2. Jupiter",
+      "out": "1. Saturn\n2. Jupiter"
+    },
+    {
+      "name": "link",
+      "in": "See [NASA's page](https://science.nasa.gov/saturn/) for more.",
+      "out": "See NASA's page for more."
+    },
+    {
+      "name": "link with parentheses in its address",
+      "in": "Read [this article](https://en.wikipedia.org/wiki/Saturn_(planet)).",
+      "out": "Read this article."
+    },
+    {
+      "name": "image",
+      "in": "![A ringed planet](https://example.com/saturn.png)",
+      "out": "A ringed planet"
+    },
+    {
+      "name": "inline code",
+      "in": "Run `ls -la` first.",
+      "out": "Run ls -la first."
+    },
+    {
+      "name": "code fence lines",
+      "in": "```python\nprint(1)\n```",
+      "out": "\nprint(1)\n"
+    },
+    {
+      "name": "quote",
+      "in": "> A quote here.",
+      "out": "A quote here."
+    },
+    {
+      "name": "horizontal rule",
+      "in": "Above\n---\nBelow\n* * *\nEnd",
+      "out": "Above\n\nBelow\n\nEnd"
+    },
+    {
+      "name": "table",
+      "in": "| Planet | Rings |\n|---|:---:|\n| Saturn | Yes |",
+      "out": "Planet, Rings\n\nSaturn, Yes"
+    },
+    {
+      "name": "line break tag",
+      "in": "Line one<br>line two<BR/>three",
+      "out": "Line one line two three"
+    },
+    {
+      "name": "bold opened in one phrase",
+      "in": "**Saturn.",
+      "out": "Saturn."
+    },
+    {
+      "name": "bold closed in the next phrase",
+      "in": " Jupiter** too.",
+      "out": " Jupiter too."
+    },
+    {
+      "name": "italic opened in one phrase",
+      "in": "*Saturn.",
+      "out": "Saturn."
+    },
+    {
+      "name": "italic closed in the next phrase",
+      "in": " rings* too",
+      "out": " rings too"
+    },
+    {
+      "name": "surrounding whitespace is kept",
+      "in": " **Saturn** has rings.\n",
+      "out": " Saturn has rings.\n"
+    },
+    {
+      "name": "only markup",
+      "in": "**",
+      "out": ""
+    },
+    {
+      "name": "Cyrillic bold",
+      "in": "**Сатурн** — планета.",
+      "out": "Сатурн — планета."
+    },
+    {
+      "name": "emphasis inside a word, as in Japanese",
+      "in": "**東京**です。*日本*の首都。",
+      "out": "東京です。日本の首都。"
+    },
+    {
+      "name": "a piece that continues its line keeps a dash",
+      "in": " - Jupiter has faint ones.",
+      "line_start": false,
+      "out": " - Jupiter has faint ones."
+    },
+    {
+      "name": "a piece that continues its line has no heading",
+      "in": " # 1 was a hit",
+      "line_start": false,
+      "out": " # 1 was a hit"
+    },
+    {
+      "name": "a piece that continues its line still loses emphasis",
+      "in": "**Saturn** too.",
+      "line_start": false,
+      "out": "Saturn too."
+    },
+    {
+      "name": "a line that begins inside a piece is still a line",
+      "in": " rings.\n- Jupiter",
+      "line_start": false,
+      "out": " rings.\nJupiter"
+    },
+    {
+      "name": "empty",
+      "in": "",
+      "out": ""
+    }
+  ]
+}

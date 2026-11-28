@@ -28,6 +28,8 @@ COPY plugins/_enhanced_speech/api/capabilities.py /git/agent-zero/plugins/_enhan
 COPY plugins/_enhanced_speech/api/transcribe.py /git/agent-zero/plugins/_enhanced_speech/api/transcribe.py
 COPY plugins/_enhanced_speech/extensions/python/startup_migration/_05_enhanced_speech_remote_tts.py /git/agent-zero/plugins/_enhanced_speech/extensions/python/startup_migration/_05_enhanced_speech_remote_tts.py
 COPY plugins/_enhanced_speech/extensions/webui/initFw_end/enhanced-stt-recorder.js /git/agent-zero/plugins/_enhanced_speech/extensions/webui/initFw_end/enhanced-stt-recorder.js
+COPY plugins/_enhanced_speech/extensions/python/agent_init/_10_enhanced_speech.py /git/agent-zero/plugins/_enhanced_speech/extensions/python/agent_init/_10_enhanced_speech.py
+COPY plugins/_convo /git/agent-zero/plugins/_convo
 
 RUN sed -i '/^GIT_REF=/d;/^BRANCH=/d;/^BUILD_VARIANT=/d;/^RELEASE_CHANNEL=/d;/^PYTORCH_VARIANT=/d' /etc/environment || true && \
     echo "GIT_REF=\"$GIT_REF\"" >> /etc/environment && \

@@ -1,0 +1,170 @@
+{
+ "providers": {
+  "a0_venice": {
+   "api_base": "https://llm.agent-zero.ai/v1",
+   "default_base": "",
+   "endpoint_url": "https://api.venice.ai/api/v1/models"
+  },
+  "anthropic": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.anthropic.com/v1/models"
+  },
+  "azure": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "/openai/models"
+  },
+  "bedrock": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": ""
+  },
+  "cerebras": {
+   "api_base": "https://api.cerebras.ai/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "codex_oauth": {
+   "api_base": "http://127.0.0.1/oauth/codex/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "cometapi": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.cometapi.com/v1/models"
+  },
+  "deepseek": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.deepseek.com/models"
+  },
+  "gemini_api_oauth": {
+   "api_base": "http://127.0.0.1/oauth/gemini-api/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "github_copilot": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": ""
+  },
+  "github_copilot_oauth": {
+   "api_base": "http://127.0.0.1/oauth/github-copilot/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "google": {
+   "api_base": "",
+   "default_base": "https://generativelanguage.googleapis.com",
+   "endpoint_url": "/v1beta/models"
+  },
+  "groq": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.groq.com/openai/v1/models"
+  },
+  "huggingface": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": ""
+  },
+  "llama_cpp": {
+   "api_base": "http://host.docker.internal:8080/v1",
+   "default_base": "http://host.docker.internal:8080",
+   "endpoint_url": "/v1/models"
+  },
+  "lm_studio": {
+   "api_base": "http://host.docker.internal:1234/v1",
+   "default_base": "http://host.docker.internal:1234",
+   "endpoint_url": "/v1/models"
+  },
+  "mistral": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.mistral.ai/v1/models"
+  },
+  "moonshot": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.moonshot.cn/v1/models"
+  },
+  "nebius": {
+   "api_base": "https://api.tokenfactory.nebius.com/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "nvidia_nim": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://integrate.api.nvidia.com/v1/models"
+  },
+  "ollama": {
+   "api_base": "http://host.docker.internal:11434",
+   "default_base": "http://host.docker.internal:11434",
+   "endpoint_url": "/api/tags"
+  },
+  "ollama_cloud": {
+   "api_base": "https://ollama.com/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "omlx": {
+   "api_base": "http://host.docker.internal:8000/v1",
+   "default_base": "http://host.docker.internal:8000",
+   "endpoint_url": "/v1/models"
+  },
+  "openai": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.openai.com/v1/models"
+  },
+  "openrouter": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://openrouter.ai/api/v1/models"
+  },
+  "other": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": ""
+  },
+  "sambanova": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.sambanova.ai/v1/models"
+  },
+  "venice": {
+   "api_base": "https://api.venice.ai/api/v1",
+   "default_base": "",
+   "endpoint_url": "https://api.venice.ai/api/v1/models"
+  },
+  "vllm": {
+   "api_base": "http://host.docker.internal:8000/v1",
+   "default_base": "http://host.docker.internal:8000",
+   "endpoint_url": "/v1/models"
+  },
+  "xai": {
+   "api_base": "",
+   "default_base": "",
+   "endpoint_url": "https://api.x.ai/v1/models"
+  },
+  "xai_grok_oauth": {
+   "api_base": "http://127.0.0.1/oauth/xai-grok/v1",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "zai": {
+   "api_base": "https://api.z.ai/api/paas/v4",
+   "default_base": "",
+   "endpoint_url": "/models"
+  },
+  "zai_coding": {
+   "api_base": "https://api.z.ai/api/coding/paas/v4",
+   "default_base": "",
+   "endpoint_url": "/models"
+  }
+ },
+ "source": "GET-equivalent read of the isolated v2.11 test host model_config_get (chat_provider_details: ids and addresses only, no keys), 2026-10-18"
+}

@@ -1,0 +1,16 @@
+<html><head><title>Plugin Doctor</title></head><body>
+<script type="module" src="/plugins/plugin_doctor/webui/store.js"></script>
+<div x-data>
+  <template x-if="$store.pluginDoctor">
+    <section x-init="$store.pluginDoctor.load()">
+      <h3>Plugin Doctor</h3>
+      <p>Keep the faulty plugin disabled while inspecting and repairing it. These checks never execute its code or read its settings.</p>
+      <label>Target plugin <select x-model="$store.pluginDoctor.target"><template x-for="plugin in $store.pluginDoctor.plugins" :key="plugin"><option :value="plugin" x-text="plugin"></option></template></select></label>
+      <button :disabled="$store.pluginDoctor.busy" @click="$store.pluginDoctor.inspect()">Inspect source and syntax</button>
+      <button :disabled="$store.pluginDoctor.busy || $store.pluginDoctor.toggle !== 'disabled'" @click="$store.pluginDoctor.refresh()">Refresh repaired plugin (keep OFF)</button>
+      <p x-text="'Target state: ' + $store.pluginDoctor.toggle"></p>
+      <pre style="white-space:pre-wrap;max-height:50vh;overflow:auto" x-text="$store.pluginDoctor.report"></pre>
+      <p>Apply source fixes using the host editor/agent tools, then run the plugin's isolated tests. Re-enable only after verification. No image rollback is needed for ordinary plugin fixes; a wedged host process can still require a same-image restart.</p>
+    </section>
+  </template>
+</div></body></html>

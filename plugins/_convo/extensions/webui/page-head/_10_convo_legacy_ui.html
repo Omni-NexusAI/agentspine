@@ -1,0 +1,1110 @@
+<script>
+  (() => {
+    const kokoroDefaults = {
+      voice: "am_michael",
+      secondary_voice: "",
+      voice_blend: 50,
+      speed: 1.1,
+      device: "auto",
+      remote_enabled: false,
+      remote_url: "http://kokoro-worker:8891",
+      remote_token: "",
+      remote_timeout: 20,
+    };
+
+    const whisperDefaults = {
+      model_size: "base",
+      device: "auto",
+      language: "en",
+      message_mode: "send",
+      silence_threshold: 0.3,
+      silence_duration: 1000,
+      waiting_timeout: 2000,
+    };
+
+    let voiceOptions = null;
+    let voiceOptionsPromise = null;
+    let kokoroStoreReference = null;
+    let kokoroRuntimeBridgePromise = null;
+    let kokoroRuntimeBridgeScheduled = false;
+    let kokoroRuntimeBridgeAttempts = 0;
+    let cudaAvailable = false;
+    let cudaDevices = [];
+    let refreshScheduled = false;
+    let refreshRunning = false;
+    let refreshAgain = false;
+
+    function hasStableSentenceTail(text, chunks) {
+      const cleaned = String(text || "").trim();
+      if (!cleaned || !chunks?.length || chunks[chunks.length - 1].length < 12) return false;
+      if (/[!?][\"')\]]*$/.test(cleaned)) return true;
+      if (!/\.[\"')\]]*$/.test(cleaned)) return false;
+      return !/(?:\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e)|\b[A-Z])\.[\"')\]]*$/i.test(cleaned);
+    }
+
+    function isRuntimeSpeaking(runtime) {
+      return typeof runtime?.isSpeaking === "function"
+        ? runtime.isSpeaking()
+        : Boolean(runtime?.isSpeaking);
+    }
+
+    async function waitForPlaybackStart(runtime, playback) {
+      let settled = false;
+      playback.finally(() => { settled = true; }).catch(() => {});
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        if (settled || isRuntimeSpeaking(runtime)) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    function patchProviderPipeline(runtime) {
+      if (typeof runtime?.speakWithProvider !== "function" || runtime.__agentspineProviderPipelinePatched) return;
+      runtime.__agentspineProviderPipelinePatched = true;
+      runtime.speakWithProvider = async function(provider, text, waitForPrevious = false, terminator = null) {
+        const payload = await provider.synthesize(text, {
+          providerId: this.getActiveProviderId?.() || "",
+        });
+
+        while (waitForPrevious && (isRuntimeSpeaking(this) || this.__agentspinePlaybackPending)) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (terminator?.()) return;
+        if (!waitForPrevious) this.stopAudio?.();
+        if (!payload) return;
+
+        const parts = Array.isArray(payload.audioParts)
+          ? payload.audioParts
+          : [payload.audioBase64 || payload.audio].filter(Boolean);
+        if (!parts.length) return;
+
+        this.__agentspinePlaybackPending = true;
+        const playback = (async () => {
+          try {
+            for (const part of parts) {
+              if (terminator?.()) return;
+              await this.playAudioBase64(part, payload.mimeType);
+            }
+          } finally {
+            this.__agentspinePlaybackPending = false;
+          }
+        })();
+        playback.catch((error) => console.error("TTS playback failed", error));
+
+        // Return as soon as playback starts so the next sentence can be
+        // synthesized while the current sentence is still playing.
+        await waitForPlaybackStart(this, playback);
+      };
+    }
+
+    function patchSpeechStream() {
+      const store = globalThis.ttsService || globalThis.Alpine?.store?.("speech");
+      if (!store) return false;
+      if (store.__agentspineEarlySpeechPatched) return true;
+      store.__agentspineEarlySpeechPatched = true;
+      patchProviderPipeline(store);
+
+      const sentinel = "__agentspine_unfinished_tail__";
+      const originalChunkText = store.chunkText.bind(store);
+      store.chunkText = function(text, options) {
+        const chunks = originalChunkText(text, options);
+        if (this.__agentspineReleaseStableTail && hasStableSentenceTail(text, chunks)) {
+          return [...chunks, sentinel];
+        }
+        return chunks;
+      };
+
+      const originalSpeakStream = store.speakStream.bind(store);
+      store.speakStream = function(id, text, finished = false) {
+        const cleaned = this.cleanText?.(text) || String(text || "");
+        this.__agentspineReleaseStableTail = !finished && hasStableSentenceTail(cleaned, originalChunkText(cleaned));
+        try {
+          return originalSpeakStream(id, text, finished);
+        } finally {
+          this.__agentspineReleaseStableTail = false;
+        }
+      };
+      return true;
+    }
+
+    function ensureSpeechStreamPatch(attempt = 0) {
+      if (patchSpeechStream() || attempt >= 1200) return;
+      setTimeout(() => ensureSpeechStreamPatch(attempt + 1), 100);
+    }
+
+    async function callJson(path, payload = {}) {
+      const api = await import("/js/api.js");
+      return api.callJsonApi(path, payload);
+    }
+
+    async function loadVoices(current = {}) {
+      if (voiceOptions) return voiceOptions;
+      if (!voiceOptionsPromise) {
+        voiceOptionsPromise = callJson("/plugins/_convo/voices", current)
+          .then((result) => {
+            cudaAvailable = Boolean(result?.cuda_available);
+            cudaDevices = Array.isArray(result?.cuda_devices) ? result.cuda_devices : [];
+            return result?.voices || [];
+          })
+          .catch(() => []);
+      }
+      voiceOptions = await voiceOptionsPromise;
+      return voiceOptions;
+    }
+
+    function getKokoroStore() {
+      return globalThis.Alpine?.store?.("kokoroTts") || kokoroStoreReference;
+    }
+
+    function getModalContexts() {
+      return Array.from(document.querySelectorAll(".modal"))
+        .map((modal) => ({ modal, context: modal.__pluginSettingsContext }))
+        .filter((entry) => entry.context?.pluginName && entry.context?.settings);
+    }
+
+    function getKokoroSettingsModal() {
+      return Array.from(document.querySelectorAll(".modal"))
+        .find((entry) => entry.querySelector(".plugin-config-page")?.textContent?.includes("Kokoro TTS"));
+    }
+
+    function collectKokoroModalSettings(settings, modal = getKokoroSettingsModal()) {
+      if (!settings || typeof settings !== "object") return settings;
+      if (!modal) return;
+
+      const nativeBlend = !!modal.querySelector(".kokoro-blend-editor");
+      if (nativeBlend) {
+        const native = globalThis.Alpine?.$data?.(fieldPage(modal))?.config;
+        if (native) {
+          settings.voice = native.voice;
+          settings.voice_weights = { ...(native.voice_weights || {}) };
+        }
+      } else {
+        // A legacy modal edits a new pair, not the previously migrated weights.
+        delete settings.voice_weights;
+      }
+
+      const primary = modal.querySelector(".enhanced-speech-primary-voice");
+      const secondary = modal.querySelector(".enhanced-speech-kokoro-fields .enhanced-speech-voice-select");
+      const blend = modal.querySelector(".enhanced-speech-kokoro-fields input[type='range']");
+      const speed = Array.from(fieldPage(modal)?.querySelectorAll(".field") || [])
+        .find((field) => field.querySelector(".field-title")?.textContent?.trim().toLowerCase() === "speed")
+        ?.querySelector("input, select");
+      const device = modal.querySelector(".enhanced-speech-kokoro-fields select:not(.enhanced-speech-voice-select)");
+      const remoteUrl = modal.querySelector(".enhanced-speech-kokoro-fields input[placeholder='http://kokoro-worker:8891']");
+      const remoteToken = modal.querySelector(".enhanced-speech-kokoro-fields input[type='password']");
+      // The native speed field is moved into this group too, and is commonly a
+      // number input.  Target only the plugin-owned timeout control so saving
+      // speed cannot accidentally overwrite ``remote_timeout``.
+      const remoteTimeout = modal.querySelector(".enhanced-speech-remote-timeout");
+
+      if (primary && !nativeBlend) {
+        settings.voice = primary.value;
+        settings.primary_voice = primary.value;
+      }
+      if (secondary && !nativeBlend) settings.secondary_voice = secondary.value;
+      if (blend && !nativeBlend) settings.voice_blend = clampBlend(blend.value);
+      if (speed) settings.speed = Math.max(0.1, Number(speed.value) || 1.1);
+      if (device) {
+        settings.device = device.value;
+        settings.remote_enabled = device.value === "remote";
+      }
+      if (remoteUrl) settings.remote_url = remoteUrl.value.trim();
+      if (remoteToken) settings.remote_token = remoteToken.value;
+      if (remoteTimeout) settings.remote_timeout = Math.max(1, Number(remoteTimeout.value) || 20);
+      return settings;
+    }
+
+    function renderKokoroCardSettings(settings) {
+      for (const card of Array.from(document.querySelectorAll(".voice-plugin-card"))
+        .filter((entry) => entry.textContent.includes("Kokoro TTS"))) {
+        const rows = Array.from(card.querySelectorAll(".voice-plugin-meta-row"));
+        const setRow = (label, value) => {
+          const row = rows.find((entry) => entry.querySelector("span")?.textContent?.trim() === label);
+          const target = row?.querySelector("code, span:last-child");
+          if (target) target.textContent = value;
+        };
+        setRow("Voice", voiceSummary(settings));
+        setRow("Speed", String(settings.speed ?? ""));
+        setRow("Mode", modeLabel(settings));
+      }
+
+      // Spine 9.9's current Kokoro dashboard is not the legacy
+      // `.voice-plugin-card`: its Voice row is a hard-coded Alpine binding to
+      // `config.voice`.  Override that rendered value with the complete
+      // compatibility summary while leaving the store's primary `voice`
+      // untouched for synthesis and host API compatibility.
+      for (const card of Array.from(document.querySelectorAll(".speech-plugin-card"))
+        .filter((entry) => entry.querySelector(".field-title")?.textContent?.trim() === "Resolved Config")) {
+        const voiceRow = Array.from(card.querySelectorAll(".status-row"))
+          .find((row) => row.querySelector(".status-key")?.textContent?.trim() === "Voice");
+        const voiceValue = voiceRow?.querySelector(".status-value");
+        if (voiceValue) {
+          voiceValue.removeAttribute("x-text");
+          voiceValue.textContent = voiceSummary(settings);
+        }
+      }
+    }
+
+    function publishKokoroCardSettings(settings) {
+      const store = getKokoroStore();
+      if (!settings || typeof settings !== "object") return;
+      if (store) store.config = { ...(store.config || {}), ...settings };
+      const redraw = () => renderKokoroCardSettings(settings);
+      redraw();
+      // The current Spine dashboard performs one host redraw after its native
+      // save resolves. Reapply the plugin-owned summary across that bounded
+      // render window so the card changes immediately and remains correct.
+      window.requestAnimationFrame(redraw);
+      for (const delay of [150, 500, 900]) setTimeout(redraw, delay);
+      scheduleRefresh();
+      Promise.resolve(store?.refreshStatus?.()).catch(() => {});
+    }
+
+    async function persistKokoroModal(modal = getKokoroSettingsModal()) {
+      if (!modal || modal.__agentspineSpeechPersisting) return;
+      // The native save carries its reactive weights; a parallel legacy write
+      // could overwrite that transaction with a stale pair.
+      if (modal.querySelector(".kokoro-blend-editor")) return;
+      const page = fieldPage(modal);
+      if (!page?.querySelector(".enhanced-speech-kokoro-fields")) return;
+      modal.__agentspineSpeechPersisting = true;
+      try {
+        // This owns the enhanced fields.  Native A0 save paths have changed
+        // between 1.2 and 2.7, so do not depend on their Alpine/modal objects.
+        const settings = collectKokoroModalSettings({});
+        const result = await callJson("/plugins/_convo/speech_config", settings);
+        if (result?.success && result.config) publishKokoroCardSettings(result.config);
+      } finally {
+        modal.__agentspineSpeechPersisting = false;
+      }
+    }
+
+    function installKokoroSaveCapture() {
+      if (window.__agentspineKokoroSaveCaptureInstalled) return;
+      window.__agentspineKokoroSaveCaptureInstalled = true;
+      document.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("button");
+        const modal = button?.closest?.(".modal");
+        if (!modal || !fieldPage(modal)?.querySelector(".enhanced-speech-kokoro-fields")) return;
+        const label = (button.textContent || "").trim().toLowerCase();
+        if (label === "save" || label.startsWith("save ")) {
+          // Capture phase runs before the host handler can close the modal.
+          void persistKokoroModal(modal);
+        }
+      }, true);
+    }
+
+    function installWhisperSaveCapture() {
+      if (window.__agentspineWhisperSaveCaptureInstalled) return;
+      window.__agentspineWhisperSaveCaptureInstalled = true;
+      document.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("button");
+        const modal = button?.closest?.(".modal");
+        if (!modal || !fieldPage(modal)?.querySelector(".enhanced-speech-whisper-device")) return;
+        const label = (button.textContent || "").trim().toLowerCase();
+        if (label !== "save" && !label.startsWith("save ")) return;
+        const context = getWhisperModalContext(modal);
+        if (!context?.settings) return;
+        // This host's generic save route reads the native Whisper config before
+        // writing it. A malformed legacy config can therefore leave its modal
+        // permanently busy even though this plugin's atomic save succeeded.
+        // Handle this one plugin's save transaction end-to-end and leave every
+        // other modal on its host lifecycle.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (modal.__agentspineWhisperSaveInFlight) return;
+        modal.__agentspineWhisperSaveInFlight = true;
+        button.disabled = true;
+        void (async () => {
+          try {
+            collectWhisperModalSettings(context.settings, modal);
+            await persistWhisperSettings(context.settings);
+            context.error = null;
+            context.settingsSnapshotJson = JSON.stringify(context.settings || {});
+            await window.closeModal?.();
+          } catch (error) {
+            console.warn("[Enhanced Speech] Whisper settings save failed", error);
+            globalThis.justToast?.("Whisper settings could not be saved.", "error");
+            button.disabled = false;
+          } finally {
+            modal.__agentspineWhisperSaveInFlight = false;
+          }
+        })();
+      }, true);
+    }
+
+    function patchKokoroSaveRequest() {
+      if (window.__agentspineKokoroSaveRequestPatched || typeof window.fetch !== "function") return;
+      window.__agentspineKokoroSaveRequestPatched = true;
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        let payload = null;
+        try {
+          const url = typeof input === "string" ? input : input?.url || "";
+          payload = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+          if (!url.includes("/plugins") || payload?.action !== "save_config" || payload?.plugin_name !== "_kokoro_tts") {
+            return originalFetch(input, init);
+          }
+          payload.settings = collectKokoroModalSettings(payload.settings || {}) || payload.settings || {};
+          const response = await originalFetch(input, { ...init, body: JSON.stringify(payload) });
+          response.clone().json().then((result) => {
+            if (result?.ok) publishKokoroCardSettings(payload.settings);
+          }).catch(() => {});
+          return response;
+        } catch {
+          return originalFetch(input, init);
+        }
+      };
+    }
+
+    function patchKokoroSettingsStore() {
+      const store = globalThis.Alpine?.store?.("pluginSettings");
+      if (!store || store.__agentspineKokoroSavePatched || typeof store.save !== "function") return;
+      store.__agentspineKokoroSavePatched = true;
+      const originalSave = store.save.bind(store);
+      store.save = async function(...args) {
+        const isKokoro = this.pluginName === "_kokoro_tts";
+        if (isKokoro) collectKokoroModalSettings(this.settings || {});
+        const result = await originalSave(...args);
+        if (isKokoro && !this.error) publishKokoroCardSettings(this.settings || {});
+        return result;
+      };
+    }
+
+    function guardContextSave(context) {
+      if (!context || context.__agentspineSpeechSaveGuarded) return;
+      const originalSave = context.save?.bind(context);
+      if (!originalSave) return;
+      context.__agentspineSpeechSaveGuarded = true;
+      context.save = async (...args) => {
+        if (context.__agentspineSpeechSaveInFlight) return;
+        context.__agentspineSpeechSaveInFlight = true;
+        try {
+          const modal = getModalContexts().find((entry) => entry.context === context)?.modal;
+          const isKokoro = context.pluginName === "_kokoro_tts";
+          // The injected controls are outside Alpine's original field tree in
+          // A0 1.2. Snapshot them immediately before its save call so they are
+          // included in the same config request as the native voice and speed.
+          if (isKokoro) collectKokoroModalSettings(context.settings, modal);
+          const result = await originalSave(...args);
+          // The host closes the modal without refreshing its status card.
+          // Publish the just-saved values first, then reconcile from status.
+          if (isKokoro) publishKokoroCardSettings(context.settings);
+          return result;
+        } finally {
+          context.__agentspineSpeechSaveInFlight = false;
+        }
+      };
+    }
+
+    function guardConfigOpen(store, pluginName) {
+      if (!store || store.__agentspineConfigOpenGuarded || typeof store.openConfig !== "function") return;
+      store.__agentspineConfigOpenGuarded = true;
+      const originalOpenConfig = store.openConfig.bind(store);
+      store.openConfig = async function(...args) {
+        if (this.__agentspineConfigOpenPromise) return this.__agentspineConfigOpenPromise;
+        const alreadyOpen = getModalContexts().some(({ context }) => context.pluginName === pluginName);
+        if (alreadyOpen) return;
+        const pending = Promise.resolve(originalOpenConfig(...args));
+        this.__agentspineConfigOpenPromise = pending;
+        try {
+          return await pending;
+        } finally {
+          if (this.__agentspineConfigOpenPromise === pending) this.__agentspineConfigOpenPromise = null;
+        }
+      };
+    }
+
+    function ensureDefaults(settings, defaults) {
+      if (!settings || typeof settings !== "object") return;
+      for (const [key, value] of Object.entries(defaults)) {
+        if (!(key in settings)) settings[key] = value;
+      }
+    }
+
+    function clampBlend(value) {
+      return Math.max(1, Math.min(99, Number(value) || 50));
+    }
+
+    function isCudaDevice(value) {
+      return /^cuda(?::\d+)?$/i.test(String(value || "").trim());
+    }
+
+    function field(label, description, control, extraClass = "") {
+      const wrapper = document.createElement("div");
+      wrapper.className = `field enhanced-speech-field ${extraClass}`.trim();
+      const fieldLabel = document.createElement("div");
+      fieldLabel.className = "field-label";
+      const title = document.createElement("div");
+      title.className = "field-title";
+      title.textContent = label;
+      const desc = document.createElement("div");
+      desc.className = "field-description";
+      desc.textContent = description;
+      fieldLabel.append(title, desc);
+      const fieldControl = document.createElement("div");
+      fieldControl.className = "field-control";
+      fieldControl.append(control);
+      wrapper.append(fieldLabel, fieldControl);
+      return wrapper;
+    }
+
+    function bindInput(input, context, key, coerce = (value) => value) {
+      const readValue = () => input.type === "checkbox" ? input.checked : input.value;
+      const update = () => {
+        context.settings[key] = coerce(readValue());
+      };
+      if (input.type === "checkbox") {
+        input.checked = Boolean(context.settings[key]);
+      } else {
+        input.value = context.settings[key] ?? "";
+      }
+      input.addEventListener("input", update);
+      input.addEventListener("change", update);
+      return input;
+    }
+
+    function fieldPage(modal) {
+      return modal?.querySelector?.(".plugin-config-page") || null;
+    }
+
+    function fillVoiceSelect(select, options, selected, allowEmpty = false) {
+      const current = selected || "";
+      select.replaceChildren();
+      if (allowEmpty) {
+        const empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = "None";
+        select.append(empty);
+      }
+      const seen = new Set();
+      for (const item of options || []) {
+        const value = item?.value || "";
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = item.label || value;
+        select.append(option);
+      }
+      if (current && !seen.has(current)) {
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = current;
+        select.append(option);
+      }
+      select.value = current;
+    }
+
+    async function enhancePrimaryVoiceField(page, context) {
+      if (page.querySelector(".enhanced-speech-primary-voice")) return;
+      const voiceTitle = Array.from(page.querySelectorAll(".field-title"))
+        .find((title) => title.textContent.trim().toLowerCase() === "voice");
+      const fieldRoot = voiceTitle?.closest(".field");
+      const control = fieldRoot?.querySelector(".field-control");
+      const original = control?.querySelector("input, select");
+      if (!control || !original) return;
+
+      const select = document.createElement("select");
+      select.className = "enhanced-speech-primary-voice enhanced-speech-voice-select";
+      fillVoiceSelect(select, await loadVoices(context.settings), context.settings.primary_voice || context.settings.voice || "am_michael");
+      select.addEventListener("change", () => {
+        context.settings.voice = select.value;
+        context.settings.primary_voice = select.value;
+      });
+      original.replaceWith(select);
+    }
+
+    async function makeVoiceSelect(context, key, allowEmpty = false) {
+      const select = document.createElement("select");
+      select.className = "enhanced-speech-voice-select";
+      fillVoiceSelect(select, await loadVoices(context.settings), context.settings[key] || "", allowEmpty);
+      select.addEventListener("change", () => {
+        context.settings[key] = select.value;
+      });
+      return select;
+    }
+
+    async function makeWhisperDeviceSelect(context) {
+      await loadVoices(context.settings);
+      const select = document.createElement("select");
+      select.className = "enhanced-speech-whisper-device enhanced-speech-voice-select";
+      const options = [["auto", "Auto"], ["cpu", "CPU"]];
+      if (cudaDevices.length) {
+        for (const item of cudaDevices) {
+          if (item?.value) options.push([item.value, item.label || item.value]);
+        }
+      } else if (cudaAvailable) {
+        options.push(["cuda", "CUDA GPU"]);
+      }
+      for (const [value, label] of options) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        select.append(option);
+      }
+      if (cudaDevices.length && context.settings.device === "cuda") {
+        context.settings.device = cudaDevices[0].value;
+      }
+      if (!cudaAvailable && isCudaDevice(context.settings.device)) {
+        context.settings.device = "auto";
+      }
+      bindInput(select, context, "device");
+      select.value = context.settings.device || "auto";
+      return select;
+    }
+
+    async function injectWhisperDeviceField(modal, context) {
+      const page = fieldPage(modal);
+      if (!page || page.querySelector(".enhanced-speech-whisper-device")) return;
+      const device = await makeWhisperDeviceSelect(context);
+      if (page.querySelector(".enhanced-speech-whisper-device")) return;
+      const deviceField = field(
+        "Processing device",
+        "Whisper runs on the selected runtime device. CUDA choices appear only when this container can use them.",
+        device,
+        "enhanced-speech-whisper-device-field",
+      );
+      const modelTitle = Array.from(page.querySelectorAll(".field-title"))
+        .find((title) => title.textContent.trim().toLowerCase() === "model size");
+      const modelField = modelTitle?.closest(".field");
+      if (modelField) modelField.insertAdjacentElement("afterend", deviceField);
+      else page.append(deviceField);
+    }
+
+    function collectWhisperModalSettings(settings, modal) {
+      if (!settings || typeof settings !== "object") return settings;
+      const device = modal?.querySelector?.(".enhanced-speech-whisper-device");
+      if (device) settings.device = device.value;
+      return settings;
+    }
+
+    function getWhisperModalContext(modal) {
+      const current = getModalContexts().find((entry) => entry.modal === modal)?.context;
+      if (current?.pluginName === "_whisper_stt" && current.settings) return current;
+      // Older compatible hosts expose the active plugin settings through an
+      // Alpine store instead of attaching the context to a modal.
+      for (const name of ["pluginSettings", "pluginSettingsPrototype"]) {
+        const store = globalThis.Alpine?.store?.(name);
+        if (store?.pluginName === "_whisper_stt" && store.settings) return store;
+      }
+      return null;
+    }
+
+    async function persistWhisperSettings(settings) {
+      if (!settings || typeof settings !== "object") return null;
+      const payload = {};
+      for (const key of [
+        "model_size", "device", "language", "message_mode",
+        "silence_threshold", "silence_duration", "waiting_timeout",
+      ]) {
+        if (key in settings) payload[key] = settings[key];
+      }
+      const result = await callJson("/plugins/_convo/stt_config", payload);
+      if (result?.config) Object.assign(settings, result.config);
+      return result;
+    }
+
+    async function getKokoroModalContext(modal) {
+      const existing = modal?.__pluginSettingsContext;
+      if (existing?.settings) return existing;
+      let settings = {};
+      try {
+        const result = await callJson("/plugins", { action: "get_config", plugin_name: "_kokoro_tts" });
+        if (result?.ok && result.data && typeof result.data === "object") settings = result.data;
+      } catch {}
+      const page = fieldPage(modal);
+      const nativeVoice = Array.from(page?.querySelectorAll(".field") || [])
+        .find((field) => field.querySelector(".field-title")?.textContent?.trim().toLowerCase() === "voice")
+        ?.querySelector("input, select");
+      const nativeSpeed = Array.from(page?.querySelectorAll(".field") || [])
+        .find((field) => field.querySelector(".field-title")?.textContent?.trim().toLowerCase() === "speed")
+        ?.querySelector("input, select");
+      if (nativeVoice?.value) settings.voice = nativeVoice.value;
+      if (nativeSpeed?.value) settings.speed = Number(nativeSpeed.value) || settings.speed;
+      return { pluginName: "_kokoro_tts", settings };
+    }
+
+    async function injectKokoroFields() {
+      const modals = Array.from(document.querySelectorAll(".modal"))
+        .filter((modal) => modal.querySelector(".plugin-config-page")?.textContent?.includes("Kokoro TTS"));
+      for (const modal of modals) {
+        const page = fieldPage(modal);
+        if (!page) continue;
+        const existingGroups = Array.from(page.querySelectorAll(".enhanced-speech-kokoro-fields"));
+        if (existingGroups.length) {
+          // Some A0 modal layouts expose nested `.modal` wrappers.  If a
+          // previous race already injected twice, retain the first field group
+          // (which owns the moved native speed field) and clean up the rest.
+          existingGroups.slice(1).forEach((group) => group.remove());
+          continue;
+        }
+        if (page.__agentspineEnhancedSpeechInjecting) continue;
+        // This marker is intentionally stored on the actual config page, not
+        // on an undocumented host store.  It prevents two matching modal
+        // wrappers or duplicate extension evaluation from racing across the
+        // asynchronous voice fetch below.
+        page.__agentspineEnhancedSpeechInjecting = true;
+        try {
+          const context = await getKokoroModalContext(modal);
+          if (page.querySelector(".enhanced-speech-kokoro-fields")) continue;
+          guardContextSave(modal.__pluginSettingsContext);
+          ensureDefaults(context.settings, kokoroDefaults);
+          context.settings.remote_enabled = context.settings.device === "remote";
+          const nativeBlend = !!page.querySelector(".kokoro-blend-editor");
+          if (nativeBlend) await extendNativeVoiceCatalog(page, context);
+          else await enhancePrimaryVoiceField(page, context);
+          const group = document.createElement("div");
+          group.className = "enhanced-speech-kokoro-fields";
+
+        if (!nativeBlend) {
+        const secondary = await makeVoiceSelect(context, "secondary_voice", true);
+        group.append(field("Secondary voice", "Optional Kokoro voice blended with the primary voice.", secondary));
+
+        const blend = bindInput(document.createElement("input"), context, "voice_blend", clampBlend);
+        blend.type = "range";
+        blend.min = "1";
+        blend.max = "99";
+        blend.step = "1";
+        const blendWrap = document.createElement("div");
+        const blendValue = document.createElement("span");
+        blendValue.className = "range-value";
+        const updateBlend = () => {
+          const value = clampBlend(context.settings.voice_blend);
+          blendValue.textContent = `${value}% / ${100 - value}%`;
+        };
+        blend.addEventListener("input", updateBlend);
+        updateBlend();
+        blendWrap.append(blend, blendValue);
+        group.append(field("Primary voice blend", "Percentage of the primary voice used when a secondary voice is set.", blendWrap));
+        }
+
+        const device = document.createElement("select");
+        const deviceOptions = [["auto", "Auto"], ["cpu", "CPU"]];
+        if (cudaDevices.length) {
+          for (const item of cudaDevices) {
+            if (item?.value) deviceOptions.push([item.value, item.label || item.value]);
+          }
+        } else if (cudaAvailable) {
+          // An older compatible endpoint may not return inventory details.
+          deviceOptions.push(["cuda", "CUDA GPU"]);
+        }
+        deviceOptions.push(["remote", "Remote GPU worker"]);
+        for (const [value, label] of deviceOptions) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          device.append(option);
+        }
+        bindInput(device, context, "device");
+        if (cudaDevices.length && context.settings.device === "cuda") {
+          context.settings.device = cudaDevices[0].value;
+        }
+        if (!cudaAvailable && isCudaDevice(context.settings.device)) context.settings.device = "auto";
+        device.value = context.settings.device || "auto";
+        device.addEventListener("change", () => {
+          context.settings.remote_enabled = device.value === "remote";
+        });
+        group.append(field("Mode", "Backend target used by enhanced Kokoro synthesis.", device));
+
+        const remoteUrl = bindInput(document.createElement("input"), context, "remote_url");
+        remoteUrl.type = "text";
+        remoteUrl.placeholder = "http://kokoro-worker:8891";
+        group.append(field("Remote URL", "Remote worker base URL used when remote mode is enabled.", remoteUrl));
+
+        const remoteToken = bindInput(document.createElement("input"), context, "remote_token");
+        remoteToken.type = "password";
+        remoteToken.autocomplete = "off";
+        group.append(field("Remote token", "Optional bearer token for the remote worker.", remoteToken));
+
+        const remoteTimeout = bindInput(document.createElement("input"), context, "remote_timeout", (value) => Math.max(1, Number(value) || 20));
+        remoteTimeout.className = "enhanced-speech-remote-timeout";
+        remoteTimeout.type = "number";
+        remoteTimeout.min = "1";
+        remoteTimeout.step = "1";
+        group.append(field("Remote timeout", "Timeout in seconds for remote worker requests.", remoteTimeout));
+
+        const workerRow = document.createElement("div");
+        workerRow.className = "enhanced-speech-worker-test";
+        const workerButton = document.createElement("button");
+        workerButton.type = "button";
+        workerButton.className = "btn btn-field";
+        workerButton.textContent = "Test worker";
+        const workerStatus = document.createElement("span");
+        workerStatus.className = "enhanced-speech-worker-status";
+        workerButton.addEventListener("click", async () => {
+          workerStatus.textContent = "Checking...";
+          const result = await callJson("/plugins/_convo/worker", context.settings).catch((error) => ({ success: false, error: error?.message || String(error) }));
+          workerStatus.textContent = result?.success
+            ? `Connected: ${result.url}${result.device ? ` (${result.device})` : ""}`
+            : (result?.error || "Worker unavailable");
+        });
+        workerRow.append(workerButton, workerStatus);
+        group.append(field("Worker status", "Check the configured sidecar or fallback worker aliases.", workerRow));
+
+        const speedTitle = Array.from(page.querySelectorAll(".field-title"))
+          .find((title) => title.textContent.trim().toLowerCase() === "speed");
+        const speedField = speedTitle?.closest(".field");
+        const primaryField = page.querySelector(".enhanced-speech-primary-voice")?.closest(".field");
+        if (speedField) group.insertBefore(speedField, group.children[2] || null);
+        primaryField?.insertAdjacentElement("afterend", group);
+        if (!group.isConnected) page.append(group);
+          page.__enhancedSpeechKokoroPatched = true;
+        } finally {
+          page.__agentspineEnhancedSpeechInjecting = false;
+        }
+      }
+    }
+
+    async function markWhisperFields() {
+      for (const { modal, context } of getModalContexts()) {
+        if (context.pluginName !== "_whisper_stt") continue;
+        guardContextSave(context);
+        ensureDefaults(context.settings, whisperDefaults);
+        await injectWhisperDeviceField(modal, context);
+        const page = fieldPage(modal);
+        if (page && !page.querySelector(".enhanced-speech-whisper-note")) {
+          const note = document.createElement("div");
+          note.className = "section-description enhanced-speech-whisper-note";
+          note.textContent = "Enhanced Speech syncs these STT settings with the backend speech adapter.";
+          page.append(note);
+        }
+      }
+    }
+
+    function modeLabel(config) {
+      const device = (config?.device || "auto").toString().toLowerCase();
+      if (device === "remote") return "Remote GPU worker";
+      if (config?.effective_device_label) return config.effective_device_label;
+       if (device === "cuda") return "CUDA GPU";
+       if (/^cuda:\d+$/i.test(device)) return `CUDA device ${device.slice(5)}`;
+      if (device === "cpu") return "CPU";
+      return "Auto";
+    }
+
+    function voiceSummary(config) {
+      const primary = config?.voice || config?.primary_voice || "";
+      if (config && "voice_weights" in config) {
+        const weights = Object.entries(config.voice_weights || {})
+          .filter(([, weight]) => Number.isFinite(Number(weight)) && Number(weight) > 0);
+        const total = weights.reduce((sum, [, weight]) => sum + Number(weight), 0);
+        return total > 0 ? weights.map(([id, weight]) => `${id} (${Math.round(Number(weight) / total * 100)}%)`).join(" + ") : primary;
+      }
+      const secondary = config?.secondary_voice || "";
+      if (!secondary) return primary;
+      return `${primary} + ${secondary}`;
+    }
+
+    async function extendNativeVoiceCatalog(page, context) {
+      const native = globalThis.Alpine?.$data?.(page);
+      if (!Array.isArray(native?.catalog) || typeof native.availableVoices !== "function") return;
+      const selected = typeof native.voiceIds === "function" ? native.voiceIds() :
+        String(native.config?.voice || "").split(",").map(id => id.trim()).filter(Boolean);
+      const options = [...await loadVoices(context.settings),
+        ...selected.map(id => ({ value: id, label: id }))];
+      const known = new Set(native.catalog.map(item => item.id));
+      for (const item of options) {
+        // Catalog entries are individual IDs, never a comma-separated blend.
+        if (!item?.value || item.value.includes(",") || known.has(item.value)) continue;
+        const groups = { af: "American Female", am: "American Male", bf: "British Female", bm: "British Male" };
+        native.catalog.push({ id: item.value, label: item.value, group: groups[item.value.slice(0, 2)] || "Custom voice" });
+        known.add(item.value);
+      }
+      const select = page.querySelector(".kokoro-blend-editor select");
+      if (!select) return;
+      for (const name of new Set(native.catalog.map(item => item.group))) {
+        if (Array.from(select.querySelectorAll("optgroup")).some(group => group.label === name)) continue;
+        const group = document.createElement("optgroup");
+        group.label = name;
+        const template = document.createElement("template");
+        template.setAttribute("x-for", `voice in availableVoices(${JSON.stringify(name)})`);
+        template.setAttribute(":key", "voice.id");
+        const option = document.createElement("option");
+        option.setAttribute(":value", "voice.id");
+        option.setAttribute("x-text", "voice.label + ' (' + voice.id + ')'");
+        template.content.append(option);
+        group.append(template);
+        globalThis.Alpine.mutateDom(() => { select.append(group); globalThis.Alpine.initTree(group); });
+      }
+    }
+
+    function applyKokoroCompatibilityState(store, result) {
+      if (!store || !result || typeof result !== "object") return;
+      // The built-in Kokoro status handler in some compatible hosts is
+      // GET-only while the public JSON helper uses POST.  Read the real
+      // plugin-toggle state from the Enhanced Speech bridge instead of
+      // allowing that route mismatch to hide an enabled provider card.
+      if (typeof result.enabled === "boolean") store.enabled = result.enabled;
+      if (result.config && typeof result.config === "object") {
+        store.config = { ...(store.config || {}), ...result.config };
+      }
+    }
+
+    async function hydrateKokoroStatus(store) {
+      const enhanced = await callJson("/plugins/_convo/speech_config", {});
+      const status = enhanced?.config ? null : await callJson("/plugins/_kokoro_tts/status", {});
+      applyKokoroCompatibilityState(store, enhanced?.config ? enhanced : status);
+      if (store.enabled) store.registerProvider?.();
+      else store.unregisterProvider?.();
+      return true;
+    }
+
+    function patchKokoroStore(candidate = null) {
+      const store = candidate || getKokoroStore();
+      if (!store) return false;
+      kokoroStoreReference = store;
+      guardConfigOpen(store, "_kokoro_tts");
+      if (store.__agentspineEnhancedSpeechPatched) return true;
+      store.__agentspineEnhancedSpeechPatched = true;
+      const originalRefreshStatus = store.refreshStatus?.bind(store);
+      if (originalRefreshStatus) {
+        store.refreshStatus = async function(...args) {
+          try { await originalRefreshStatus(...args); } catch {}
+          try {
+            // The current Spine status route only reports the host's primary
+            // `voice`; the plugin-owned endpoint is the full normalized
+            // compatibility contract, including secondary voice and blend.
+            await hydrateKokoroStatus(this);
+          } catch {}
+          scheduleRefresh();
+        };
+      }
+      Object.defineProperty(store, "enhancedVoiceSummary", {
+        configurable: true,
+        get() { return voiceSummary(this.config || {}); },
+      });
+      Object.defineProperty(store, "enhancedModeLabel", {
+        configurable: true,
+        get() { return modeLabel(this.config || {}); },
+      });
+      store.__agentspineEnhancedHydration = hydrateKokoroStatus(store)
+        .then(() => {
+          scheduleRefresh();
+        })
+        .catch(() => {});
+      return true;
+    }
+
+    function scheduleKokoroRuntimeBridge() {
+      if (kokoroRuntimeBridgeScheduled || kokoroRuntimeBridgeAttempts >= 30) return;
+      kokoroRuntimeBridgeScheduled = true;
+      kokoroRuntimeBridgeAttempts += 1;
+      setTimeout(() => {
+        kokoroRuntimeBridgeScheduled = false;
+        void ensureKokoroStorePatch();
+      }, 500);
+    }
+
+    async function ensureKokoroStorePatch() {
+      // v2.7 exports its public provider store as a module but does not always
+      // attach it to Alpine before the chat toolbar is rendered. Import that
+      // public surface when necessary, then register the provider explicitly.
+      // Older hosts still take the existing Alpine-store path.
+      const existing = getKokoroStore();
+      if (existing?.__agentspineKokoroPlaybackBridgeReady) return true;
+      if (kokoroRuntimeBridgePromise) return kokoroRuntimeBridgePromise;
+      kokoroRuntimeBridgePromise = (async () => {
+        let store = existing;
+        try {
+          if (!store) {
+            const response = await fetch("/plugins/_kokoro_tts/webui/kokoro-tts-store.js", { cache: "no-store" });
+            if (!response.ok) throw new Error("Kokoro store is not ready");
+            ({ store } = await import("/plugins/_kokoro_tts/webui/kokoro-tts-store.js"));
+          }
+          if (!store) throw new Error("Kokoro store is unavailable");
+          patchKokoroStore(store);
+          await store.initRuntime?.();
+          await hydrateKokoroStatus(store);
+          store.__agentspineKokoroPlaybackBridgeReady = true;
+          console.info("[Enhanced Speech] Kokoro playback bridge active");
+          return true;
+        } catch {
+          scheduleKokoroRuntimeBridge();
+          return false;
+        } finally {
+          kokoroRuntimeBridgePromise = null;
+        }
+      })();
+      return kokoroRuntimeBridgePromise;
+    }
+
+    function patchWhisperStore() {
+      guardConfigOpen(globalThis.Alpine?.store?.("whisperStt"), "_whisper_stt");
+    }
+
+    let whisperStatusBridgeScheduled = false;
+    let whisperStatusBridgeAttempts = 0;
+
+    function scheduleWhisperStatusBridge() {
+      if (whisperStatusBridgeScheduled || whisperStatusBridgeAttempts >= 30) return;
+      whisperStatusBridgeScheduled = true;
+      whisperStatusBridgeAttempts += 1;
+      setTimeout(() => {
+        whisperStatusBridgeScheduled = false;
+        void ensureWhisperStatusBridge();
+      }, 500);
+    }
+
+    async function hydrateWhisperStatus(store) {
+      const status = await callJson("/plugins/_convo/stt_status", {});
+      if (!status || typeof status.enabled !== "boolean" || !status.config) return false;
+      store.enabled = status.enabled;
+      store.statusLoaded = true;
+      store.config = { ...(store.config || {}), ...status.config };
+      if (store.enabled) store.registerProvider?.();
+      else store.unregisterProvider?.();
+      store.updateMicrophoneButtonUI?.();
+      return true;
+    }
+
+    async function ensureWhisperStatusBridge() {
+      let store = globalThis.Alpine?.store?.("whisperStt");
+      try {
+        if (!store) {
+          // v2.7 exposes this as its public recorder/store surface. Probe the
+          // module first so older compatible hosts retain their native path
+          // without a failing legacy import in the console.
+          const response = await fetch("/plugins/_whisper_stt/webui/whisper-stt-store.js", { cache: "no-store" });
+          if (!response.ok) throw new Error("Whisper store is not ready");
+          ({ store } = await import("/plugins/_whisper_stt/webui/whisper-stt-store.js"));
+        }
+        if (!store) throw new Error("Whisper store is unavailable");
+
+        if (!store.__agentspineWhisperStatusBridgePatched) {
+          store.__agentspineWhisperStatusBridgePatched = true;
+          const originalRefreshStatus = store.refreshStatus?.bind(store);
+          if (originalRefreshStatus) {
+            store.refreshStatus = async function enhancedWhisperRefreshStatus(...args) {
+              const result = await originalRefreshStatus(...args);
+              try { await hydrateWhisperStatus(this); } catch {}
+              return result;
+            };
+          }
+        }
+
+        await store.initRuntime?.();
+        if (await hydrateWhisperStatus(store)) {
+          console.info("[Enhanced Speech] Whisper toolbar bridge active");
+          return true;
+        }
+      } catch {}
+      scheduleWhisperStatusBridge();
+      return false;
+    }
+
+    function ensureCardRows() {
+      void ensureKokoroStorePatch();
+      const store = getKokoroStore();
+      if (store?.config) renderKokoroCardSettings(store.config);
+      const cards = Array.from(document.querySelectorAll(".voice-plugin-card"))
+        .filter((card) => card.textContent.includes("Kokoro TTS"));
+      for (const card of cards) {
+        const meta = card.querySelector(".voice-plugin-meta");
+        if (!meta) continue;
+        meta.querySelector(".enhanced-speech-card-voices")?.remove();
+        if (!meta.querySelector(".enhanced-speech-card-mode")) {
+          const row = document.createElement("div");
+          row.className = "voice-plugin-meta-row enhanced-speech-card-mode";
+          row.innerHTML = "<span>Mode</span><span></span>";
+          meta.append(row);
+        }
+        const voiceRow = Array.from(meta.querySelectorAll(".voice-plugin-meta-row"))
+          .find((row) => row.querySelector("span")?.textContent?.trim() === "Voice");
+        let voice = voiceRow?.querySelector(".enhanced-speech-card-voice");
+        if (voiceRow && !voice) {
+          const nativeValue = voiceRow.querySelector("code, span:last-child");
+          voice = document.createElement("code");
+          voice.className = "enhanced-speech-card-voice";
+          nativeValue?.replaceWith(voice);
+        }
+        const mode = meta.querySelector(".enhanced-speech-card-mode span:last-child");
+        if (voice) voice.textContent = store?.enhancedVoiceSummary || "";
+        if (mode) mode.textContent = store?.enhancedModeLabel || "Auto";
+      }
+    }
+
+    async function refresh() {
+      if (refreshRunning) {
+        refreshAgain = true;
+        return;
+      }
+      refreshRunning = true;
+      patchSpeechStream();
+      void ensureKokoroStorePatch();
+      installKokoroSaveCapture();
+      installWhisperSaveCapture();
+      patchKokoroSettingsStore();
+      patchWhisperStore();
+      void ensureWhisperStatusBridge();
+      ensureCardRows();
+      try {
+        await injectKokoroFields();
+        await markWhisperFields();
+        ensureCardRows();
+      } finally {
+        refreshRunning = false;
+        if (refreshAgain) {
+          refreshAgain = false;
+          scheduleRefresh();
+        }
+      }
+    }
+
+    function scheduleRefresh() {
+      if (refreshScheduled) return;
+      refreshScheduled = true;
+      window.requestAnimationFrame(() => {
+        refreshScheduled = false;
+        refresh();
+      });
+    }
+
+    const style = document.createElement("style");
+    style.id = "agentspine-enhanced-speech-style";
+    style.textContent = `
+      .enhanced-speech-voice-select {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid color-mix(in srgb, var(--color-border, #777) 68%, #4aa3ff 32%);
+        border-radius: 6px;
+        background: var(--color-input, #17191c);
+        color: var(--color-text, #f1f3f5);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.82rem;
+        font-weight: 600;
+        padding: 7px 32px 7px 10px;
+      }
+      .enhanced-speech-voice-select:focus {
+        border-color: #4aa3ff;
+        box-shadow: 0 0 0 2px rgba(74, 163, 255, 0.18);
+        outline: none;
+      }
+      .enhanced-speech-voice-select option { font-weight: 500; }
+      .enhanced-speech-worker-status { margin-left: 10px; color: var(--color-text-secondary, #aeb4bc); }
+      .enhanced-speech-kokoro-fields .field { border-top-color: rgba(74, 163, 255, 0.14); }
+    `;
+    if (!document.getElementById(style.id)) document.head.append(style);
+
+    document.addEventListener("alpine:init", () => {
+      setTimeout(scheduleRefresh, 0);
+      setTimeout(ensureKokoroStorePatch, 0);
+    });
+    document.addEventListener("DOMContentLoaded", scheduleRefresh, { once: true });
+    document.addEventListener("alpine:init", () => setTimeout(ensureSpeechStreamPatch, 0));
+    if (document.readyState !== "loading") {
+      setTimeout(ensureSpeechStreamPatch, 0);
+      setTimeout(ensureKokoroStorePatch, 0);
+    }
+    scheduleRefresh();
+    ensureKokoroStorePatch();
+    ensureWhisperStatusBridge();
+    new MutationObserver((mutations) => {
+      patchSpeechStream();
+      if (!mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) => {
+        if (node.nodeType !== 1) return false;
+        return node.matches?.(".modal, .voice-plugin-card, .speech-plugin-card, .speech-plugin-page, .plugin-config-page")
+          || node.querySelector?.(".modal, .voice-plugin-card, .speech-plugin-card, .speech-plugin-page, .plugin-config-page");
+      }))) return;
+      scheduleRefresh();
+    }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+  })();
+</script>

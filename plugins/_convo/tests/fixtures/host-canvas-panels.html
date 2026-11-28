@@ -1,0 +1,27 @@
+<!-- Reference wrappers copied read-only from the running agent-zero-v2.11 host on 2026-10-14:
+     /a0/extensions/webui/right-canvas-panels/files-panel.html and
+     /a0/plugins/_browser/extensions/webui/right-canvas-panels/browser-panel.html.
+     They document the host right-canvas contract that Convo's panel must follow. -->
+<div
+  class="right-canvas-surface-panel files-canvas-surface"
+  data-surface-id="files"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('files'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('files')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('files')).toString()"
+>
+  <x-component path="modals/file-browser/file-browser.html" mode="canvas"></x-component>
+</div>
+
+<div
+  class="right-canvas-surface-panel browser-canvas-surface"
+  data-surface-id="browser"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('browser'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('browser')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('browser')).toString()"
+>
+  <x-component path="/plugins/_browser/webui/browser-panel.html" mode="canvas"></x-component>
+</div>

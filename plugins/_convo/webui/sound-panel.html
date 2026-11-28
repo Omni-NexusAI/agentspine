@@ -1,0 +1,158 @@
+<html><head><script type="module">import { sound } from '/plugins/_convo/webui/convo-store.js';</script></head><body>
+<!-- Sound for this device (sound-setup.js, store `convoSound`): the input meter and the noise-gate handle on one dB axis, Measure room,
+     Interrupt after, End of turn and Echo protection. Values are kept per input/output device in this browser; the saved settings are
+     only the defaults ("Use as default" saves these as them). Changes reach a running conversation at once (echo protection Off at the
+     next start). The meter is a visual only: no live region, no gating, nothing recorded. -->
+<div x-data class="convo-sound">
+<template x-if="$store.convoSound">
+<section class="convo-sound-panel" aria-label="Sound for this device" x-init="$store.convoSound.refresh()" x-id="['sound-gate', 'sound-gate-hint', 'sound-barge', 'sound-end', 'sound-echo', 'sound-output', 'sound-phone', 'sound-mic', 'sound-camera', 'sound-camera-size', 'sound-screen-size']">
+  <div class="convo-sound-row convo-sound-gate">
+    <div class="convo-sound-head"><label :for="$id('sound-gate')">Noise gate</label><span class="convo-sound-value" x-text="$store.convoSound.values.noise_gate_db <= -66 ? 'Off' : $store.convoSound.values.noise_gate_db + ' dB'"></span></div>
+    <div class="convo-sound-track">
+      <div class="convo-sound-bar" aria-hidden="true">
+        <i class="convo-sound-fill" :data-voiced="$store.convoSound.meter().voiced ? 'true' : 'false'" :style="'transform:scaleX(' + $store.convoSound.meter().position + ')'"></i>
+        <b class="convo-sound-withheld" x-show="$store.convoSound.meter().withheld"></b>
+      </div>
+      <input type="range" min="-66" max="-3" step="1" :id="$id('sound-gate')" :aria-describedby="$id('sound-gate-hint')" :value="$store.convoSound.values.noise_gate_db"
+             :aria-valuetext="$store.convoSound.values.noise_gate_db <= -66 ? 'Off' : $store.convoSound.values.noise_gate_db + ' decibels'" @input="$store.convoSound.set('noise_gate_db', Number($event.target.value))">
+    </div>
+    <p class="convo-sound-readout"><span x-text="'Input ' + $store.convoSound.meter().text"></span><span x-show="$store.convoSound.meter().voiced"> · voice</span><span class="convo-sound-echo" x-show="$store.convoSound.meter().withheld"> · withheld as echo</span></p>
+    <p class="convo-sound-hint" :id="$id('sound-gate-hint')">Raise the handle until room noise stops lighting the bar. Leftmost is off.</p>
+    <div class="convo-sound-actions"><button type="button" class="button" :disabled="!($store.convoSound.canMeasure === true)" @click="$store.convoSound.measureRoom()" x-text="$store.convoSound.measuring ? 'Measuring… stay quiet' : 'Measure room'"></button><small x-show="!$store.convoSound.convo?.active">Measure room needs a running conversation.</small><small x-show="$store.convoSound.convo?.active && !$store.convoSound.measuring && $store.convoSound.assistantPlaying">Measure room waits while Convo speaks.</small></div>
+  </div>
+  <div class="convo-sound-row convo-sound-line">
+    <label :for="$id('sound-barge')">Interrupt after</label>
+    <input type="range" min="0.4" max="2" step="0.1" :id="$id('sound-barge')" :value="$store.convoSound.values.barge_in_seconds" :aria-valuetext="$store.convoSound.values.barge_in_seconds.toFixed(1) + ' seconds'" @input="$store.convoSound.set('barge_in_seconds', Number($event.target.value))">
+    <output :for="$id('sound-barge')" x-text="$store.convoSound.values.barge_in_seconds.toFixed(1) + ' s'"></output>
+  </div>
+  <div class="convo-sound-row convo-sound-line">
+    <label :for="$id('sound-end')">End of turn</label>
+    <input type="range" min="0.5" max="2" step="0.1" :id="$id('sound-end')" :value="$store.convoSound.values.end_of_turn_seconds" :aria-valuetext="$store.convoSound.values.end_of_turn_seconds.toFixed(1) + ' seconds of silence'" @input="$store.convoSound.set('end_of_turn_seconds', Number($event.target.value))">
+    <output :for="$id('sound-end')" x-text="$store.convoSound.values.end_of_turn_seconds.toFixed(1) + ' s'"></output>
+  </div>
+  <div class="convo-sound-row convo-sound-line">
+    <label :for="$id('sound-echo')">Echo protection</label>
+    <select :id="$id('sound-echo')" :value="$store.convoSound.values.echo_guard" @change="$store.convoSound.set('echo_guard', $event.target.value)">
+      <template x-for="option in [['adaptive','Adaptive'],['strict','Strict'],['off','Off']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.values.echo_guard" x-text="option[1]"></option></template>
+    </select>
+  </div>
+  <div class="convo-sound-row convo-sound-line convo-sound-mic">
+    <label :for="$id('sound-mic')">Microphone</label>
+    <select :id="$id('sound-mic')" x-init="$store.convoSound.listMicrophones()" @focus="$store.convoSound.listMicrophones()" @pointerdown="$store.convoSound.listMicrophones()" @change="$store.convoSound.chooseMicrophone($event.target.value)">
+      <template x-if="!$store.convoSound.microphones.length"><option value="" selected>The browser’s default</option></template>
+      <template x-for="device in $store.convoSound.microphones" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.microphone" x-text="device.label || (device.id === 'default' ? 'System default' : 'Unnamed microphone')"></option></template>
+    </select>
+    <p class="convo-sound-hint convo-sound-wide">The same microphone as Agent Zero’s own dictation: choosing one here changes it there too. Names appear once the browser was allowed to use a microphone.</p>
+    <p class="convo-sound-note convo-sound-wide" x-show="$store.convoSound.microphoneNote" x-text="$store.convoSound.microphoneNote"></p>
+  </div>
+  <div class="convo-sound-row convo-sound-output">
+    <div class="convo-sound-head"><span class="convo-sound-title">Output</span><span class="convo-sound-value" x-text="$store.convoSound.output().label + ($store.convoSound.output().missing ? ' (' + ($store.convoSound.choices.output_label || 'the saved output') + ' is not connected)' : '')"></span></div>
+    <template x-if="$store.convoSound.canChooseOutput">
+      <div class="convo-sound-line">
+        <label :for="$id('sound-output')">Play to</label>
+        <select :id="$id('sound-output')" x-init="$store.convoSound.listOutputs()" @focus="$store.convoSound.listOutputs()" @pointerdown="$store.convoSound.listOutputs()" @change="$store.convoSound.setChoice('output', $event.target.value)">
+          <option value="" :selected="!$store.convoSound.choices.output">System default</option>
+          <template x-for="device in $store.convoSound.outputs" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.choices.output" x-text="device.label || 'Unnamed output'"></option></template>
+          <template x-if="$store.convoSound.choices.output && !$store.convoSound.outputs.some(device => device.id === $store.convoSound.choices.output)"><option :value="$store.convoSound.choices.output" selected x-text="$store.convoSound.savedOutputLabel()"></option></template>
+        </select>
+      </div>
+    </template>
+    <div class="convo-sound-bar convo-sound-outbar" aria-hidden="true"><i class="convo-sound-fill" :style="'transform:scaleX(' + Math.min(1, Number($store.convo?.outputLevel) || 0) + ')'"></i></div>
+    <p class="convo-sound-readout"><span x-text="($store.convo?.outputLevel || 0) > .02 ? 'Sound is going to ' + $store.convoSound.output().label : 'Nothing playing'"></span><span x-show="$store.convoSound.output().state && $store.convoSound.output().state !== 'running'" x-text="' · output ' + $store.convoSound.output().state"></span></p>
+    <div class="convo-sound-actions"><button type="button" class="button" @click="$store.convoSound.testSound()">Play test sound</button><small x-show="$store.convoSound.testNote" x-text="$store.convoSound.testNote"></small></div>
+    <p class="convo-sound-note" x-show="$store.convoSound.outputNote || $store.convo?.outputMessage" x-text="$store.convoSound.outputNote || $store.convo?.outputMessage"></p>
+  </div>
+  <template x-if="$store.convoSound.output().phone">
+    <div class="convo-sound-row convo-sound-line">
+      <label :for="$id('sound-phone')">Phone audio</label>
+      <select :id="$id('sound-phone')" @change="$store.convoSound.setChoice('phone_mode', $event.target.value)">
+        <template x-for="option in [['auto','Automatic'],['media','Media (headset)'],['call','Call (loudspeaker)']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.choices.phone_mode" x-text="option[1]"></option></template>
+      </select>
+      <p class="convo-sound-hint convo-sound-wide" x-text="$store.convoSound.output().mode ? 'This conversation: ' + ($store.convoSound.output().mode === 'media' ? 'Media' : 'Call') + ' (' + $store.convoSound.output().mode_reason + '). A change applies at the next start; each mode keeps its own noise gate and echo calibration.' : 'Media plays at media volume with the browser\'s echo cancelling off (for a headset); Call keeps it on, so you can interrupt on the loudspeaker. Chosen at each start.'"></p>
+    </div>
+  </template>
+  <fieldset class="convo-sound-row convo-sound-processing">
+    <legend>Microphone processing</legend>
+    <div class="convo-sound-switch"><span :id="$id('sound-ns')">Noise suppression</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-ns')" :checked="$store.convoSound.choices.noise_suppression" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('noise_suppression', $event.target.checked)"><span class="toggler"></span></label></div>
+    <div class="convo-sound-switch"><span :id="$id('sound-agc')">Automatic gain</span><label class="toggle"><input type="checkbox" :aria-labelledby="$id('sound-agc')" :checked="$store.convoSound.choices.auto_gain" :disabled="$store.convoSound.output().mode === 'media'" @change="$store.convoSound.setChoice('auto_gain', $event.target.checked)"><span class="toggler"></span></label></div>
+    <p class="convo-sound-hint">The browser's own processing for this microphone, applied at the next start. Echo cancelling stays on (interruption by voice needs it); phone Media mode turns all three off.</p>
+  </fieldset>
+  <fieldset class="convo-sound-row convo-sound-picture">
+    <legend>Camera and screen</legend>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-camera')">Camera</label>
+      <select :id="$id('sound-camera')" x-init="$store.convoSound.listCameras()" @focus="$store.convoSound.listCameras()" @pointerdown="$store.convoSound.listCameras()" @change="$store.convoSound.setPicture('camera', $event.target.value)">
+        <option value="" :selected="!$store.convoSound.picture.camera">The browser’s default</option>
+        <template x-for="device in $store.convoSound.cameras" :key="device.id"><option :value="device.id" :selected="device.id === $store.convoSound.picture.camera" x-text="device.label || 'Unnamed camera'"></option></template>
+        <template x-if="$store.convoSound.picture.camera && !$store.convoSound.cameras.some(device => device.id === $store.convoSound.picture.camera)"><option :value="$store.convoSound.picture.camera" selected x-text="$store.convoSound.savedCameraLabel()"></option></template>
+      </select>
+    </div>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-camera-size')">Camera picture</label>
+      <select :id="$id('sound-camera-size')" @change="$store.convoSound.setPicture('camera_edge', Number($event.target.value))">
+        <template x-for="option in [[384,'Small (fastest)'],[512,'Medium'],[768,'Large (most detail)']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.picture.camera_edge" x-text="option[1]"></option></template>
+      </select>
+    </div>
+    <div class="convo-sound-line">
+      <label :for="$id('sound-screen-size')">Screen picture</label>
+      <select :id="$id('sound-screen-size')" @change="$store.convoSound.setPicture('screen_edge', Number($event.target.value))">
+        <template x-for="option in [[384,'Small (fastest)'],[512,'Medium'],[768,'Large (most detail)']]" :key="option[0]"><option :value="option[0]" :selected="option[0] === $store.convoSound.picture.screen_edge" x-text="option[1]"></option></template>
+      </select>
+    </div>
+    <p class="convo-sound-hint">Used when you share the camera or your screen in the Convo panel. The model gets one picture only when it looks; a smaller one is quicker and costs less, a larger one shows small text. Nothing is stored. Kept in this browser.</p>
+  </fieldset>
+  <template x-if="$store.convo?.settings?.developer_mode">
+    <div class="convo-sound-row convo-sound-record">
+      <div class="convo-sound-actions"><button type="button" class="button" :disabled="!($store.convo?.active === true) || $store.convoSound.recording === true" @click="$store.convoSound.record()" x-text="$store.convoSound.recording ? 'Recording the next utterance…' : 'Record raw and sent'"></button><button type="button" class="button convo-link" @click="$store.convoSound.listRecordings()">List recordings</button></div>
+      <p class="convo-sound-hint">Saves your next utterance twice on the Agent Zero host (Convo's data folder): the microphone before echo protection and the gate, and what Convo sent. Only when you press it; delete them here.</p>
+      <p class="convo-sound-note" x-show="$store.convoSound.recordNote" x-text="$store.convoSound.recordNote"></p>
+      <ul class="convo-sound-recordings" x-show="$store.convoSound.recordings.length"><template x-for="item in $store.convoSound.recordings" :key="item.id"><li><span x-text="item.id + ' · raw ' + Number(item.raw_s || 0).toFixed(1) + ' s, sent ' + Number(item.sent_s || 0).toFixed(1) + ' s' + (item.clipped_start_ms == null ? '' : ', clipped ' + item.clipped_start_ms + ' ms') + ', ' + (item.silenced || 0) + ' silenced'"></span><button type="button" class="button convo-link" @click="$store.convoSound.deleteRecording(item.id)">Delete</button></li></template></ul>
+    </div>
+  </template>
+  <template x-if="$store.convo?.settings?.developer_mode"><p class="convo-sound-dev" x-text="'Playback ducked ' + $store.convoSound.output().ducks + '× · re-buffered ' + $store.convoSound.output().rebuffers + '× · output reopened ' + $store.convoSound.output().reopened + '×' + ($store.convoSound.output().phone ? ' · mode ' + ($store.convoSound.output().mode || 'not chosen') + ' (' + $store.convoSound.output().mode_source + ')' : '')"></p></template>
+  <template x-if="$store.convo?.settings?.developer_mode"><p class="convo-sound-dev">Guard <span x-text="$store.convoSound.meter().state || 'idle'"></span> · <span x-text="$store.convoSound.meter().withheld ? 'withheld' : 'released'"></span> · voicing <span x-text="$store.convoSound.meter().voiced ? 'voiced' : 'not voiced'"></span></p></template>
+  <div class="convo-sound-actions">
+    <button type="button" class="button" @click="$store.convoSound.useAsDefault()">Use as default</button>
+    <button type="button" class="button" x-show="Object.keys($store.convoSound.own || {}).length" @click="$store.convoSound.reset()">Use the defaults here</button>
+  </div>
+  <p class="convo-sound-note" x-show="$store.convoSound.message" x-text="$store.convoSound.message"></p>
+  <p class="convo-sound-error" role="alert" x-show="$store.convoSound.error" x-text="$store.convoSound.error"></p>
+</section>
+</template>
+</div>
+<style>
+.convo-drawer{max-height:62%;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--color-border);border-radius:12px;background:var(--color-panel);padding:.6rem .7rem;display:flex;flex-direction:column;gap:.6rem}
+.convo-sound-panel{display:flex;flex-direction:column;gap:.55rem;font-size:.82rem;color:var(--color-text)}
+.convo-sound-row{display:flex;flex-direction:column;gap:.3rem;min-width:0}
+.convo-sound-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem}
+.convo-sound-head label,.convo-sound-line label{font-weight:600}
+.convo-sound-value,.convo-sound-line output{font-variant-numeric:tabular-nums}
+.convo-sound-track{position:relative;height:28px}
+.convo-sound-bar{position:absolute;left:0;right:0;top:9px;height:10px;border-radius:5px;background:var(--color-border);overflow:hidden}
+.convo-sound-fill{position:absolute;inset:0;transform-origin:left center;background:var(--color-text);opacity:.45;transition:transform .07s linear}
+.convo-sound-fill[data-voiced=true]{opacity:.85}
+.convo-sound-withheld{position:absolute;right:0;top:0;bottom:0;width:6px;background:repeating-linear-gradient(45deg,var(--color-text) 0 2px,transparent 2px 4px)}
+.convo-sound-track input[type=range]{position:absolute;inset:0;width:100%;height:28px;margin:0;background:transparent;accent-color:var(--color-text);cursor:pointer}
+.convo-sound-line{display:grid;grid-template-columns:7.5rem 1fr 3rem;align-items:center;gap:.5rem}
+.convo-sound-line input[type=range]{width:100%;margin:0}
+.convo-sound-line select{min-height:36px;background:var(--color-input,var(--color-background));color:var(--color-text);border:1px solid var(--color-border);border-radius:8px;padding:.3rem .5rem;font:inherit;grid-column:2 / span 2}
+.convo-sound-readout,.convo-sound-hint,.convo-sound-note,.convo-sound-dev{margin:0;line-height:1.4}
+.convo-sound-hint,.convo-sound-dev{opacity:.85}
+.convo-sound-echo{font-weight:600}
+.convo-sound-error{margin:0;color:var(--color-error,var(--color-text))}
+.convo-sound-actions{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.convo-sound-actions .button{min-height:36px}
+.convo-sound :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+.convo-sound-title{font-weight:600}
+.convo-sound-outbar{position:relative;top:0;height:8px}
+.convo-sound-wide{grid-column:1 / -1}
+.convo-sound-processing,.convo-sound-picture{border:1px solid var(--color-border);border-radius:8px;padding:.4rem .6rem;margin:0}
+.convo-sound-picture{display:grid;gap:.4rem}.convo-sound-picture legend{font-weight:600;padding:0 .3rem}
+.convo-sound-processing legend{font-weight:600;padding:0 .3rem}
+.convo-sound-switch{display:grid;grid-template-columns:60% 1fr;align-items:center;min-height:40px}.convo-sound-switch label.toggle{display:inline-block;flex:none}.convo-sound-switch input:focus-visible + .toggler{outline:2px solid var(--color-primary);outline-offset:2px}
+.convo-sound-recordings{margin:0;padding-left:1rem;display:flex;flex-direction:column;gap:.2rem}
+.convo-sound-recordings li{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+@media(max-width:600px){.convo-sound-line{grid-template-columns:1fr 3rem}.convo-sound-line label{grid-column:1 / -1}.convo-sound-line select{grid-column:1 / -1}.convo-sound-actions .button{min-height:44px}}
+@media(prefers-reduced-motion:reduce){.convo-sound-fill{transition:none}}
+</style>
+</body></html>

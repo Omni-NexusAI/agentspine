@@ -1,0 +1,36 @@
+<div
+  class="right-canvas-surface-panel convo-diagnostics-canvas-surface"
+  data-surface-id="convo-diagnostics"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('convo-diagnostics'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('convo-diagnostics')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('convo-diagnostics')).toString()"
+  x-effect="$store.convoDiagnostics && $store.convoDiagnostics.setDockedVisible(!!$store.rightCanvas?.isSurfaceVisible('convo-diagnostics'))"
+>
+  <template x-if="$store.rightCanvas?.isSurfaceMounted('convo-diagnostics')">
+    <x-component path="/plugins/_convo/webui/diagnostics.html" mode="canvas"></x-component>
+  </template>
+</div>
+<style>
+/* Convo's pop-out window frame (webui/floating-window.js builds it on <body>). It lives here because this file is loaded with
+   the canvas, before any window opens. Colours come from host theme tokens; position and z-index are also set inline. */
+.convo-diag-window{position:fixed;z-index:4000;display:flex;flex-direction:column;box-sizing:border-box;min-width:0;background:var(--color-panel);color:var(--color-text);border:1px solid var(--color-border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);overflow:hidden;font:inherit}
+.convo-diag-window-bar{display:flex;align-items:center;gap:.25rem;padding:.3rem .45rem;border-bottom:1px solid var(--color-border);background:var(--color-background);cursor:move;user-select:none;touch-action:none;flex-shrink:0}
+.convo-diag-window-title{flex:1 1 auto;min-width:0;margin:0;font-size:.92rem;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo-diag-window-icon{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:0;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.convo-diag-window-icon:hover{background:var(--color-background-hover,rgba(127,127,127,.15))}
+.convo-diag-window-icon[data-drag-handle]{cursor:move;touch-action:none}
+.convo-diag-window-icon .material-symbols-outlined{font-size:1.2rem}
+.convo-diag-window-body{position:relative;flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}
+.convo-diag-window-body>x-component{display:block}
+.convo-diag-window-resize{position:absolute;right:2px;bottom:2px;display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:0;border-radius:6px;background:var(--color-panel);color:var(--color-text);cursor:nwse-resize;touch-action:none}
+.convo-diag-window-resize .material-symbols-outlined{font-size:1.1rem}
+.convo-diag-window :focus-visible{outline:2px solid var(--color-text);outline-offset:2px}
+/* Narrow screens: a bottom sheet, no dragging (the DOM layer removes the inline geometry). */
+.convo-diag-window.is-sheet{left:0;right:0;bottom:0;top:auto;width:auto;height:min(62vh,560px);border-radius:14px 14px 0 0;border-bottom:0}
+.convo-diag-window.is-sheet .convo-diag-window-bar{cursor:default}
+.convo-diag-window.is-sheet [data-drag-handle],.convo-diag-window.is-sheet .convo-diag-window-resize{display:none}
+.convo-diag-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media (prefers-reduced-motion:reduce){.convo-diag-window,.convo-diag-window *{transition:none!important;animation:none!important}}
+</style>
