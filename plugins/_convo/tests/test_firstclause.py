@@ -21,6 +21,19 @@ STREAM = [('Sure, ', .1), ('here is the first part ', .1), ('of the answer you a
           ('The second sentence closes the reply and is long enough to stand alone as a phrase.', .1)]
 
 
+class LastSentence(unittest.TestCase):
+    def test_the_last_sentence_of_a_reply_in_any_script(self):
+        for text, last in (('First this. Then that. Shall I hand it over?', ' Shall I hand it over?'), ('Shall I hand it over?', 'Shall I hand it over?'),
+                           ('It costs 3.50. Shall I, Dr. Smith?', ' Shall I, Dr. Smith?'), ('You said "wait." Shall I go on? ', ' Shall I go on? '),
+                           ('先平整地面。然后搭架子。要我交给主聊天吗？', '要我交给主聊天吗？'), ('まず地面をならします。「次に枠です。」引き渡しますか？', '引き渡しますか？'),
+                           ('पहले ज़मीन समतल करें। क्या मैं इसे सौंप दूँ?', ' क्या मैं इसे सौंप दूँ?'), ('أولا نسوي الأرض. هل أسلمها؟', ' هل أسلمها؟'),
+                           ('', ''), ('   ', '   '), ('no mark at all', 'no mark at all'), ('One here. Two', ' Two'),
+                           ('First this. Shall I hand it over? 🙂', ' Shall I hand it over? 🙂'), ('First this. Shall I? **', ' Shall I? **'), ('要我交给主聊天吗？😊', '要我交给主聊天吗？😊'), ('🙂', '🙂')):
+            lead, end = module.last_sentence(text)
+            self.assertEqual((lead + end, end), (text, last))
+        self.assertEqual([module.wordless(text) for text in ('', ' ', '🙂', '***', '…?!', 'a', '吗', 'हाँ', '3')], [True] * 5 + [False] * 4)
+
+
 class ShortFirstSentence(unittest.TestCase):
     def split(self, *chunks):
         return Rule.split(self, *chunks, min_words=module.FIRST_WORDS)

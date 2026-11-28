@@ -526,12 +526,19 @@ async def answer(payload: dict):
     tokens = payload.get("max_tokens")
     body = {"model": role["model"], "messages": messages, "stream": True,
             "max_tokens": tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and 64 <= tokens <= 8192 else 1024}
+    think = payload.get("thinking_on")
+    if think is not None and not convo_tools.thinking_on_valid(think):
+        raise ContractError("Unknown thinking request")
     if local_server(url):
-        # A voice answer is spoken at once: a model that thinks first spends the answer budget on reasoning nobody hears.
+        # A voice answer is spoken at once: a model that thinks first spends the answer budget on reasoning nobody hears, so it is
+        # asked not to unless the user's Reasoning choice (or the model's own think call) asks for thinking (`thinking_on`).
         # llama.cpp and vLLM read this; a server that does not know it ignores it. Never sent to a cloud provider.
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+        body["chat_template_kwargs"] = {"enable_thinking": think is not None}
         # The server's own count of the request's tokens (and how many it reused from its cache) calibrates Convo's size estimate.
         body["stream_options"] = {"include_usage": True}
+    elif think is not None:
+        # A provider outside your machines, asked to think in the way the connection check measured that it takes.
+        body.update(copy.deepcopy(think))
     elif payload.get("thinking_off") is not None:
         # A provider outside your machines, asked not to think in the one way Test connection measured that it accepts.
         if payload["thinking_off"] not in convo_tools.THINKING_OFF:

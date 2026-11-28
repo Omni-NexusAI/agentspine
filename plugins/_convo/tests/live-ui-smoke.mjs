@@ -62,7 +62,7 @@ try {
     const hotkeys = await page.eval(`(async () => { [...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Conversation').click(); await new Promise(r => setTimeout(r, 300)); const rows = [...document.querySelectorAll('.convo-hotkey')]; const button = rows.find(r => /Mute or unmute/.test(r.textContent))?.querySelector('[data-hotkey]'); button?.click(); await new Promise(r => setTimeout(r, 200)); return { rows: rows.length, reading: button?.textContent.trim(), pressed: button?.getAttribute('aria-pressed') }; })()`);
     await page.key('Escape'); await sleep(300);
     const recorded = await page.eval(`(() => { const s = Alpine.store('convoSetup'); return { recording: s.ui.hotkeys.recording || '', dirty: s.dirty, open: !!document.querySelector('.convo-tabs'), mute: document.querySelector('[data-hotkey=mute]')?.textContent.trim() }; })()`);
-    check('the Hotkeys card lists every action and records one combination at a time', hotkeys.rows === 10 && hotkeys.pressed === 'true' && /Press the keys/.test(hotkeys.reading || '') && !recorded.recording && !recorded.dirty && recorded.open, JSON.stringify({ hotkeys, recorded }));
+    check('the Hotkeys card lists every action and records one combination at a time', hotkeys.rows === 11 && hotkeys.pressed === 'true' && /Press the keys/.test(hotkeys.reading || '') && !recorded.recording && !recorded.dirty && recorded.open, JSON.stringify({ hotkeys, recorded }));
     // The tunables (speech gate included) are in the developer diagnostics panel; the Advanced tab holds the two modes as switches.
     await page.eval(`[...document.querySelectorAll('.convo-tabs button')].find(b => b.textContent.trim() === 'Advanced').click()`);
     await sleep(500);

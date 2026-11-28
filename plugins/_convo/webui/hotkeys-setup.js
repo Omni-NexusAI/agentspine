@@ -1,9 +1,10 @@
-import { ACTIONS, DEFAULT_HOTKEYS, SECOND_TOGGLE, actionLabel, altGraph, comboLabel, comboOf, comboOwner, comboProblem, keyOf, modifiersOf, recording } from '/plugins/_convo/webui/hotkeys.js';
+import { ACTIONS, DEFAULT_HOTKEYS, PLANNING, SECOND_TOGGLE, actionLabel, altGraph, comboLabel, comboOf, comboOwner, comboProblem, keyOf, modifiersOf, recording } from '/plugins/_convo/webui/hotkeys.js';
 
 // The Hotkeys card (hotkeys-field.html, Settings -> Conversation). Methods only (see compose in setup-store.js); `this` is the shared
 // settings store, transient view state goes in this.ui.hotkeys: {recording (the row), pending (the modifiers held so far), notes}.
 // A row's button records the next combination into the shared draft (saved by the one Save). Only a usable one that no other row has is
-// taken; anything else is answered in words beside the row and the recording goes on. The older `hotkey` setting is one more row.
+// taken; anything else is answered in words beside the row and the recording goes on. The older `hotkey` setting is one more row, and so
+// is planning mode's (`planning_hotkey`).
 const SECOND_DEFAULT = 'Ctrl+Shift+Space';
 let release = null;                                        // ends the recording in progress (its listeners)
 
@@ -12,9 +13,10 @@ export const hotkeysSetup = {
         if (!this.config) return [];
         const rows = ACTIONS.map(action => ({ ...action, hint: action.hint || '' }));
         rows.splice(1, 0, { id: SECOND_TOGGLE, label: actionLabel(SECOND_TOGGLE), hint: 'The shortcut from before there were more; both work.' });
+        rows.push({ id: PLANNING, label: actionLabel(PLANNING), hint: 'While planning, nothing is started, changed or saved without your yes.' });
         return rows;
     },
-    hotkeyValue(id) { return String((id === SECOND_TOGGLE ? this.config?.hotkey : this.config?.hotkeys?.[id]) || ''); },
+    hotkeyValue(id) { return String((id === SECOND_TOGGLE || id === PLANNING ? this.config?.[id] : this.config?.hotkeys?.[id]) || ''); },
     hotkeyDefault(id) { return id === SECOND_TOGGLE ? SECOND_DEFAULT : DEFAULT_HOTKEYS[id] || ''; },
     hotkeyRecording(id) { return this.ui?.hotkeys?.recording === id; },
     // What the row's button reads: the combination, "Off", or what to do while it records.
@@ -30,14 +32,14 @@ export const hotkeysSetup = {
     hotkeyNote(id) { return this.ui?.hotkeys?.notes?.[id] || ''; },
     hotkeySay(id, text) { this.ui.hotkeys.notes = { ...(this.ui.hotkeys.notes || {}), [id]: text }; },
     hotkeySet(id, value) {
-        if (id === SECOND_TOGGLE) this.config.hotkey = value; else this.config.hotkeys = { ...this.config.hotkeys, [id]: value };
+        if (id === SECOND_TOGGLE || id === PLANNING) this.config[id] = value; else this.config.hotkeys = { ...this.config.hotkeys, [id]: value };
         this.hotkeySay(id, ''); this.message = '';
     },
     // Why a combination cannot be this row's, in words ('' when it can).
     hotkeyRefusal(id, value) {
         const problem = comboProblem(value);
         if (problem) return problem;
-        const owner = comboOwner(this.config?.hotkeys, this.config?.hotkey, id, value);
+        const owner = comboOwner(this.config?.hotkeys, this.config?.hotkey, id, value, this.config?.planning_hotkey);
         return owner ? `${comboLabel(value)} is already used for “${actionLabel(owner)}”.` : '';
     },
     hotkeyReset(id) {

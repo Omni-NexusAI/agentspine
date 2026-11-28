@@ -1,0 +1,31 @@
+<html>
+<head>
+  <title>Steering</title>
+</head>
+<body>
+  <div x-data>
+    <template x-if="config">
+      <div>
+        <div class="section-title">Steering</div>
+        <div class="section-description">What a message you send while the agent works does. Each chat can choose differently beside the composer.</div>
+        <div class="field">
+          <div class="field-label">
+            <div class="field-title">New messages during a run</div>
+            <div class="field-description" x-show="config.mode === 'automatic'">They go in at the agent's next step. The agent decides by what you say: take it in now, do it afterwards, or stop.</div>
+            <div class="field-description" x-show="config.mode === 'steer'">They go in at the agent's next step and are worked in right away.</div>
+            <div class="field-description" x-show="config.mode === 'queue'">They wait until the run is done, as Agent Zero does by itself.</div>
+          </div>
+          <div class="field-control">
+            <select x-model="config.mode" x-init="if (!['automatic', 'steer', 'queue'].includes(config.mode)) config.mode = 'automatic'">
+              <option value="automatic">Automatic</option>
+              <option value="steer">Steer</option>
+              <option value="queue">Queue</option>
+            </select>
+          </div>
+        </div>
+        <div class="section-description">In the chat: /steer, /later and /interrupt with a message. Ctrl+Enter steers and Alt+Enter queues, whatever the choice.</div>
+      </div>
+    </template>
+  </div>
+</body>
+</html>

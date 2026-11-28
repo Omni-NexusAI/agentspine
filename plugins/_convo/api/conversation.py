@@ -39,6 +39,113 @@ def assistant_name(config, host, target):
     return name or 'Convo'
 
 
+def steering_on(m):
+    """Whether a change to a running task goes in at its next step (the Steering plugin is on) or interrupts it. Never fails a read."""
+    try:
+        return importlib.import_module(m.__package__ + '.convo_steering').available()
+    except Exception:
+        return False
+
+
+def plans(m, store):
+    return importlib.import_module(m.__package__ + '.convo_planning').of(store)
+
+
+def plan_view(m, store, target):
+    """The conversation's plan for the panel, or None. Never fails a read."""
+    try:
+        return plans(m, store).view(target)
+    except Exception:
+        return None
+
+
+def modes_view(m, s, target):
+    """The conversation's Permissions and Reasoning menus for the panel (convo_voice_modes), with what the conversation model can be asked to
+    think (convo_tools.reasoning_offer, from what the connection check measured) and the kinds of work answered "always". Never fails a read."""
+    try:
+        from urllib.parse import urlsplit
+        modes = importlib.import_module(m.__package__ + '.convo_voice_modes').of(s.store)
+        tools = importlib.import_module(m.__package__ + '.convo_tools')
+        contract = importlib.import_module(m.__package__ + '.convo_contract')
+        setup = importlib.import_module(m.__package__ + '.convo_setup')
+        config = m.settings()
+        role = config['roles']['conversation']
+        local = not role.get('remote') and contract.local_host(urlsplit(str(role.get('url') or '')).hostname or '')
+        record = tools.measured(setup.store.config_path().parent / 'data', role)
+        allowed = [{'tool': name, 'label': str(tools.CATALOG.get(name, {}).get('ask') or tools.LABEL.get(name) or name)} for name in modes.allowed()]
+        return {**modes.get(target, config), 'allowed': allowed, 'reasoning_offer': tools.reasoning_offer(record, local)}
+    except Exception:
+        return None
+
+
+MODE_ACTIONS = {'voice_mode_set', 'allowed_forget'}
+
+
+def mode_action(m, s, target, action, data):
+    """The panel's two menus (and Settings' list of remembered answers). A refusal answers with words."""
+    modes = importlib.import_module(m.__package__ + '.convo_voice_modes').of(s.store)
+    try:
+        if action == 'voice_mode_set':
+            permission, reasoning = data.get('permission'), data.get('reasoning')
+            modes.set(target, m.settings(), permission=permission if permission is not None else None,
+                      reasoning=reasoning if reasoning is not None else None)
+        else:
+            modes.forget(str(data.get('tool') or ''))
+        return {'ok': True, 'modes': modes_view(m, s, target)}
+    except ValueError as exc:
+        return {'ok': False, 'code': 'invalid', 'error': str(exc)[:200], 'modes': modes_view(m, s, target)}
+
+
+PLAN_ACTIONS = {'plan_start', 'plan_end', 'plan_save', 'plan_hand_over', 'plan_drop', 'plan_version'}
+
+
+def plan_action(m, s, target, action, data):
+    """The panel's plan buttons (and the hotkey). The journal decides what holds, so a voice session running in this conversation, on this
+    page or another, sees it with its next reply and its next tool call. Every one is the user's own press. A refusal answers with
+    words; a plan that changed meanwhile answers with the plan as it is now."""
+    kept = plans(m, s.store)
+    owner = voice_owner(m)
+    session = s.store.session(owner['session'], active=False) if owner and owner.get('target') == target else None
+    try:
+        if action == 'plan_start':
+            # `fresh`: the Plan button. It begins a new plan unless one is being worked on (a page that was not up to date): the one kept last
+            # is gone on with by its own button, never by the way.
+            new = data.get('new') is True or (data.get('fresh') is True and kept.open(target) is None)
+            begun, _ = kept.begin(target, str(data.get('topic') or ''), new=new, plan_id=str(data.get('id') or ''), session=session)
+            return {'ok': True, 'plan': kept.view(target), **({'taken': True} if begun.get('taken') else {})}
+        kept.settle()
+        plan = kept.get(str(data.get('id') or ''))
+        if plan is None or plan['target'] != target:
+            raise ValueError('That plan is no longer there')
+        job = None
+        if action == 'plan_version':
+            version = data.get('version')
+            return {'ok': True, 'text': kept.version(plan['id'], version if type(version) is int else 0), 'plan': kept.view(target)}
+        if action == 'plan_drop' and plan['status'] == 'handed' and data.get('status') in ('open', 'kept'):
+            raise ValueError(kept.HANDED)                      # (a page that was not up to date: its task runs, so it was not discarded)
+        if action == 'plan_save':
+            kept.write(plan['id'], data.get('text'), revision=data.get('revision'), by='user', topic=data.get('topic') or '',
+                       was=data.get('was') if isinstance(data.get('was'), str) else None)
+        elif action == 'plan_hand_over':
+            kept.check(plan)                               # before a chat is made for it
+            contract = importlib.import_module(m.__package__ + '.convo_contract')
+            chat = target
+            if target == contract.GLOBAL_SCOPE:
+                chat = str(data.get('chat') or '')
+                if chat:
+                    s.host.context(chat)
+                else:
+                    chat = s.host.new_chat('Voice tasks')['id']
+            job = kept.hand_over(plan['id'], chat, session=session)
+        else:
+            kept.end(plan['id'], 'dropped' if action == 'plan_drop' else 'kept', session=session)
+        if action != 'plan_save':
+            s.dispatcher.start()                       # what waited for the end of planning, and the plan itself when it was handed over
+        return {'ok': True, 'plan': kept.view(target), **({'job': job} if job else {})}
+    except ValueError as exc:
+        return {'ok': False, 'code': 'conflict' if str(exc) == kept.CHANGED else 'invalid', 'error': str(exc)[:200], 'plan': plan_view(m, s.store, target)}
+
+
 def module():
     root = Path(__file__).resolve().parent.parent
     prefix = "usr.plugins" if root.parent.parent.name == "usr" else "plugins"
@@ -244,7 +351,17 @@ class Conversation(ApiHandler):
         s.host.context(target)
         if action == "history":
             page = s.store.history_page(target, after=input.get("after", 0), tail=input.get("tail"), before=input.get("before"))
-            return {"ok": True, **page, "jobs": s.store.jobs(target), "assistant_name": assistant_name(m.settings(), s.host, target)}
+            jobs = s.store.jobs(target)
+            changes = {}
+            for change in s.store.steers([job["id"] for job in jobs if job["status"] in ("queued", "dispatching", "running")] or ["-"]):
+                changes[change["job"]] = change["status"]          # the newest change of each task still going on
+            return {"ok": True, **page, "jobs": [{**job, "change": changes[job["id"]]} if job["id"] in changes else job for job in jobs],
+                    "steering": steering_on(m), "plan": plan_view(m, s.store, target), "modes": modes_view(m, s, target),
+                    "assistant_name": assistant_name(m.settings(), s.host, target)}
+        if action in PLAN_ACTIONS:
+            return plan_action(m, s, target, action, input)
+        if action in MODE_ACTIONS:
+            return mode_action(m, s, target, action, input)
         if action in {"cancel_job", "steer_job"}:
             job = s.store.job(str(input.get("job_id", "")))
             if job["target"] != target:
@@ -252,9 +369,6 @@ class Conversation(ApiHandler):
             if action == "cancel_job":
                 s.dispatcher.cancel(job["id"])
             else:
-                text = str(input.get("text", "")).strip()
-                if not text or len(text) > 16000:
-                    raise ValueError("Provide a bounded steering instruction")
-                s.dispatcher.steer(job["id"], text)
+                return {"ok": True, "how": s.dispatcher.steer(job["id"], input.get("text", "")), "job": s.store.job(job["id"])}
             return {"ok": True, "job": s.store.job(job["id"])}
         raise ValueError("Unsupported Convo operation")

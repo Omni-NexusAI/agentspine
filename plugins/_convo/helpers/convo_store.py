@@ -12,6 +12,9 @@ import uuid
 from contextlib import contextmanager
 
 
+ADDED = "\n\nAdded by the user before the task started:\n"
+
+
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -159,12 +162,21 @@ class Store:
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, session TEXT NOT NULL, target TEXT NOT NULL, turn TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS notices(job TEXT PRIMARY KEY, session TEXT NOT NULL, turn TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS job_scope(job TEXT PRIMARY KEY, scope TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS job_steers(id TEXT PRIMARY KEY, job TEXT NOT NULL, target TEXT NOT NULL, session TEXT NOT NULL, turn TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, time REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, target TEXT NOT NULL, session TEXT NOT NULL, topic TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, written_by TEXT NOT NULL, upto INTEGER NOT NULL, allowed TEXT NOT NULL, own TEXT NOT NULL DEFAULT '[]', job TEXT NOT NULL, started REAL NOT NULL, updated REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS target_plans ON plans(target,status);
+        CREATE TABLE IF NOT EXISTS plan_versions(id INTEGER PRIMARY KEY, plan TEXT NOT NULL, text TEXT NOT NULL, written_by TEXT NOT NULL, time REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS versions_of_plan ON plan_versions(plan);
         CREATE TABLE IF NOT EXISTS memory_chapters(target TEXT NOT NULL, seq INTEGER NOT NULL, summary TEXT NOT NULL, covered TEXT NOT NULL, last_rowid INTEGER NOT NULL, revision INTEGER NOT NULL, stale INTEGER NOT NULL DEFAULT 0, time REAL NOT NULL, PRIMARY KEY(target, seq));
         CREATE TABLE IF NOT EXISTS memory_standing(target TEXT PRIMARY KEY, text TEXT NOT NULL, time REAL NOT NULL);
         """)
+        if 'own' not in {row[1] for row in self.db.execute('PRAGMA table_info(plans)')}:      # a journal of an earlier build of planning mode
+            self.db.execute("ALTER TABLE plans ADD COLUMN own TEXT NOT NULL DEFAULT '[]'")
         with self.transaction():
             # A process restart cannot determine whether an external side effect happened.
             self.db.execute("UPDATE jobs SET status='uncertain' WHERE status IN ('dispatching','running','cancel_requested')")
+            # A change still on its way is kept by the Steering plugin in its chat (as held); Convo no longer follows it.
+            self.db.execute("UPDATE job_steers SET status='dropped' WHERE status='waiting'")
             for row in self.db.execute("SELECT * FROM sessions WHERE active=1").fetchall():
                 self._finish_pending(dict(row), "restart")
             self.db.execute("UPDATE sessions SET active=0,epoch=epoch+1 WHERE active=1")
@@ -820,7 +832,8 @@ class Store:
             key = sid + ":" + request_key
             row = self.db.execute("SELECT * FROM jobs WHERE request_key=?", (key,)).fetchone()
             if row:
-                if row["prompt"] != prompt or row["target"] != target or row["turn"] != turn:
+                same = row["prompt"] == prompt or row["prompt"].startswith(prompt + ADDED)      # (the user may have added to it since)
+                if not same or row["target"] != target or row["turn"] != turn:
                     raise ValueError("Idempotency key reused for another job")
                 return dict(row)
             job = uuid.uuid4().hex
@@ -889,6 +902,62 @@ class Store:
             return [dict(r) for r in self.db.execute(
                 "SELECT * FROM jobs WHERE (target=? AND id NOT IN (SELECT job FROM job_scope)) OR id IN (SELECT job FROM job_scope WHERE scope=?) "
                 "ORDER BY rowid", (target, target))]
+
+    # ── Changes to work that is going on (`job_steers`; an older Convo ignores the table) ──
+    # status: added (the task had not started: it is in its text, so an older Convo has it too), waiting (passed to the run, not in yet), taken (in
+    # the run), interrupted (without the Steering plugin: Agent Zero's own interruption), follow_up (the run had ended: it became a
+    # task of its own), dropped (the run was stopped or failed, or Agent Zero restarted).
+    def steered(self, session_id, turn, target, text, status, *, job="", steer_id=""):
+        """Keep one change and journal it with the conversation that asked for it."""
+        steer_id = str(steer_id or uuid.uuid4().hex)
+        with self.transaction():
+            session = self.session(session_id, active=False)
+            if job:
+                session["target"] = self.scope_of(self.job(job))
+            self.db.execute("INSERT INTO job_steers VALUES(?,?,?,?,?,?,?,?)",
+                            (steer_id, job, target, session_id, turn, text, status, time.time()))
+            if status == "added":
+                self.db.execute("UPDATE jobs SET prompt=prompt||? WHERE id=?", (ADDED + text, job))
+            self._event(session, turn, "job.steered", {"steer_id": steer_id, "job_id": job, "chat": target, "how": status, "text": text[:400]})
+        return steer_id
+
+    def steer_status(self, steer_id, status):
+        """What became of a change that was waiting. False when it was settled already."""
+        with self.transaction():
+            row = self.db.execute("SELECT * FROM job_steers WHERE id=?", (steer_id,)).fetchone()
+            if not row or not self.db.execute("UPDATE job_steers SET status=? WHERE id=? AND status='waiting'", (status, steer_id)).rowcount:
+                return False
+            session = self.session(row["session"], active=False)
+            if row["job"]:
+                session["target"] = self.scope_of(self.job(row["job"]))
+            self._event(session, row["turn"], "job.steer_" + status, {"steer_id": steer_id, "job_id": row["job"], "chat": row["target"], "text": row["text"][:400]})
+            return True
+
+    def steers(self, job_ids=(), status=None):
+        """The changes of these jobs (all, when none are named), oldest first."""
+        with self.lock:
+            rows = [dict(row) for row in self.db.execute("SELECT * FROM job_steers ORDER BY rowid")]
+        wanted = set(job_ids or ())
+        return [row for row in rows if (not wanted or row["job"] in wanted) and (status is None or row["status"] == status)]
+
+    def follow_up(self, steer_id):
+        """A change the run could not take up any more becomes a task of its own in the same chat, so its answer is still said.
+        Returns the job, or None when the change was settled already."""
+        with self.transaction():
+            row = self.db.execute("SELECT * FROM job_steers WHERE id=? AND status='waiting'", (steer_id,)).fetchone()
+            if not row:
+                return None
+            session = self.session(row["session"], active=False)
+            scope = self.scope_of(self.job(row["job"])) if row["job"] else session["target"]
+            job = uuid.uuid4().hex
+            self.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,'queued','')",
+                            (job, row["session"] + ":steer:" + steer_id, row["session"], row["target"], row["turn"], row["text"]))
+            if row["target"] != scope:
+                self.db.execute("INSERT OR REPLACE INTO job_scope VALUES(?,?)", (job, scope))
+            self.db.execute("UPDATE job_steers SET status='follow_up' WHERE id=?", (steer_id,))
+            session["target"] = scope
+            self._event(session, row["turn"], "job.queued", {"job_id": job, "follows": row["job"], "steer_id": steer_id})
+        return self.job(job)
 
     def transition(self, job_id, expected, status, result=""):
         allowed = {"queued": {"dispatching", "cancelled"}, "dispatching": {"running", "queued", "uncertain", "failed"}, "running": {"completed", "failed", "cancel_requested", "uncertain"}, "cancel_requested": {"cancelled", "completed", "uncertain"}}

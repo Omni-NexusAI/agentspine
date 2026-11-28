@@ -19,6 +19,9 @@ export const ACTIONS = [
 ];
 // The setting `hotkey` from before this table: one more combination for the same action, kept because it is saved and known.
 export const SECOND_TOGGLE = 'hotkey';
+// Planning mode on or off: a setting of its own (an older Convo refuses a table with an action it does not know).
+export const PLANNING = 'planning_hotkey';
+export const PLANNING_LABEL = 'Planning mode on or off';
 export const DEFAULT_HOTKEYS = { toggle_conversation: 'Alt+Shift+C', mute: 'Alt+Shift+M', push_to_talk: 'Alt+Shift+Space', dictate: 'Alt+Shift+D',
     stop_reply: 'Alt+Shift+S', open_panel: '', open_settings: '', run_action: '', dismiss_action: '' };
 
@@ -63,14 +66,15 @@ export function comboProblem(value) {
     return '';
 }
 
-// The action (other than `id`) that already uses a combination, or ''. `hotkeys` is the setting; `second` the older `hotkey` one.
-export function comboOwner(hotkeys, second, id, value) {
+// The action (other than `id`) that already uses a combination, or ''. `hotkeys` is the setting; `second` the older `hotkey` one;
+// `planning` the one for planning mode.
+export function comboOwner(hotkeys, second, id, value, planning = '') {
     const wanted = normalCombo(value);
     if (!wanted) return '';
-    const rows = [...ACTIONS.map(action => [action.id, hotkeys?.[action.id]]), [SECOND_TOGGLE, second]];
+    const rows = [...ACTIONS.map(action => [action.id, hotkeys?.[action.id]]), [SECOND_TOGGLE, second], [PLANNING, planning]];
     return rows.find(([other, combo]) => other !== id && normalCombo(combo) === wanted)?.[0] || '';
 }
-export function actionLabel(id) { return id === SECOND_TOGGLE ? 'Start or stop the conversation (second)' : ACTIONS.find(action => action.id === id)?.label || id; }
+export function actionLabel(id) { return id === PLANNING ? PLANNING_LABEL : id === SECOND_TOGGLE ? 'Start or stop the conversation (second)' : ACTIONS.find(action => action.id === id)?.label || id; }
 
 const KEY_LABELS = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
     Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`', PageUp: 'Page up', PageDown: 'Page down',
@@ -104,12 +108,14 @@ function secondMatches(value, event) {
     if (MODIFIERS.some(name => !!event[name.toLowerCase() + 'Key'] !== parts.includes(name))) return false;
     return (key === 'Space' && event.code === 'Space') || (!!key && String(event.key ?? '').toLowerCase() === key.toLowerCase());
 }
-// The action a press means under these settings ({hotkeys, hotkey}), or ''.
+// The action a press means under these settings ({hotkeys, hotkey, planning_hotkey}), or ''.
 export function actionFor(event, settings) {
     const combo = comboOf(event);
     const hotkeys = settings?.hotkeys && typeof settings.hotkeys === 'object' ? settings.hotkeys : {};
     const action = combo ? ACTIONS.find(({ id }) => normalCombo(hotkeys[id]) === combo && !comboProblem(hotkeys[id]))?.id : '';
     if (action) return action;
+    const planning = settings?.[PLANNING];
+    if (combo && normalCombo(planning) === combo && !comboProblem(planning)) return 'planning';
     const second = settings?.[SECOND_TOGGLE];
     return (combo && normalCombo(second) === combo) || (!altGraph(event) && secondMatches(second, event)) ? 'toggle_conversation' : '';
 }

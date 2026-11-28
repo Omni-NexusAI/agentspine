@@ -261,7 +261,7 @@ class Rounds(Loop):
         """The system check and the clock are Convo's own readings, not someone else's text: a hand-over or a timer the user asked
         for may follow them in the same reply (2026-11-25: a graphics-card question the check could not answer was never handed
         over). A web result in the same reply still closes it."""
-        self.assertEqual([name for name in tools.CATALOG if tools.own_reading(name)], ['system_status', 'world_time'])
+        self.assertEqual([name for name in tools.CATALOG if tools.own_reading(name)], ['system_status', 'world_time', 'think'])
         self.assertFalse(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'world_time', 'result': 'y'}]}]))
         self.assertTrue(tools.results_in([{'tools': [{'name': 'system_status', 'result': 'x'}, {'name': 'web_search', 'result': 'y'}]}]))
 
@@ -1038,8 +1038,10 @@ class SettingsByVoice(Loop):
 
     def test_only_the_listed_settings_exist_and_it_is_work_that_needs_the_users_request(self):
         self.assertEqual(list(tools.CATALOG['change_setting']['arguments']['setting']['enum']),
-                         ['microphone', 'voice', 'camera', 'answer_length', 'spoken_updates', 'developer_mode', 'diagnostic_events', 'rejected_replies'])
-        self.assertEqual(set(voice_tools.SAVED_SETTINGS) | set(voice_tools.SESSION_SETTINGS), set(tools.CATALOG['change_setting']['arguments']['setting']['enum']))
+                         ['microphone', 'voice', 'camera', 'reasoning', 'answer_length', 'spoken_updates', 'developer_mode', 'diagnostic_events', 'rejected_replies'])
+        # reasoning is kept with the conversation (convo_voice_modes), like the Reasoning menu; its permission mode is never changed by voice.
+        self.assertEqual(set(voice_tools.SAVED_SETTINGS) | set(voice_tools.SESSION_SETTINGS) | set(voice_tools.REASONING_WORDS and ('reasoning',)),
+                         set(tools.CATALOG['change_setting']['arguments']['setting']['enum']))
         for path, _ in voice_tools.SAVED_SETTINGS.values():                       # never a permission, a consent, a key, an address or a model
             self.assertIn(path, ('response_detail', 'spoken_updates', 'developer_mode', 'show_diagnostic_events', 'show_rejected_responses'))
         # It is "work" (convo_policy.authorize): never in a tool's follow-up, and outside a conversation the user started only on

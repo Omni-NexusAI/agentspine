@@ -394,6 +394,8 @@ export function memoryEventText(item) {
         case 'warm': return item?.ok ? `The new start was warmed up${slot}${Number.isFinite(item?.ms) ? ` in ${item.ms} ms` : ''}`
             : `Warm-up ${reason === 'stopped' ? 'stopped: you started speaking' : 'failed'}${slot}; the next reply reads the start itself`;
         case 'fallback': return FALLBACKS[reason] || `Fallback (${reason || 'unknown'})`;
+        case 'plan': return item?.ok ? `The plan was brought up to date${Number.isFinite(item?.ms) ? ` in ${item.ms} ms` : ''}`
+            : `The plan was not brought up to date (${reason === 'stopped' ? 'you started speaking' : 'nothing usable came'}); tried again in the next quiet moment`;
         default: return item?.ok ? 'A chapter was written and swapped in' : `Compaction deferred (${reason || 'unknown'}); the turns stay word for word`;
     }
 }

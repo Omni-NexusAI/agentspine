@@ -385,6 +385,142 @@
   for it in table `job_scope` (older code ignores the table and still dispatches the job): its events, its place in the list and
   its completion notice stay with that conversation, also in a later voice session. A chat's own conversation is unchanged, and
   may hand a task to a named chat the same way.
+- A change to work that is going on (`steer_task`, the panel's Steer; `Dispatcher.steer`/`steer_chat`, table `job_steers`, which an older
+  Convo ignores): the Steering plugin (`plugins/steering`, optional; `helpers/convo_steering.py` is the only place that imports it) keeps
+  it for the next step of the run, `caller=True`, so Convo says what became of it. A task still `queued` gets it into its own text
+  (`ADDED`, so an older Convo starts it with the change, too; the request key still names the same task); a running one, or whatever a chat's
+  agent is doing, at its next step; without the plugin a running task is interrupted as before, the button reads "Interrupt", and the
+  voice tool is not offered (`CONDITIONAL` `steering`, read once per voice session). Followed on the dispatcher's tick (`_follow_steers`):
+  `taken`; too late for a run that ended normally = `follow_up`, a task of its own in the same chat and conversation, so its answer is
+  said; run stopped, failed or lost = `dropped` (what the plugin reports as `stopped` never becomes a task). No other task starts in a chat
+  whose last run left a change unsettled (`_unsettled`, `UNSETTLED_SECONDS` at most, counted from the end of that run, the chat's own work
+  included: `_at_work`), or it would go into that task's run. Journal: `job.steered {how}`, `job.steer_taken`, `job.steer_dropped`. Which work
+  is meant: the named chat, else the only task going on, else the one the model's words point at (a lookup of an identifier, as `_cancel`),
+  else what the conversation's chat is doing; several and nothing to tell them apart = the user is asked. `steer_task` is `work`
+  (`convo_policy.authorize`) and not in the small set until measured. `Host.available`/`begin` treat a chat whose agent works unseen (a
+  sub-agent, a scheduled task: `convo_steering.busy`) as busy. Tests: `test_steer_task.py`, `steer-panel.test.mjs`.
+- Permissions and reasoning (`helpers/convo_voice_modes.py`, the panel's two menus beside the chat's name): kept per conversation in the
+  journal (`voice_modes`: '' = follows Settings' `permission_default` / `reasoning_default`, so choosing one never fixes the other; an older
+  Convo ignores the table). Panel actions `voice_mode_set`, `allowed_forget`; `history` carries `modes` (with `reasoning_offer` and the kinds
+  answered "always").
+  - **Permission** goes to `convo_policy.authorize` (`permission`, `remembered`): "ask" is the rule as it was; "allow", or a remembered
+    "always" for that kind (`voice_allowed`, `REMEMBERABLE`: never a change of mode or a plan's hand-over), runs work the model calls in a
+    conversation the user started without the question, but never while someone else's text is in the request (`untrusted`: then the
+    built-in rule decides), never in a follow-up after outside text, never outside a conversation the user started. Planning's floor comes
+    after it and is never loosened. Changed only in the panel: no voice and no page text can loosen it. "Always" is the reader's own word
+    (`READER` ALWAYS, `parse_reading`) or the card's Always button (`always` on `action.pending` says when it may be offered).
+  - **Outside text** (`convo_tools.results_in`): only a look-up's result is someone else's text; what an action Convo carried out says about
+    itself ("the task is queued") and Convo's own readings (`own`) are not, so a remembered kind is not asked about again after its own
+    confirmation.
+  - **Reasoning**: "auto" = no thinking, and the `think` tool (`own`, group `always`, offered only under Auto with a model that can think)
+    lets the model choose to think: the passes after it ask for that level. "off" never; "low"/"medium"/"high" every pass. A pass that thinks
+    carries `thinking_on` (only shapes `convo_tools.thinking_on_valid` accepts; the gateway refuses anything else) and `THINKING_BUDGET` more
+    tokens, so the thinking never eats the spoken answer. On the user's own server it is the chat template's `enable_thinking`; elsewhere the
+    level field the connection check found (`convo_setup.probe_reasoning`: `effort`, `thinking_on`; only reasoning that comes apart from the
+    answer counts, since reasoning written into the answer would be spoken). Not measured = nothing is sent (the menu says so). By voice:
+    `change_setting` `reasoning` (kept with the conversation; runs at once while planning, like the voice's speed).
+
+- Planning mode (`helpers/convo_modes.py` the floor and switching, `helpers/convo_planning.py` the plan): an open row in the journal's
+  table `plans` IS planning mode for that conversation (its target; `GLOBAL_SCOPE` has its own). One open plan per conversation, read from
+  the journal every time (`modes.on`), so it is the same on every page and survives a reload, a lost connection, a restart and stopping
+  voice; an older Convo ignores the table. Voice only: the chat's own agent is not planning.
+  - **The floor.** While a plan is open nothing that starts, changes or saves something runs without the user's yes to that one thing.
+    `modes.decide` is applied to every call that is not read-only, after `convo_policy.authorize` and any permission system
+    (`set_authorizer`), and only ever tightens: `run` becomes `confirm`; `refuse` stays; a tool's follow-up and any mode but a conversation
+    the user started refuse; the isolated ASKED reading (`voice_tools.asked`) does not get past it. Runs at once: `voice_speed`, and
+    `cancel_task` when the user's own words ask for that (ASKED; a verified request may be one for something else); both start nothing. Agreed to = runs: a yes
+    (`perform`), or a yes with a change (`granted`, `modes.agreed`: for one call, of that very kind of change of mode, a hand-over only with the
+    change in it (Convo adds the user's own words when the model left it out) and to another chat only when those words name it). A reply
+    that began while planning is held to the floor to its end, also when planning ends in it (`floor`); it asks one thing at most
+    (`may_ask`). A new tool that is not `read` is held by the same rule; the table in `tests/test_planning.py` (`Floor`) must name it.
+  - **A question about a plan** carries its id and what the plan was when it was asked (`about`, `stands`): it stands only while the plan is
+    still that (`voice_tools._moved_on`), else it is dropped, its card goes and the reply is told. One that the reply puts at its end (`last`)
+    can be answered only from the moment its last sentence PLAYS: that sentence is a speech request of its own
+    (`convo_firstclause.last_sentence`, held back while the reply streams; a mark or an emoji after it belongs to it, `wordless`), and the page's
+    playback receipt opens the question (`voice_tools.playing`; a page that sends none: after the time it takes, `_until_played`). Audio is sent
+    well ahead of the loudspeaker, so "sent" never counts as heard here: agreeing while the plan is read out is no answer, and the time to
+    answer begins with the question. Its answer's first sound (`first_sound`; the page says how long ago that was, `onset_s`) comes at least
+    `ANSWER_AFTER` later, and it is the very next thing that is answered: whatever else is admitted or answered takes the question away
+    (`unanswered`), and the next reply that says something is told (`missed`), so that it is asked again when it still fits. A finished task is
+    not told between any question and its answer (`convo.notice` is busy), and a timer, which is, takes this one away. One that could not be
+    spoken is answered by its card alone (`silent`).
+  - **Handing over has one way**: the final text is written, planning ends (`kept`), the plan is said, the user is asked, and their yes hands
+    over exactly that, at once (`_hand_over`; `_at_once`: a chat may have to be found or made for it, and what they say meanwhile does not lose
+    it; a plan that was opened again or changed in that moment is not handed over, `revision`, and nothing happens once Convo is off). Handing over a plan that is being worked on finishes it first (`_leave`; the chat and the change
+    they named stay with the question). The final text never holds the conversation: the reply waits for it at most `FINAL_WAIT`; a slower
+    one is written on in its own task (`finish_later`, `state['plan_finishing']`) while the conversation goes on and planning stays on, and the
+    watcher reads it out with the question at its end in the next quiet moment (`readout`, a turn of Convo's own, `plan.ready`); planning ends
+    there. Written by the conversation model on the user's own server it is stopped when the user speaks (`stoppable`, from `_stop_upkeep`) and
+    written again in the next quiet moment (`resume`); a plan the user moved away from meanwhile (another one begun, handed over or ended in
+    the panel) is not read out. Run in the panel waits for the whole text (nothing is said; the panel says how it ended). The model's call is not enough,
+    nor that some request was heard (`decide`): a yes, or their own words asking for it (ASKED `voice_mode:hand_over`). There used to be a
+    hand-over that was agreed to first and written up after the yes; everything said or pressed in that window needed a rule of its own, and
+    one review after another found one that was missing. Do not bring it back.
+    A plan whose task is cancelled or fails was not carried out: it is a kept one again (`Plans.settle`). Gone on with before its task has
+    started, the task is taken back with what was added to it (`Plans.begin`, `with_decisions`), else both versions would run; that takes the
+    user's word, too (`puts_away`).
+  - **The other ways in**, all closed: a search that got nothing is asked about, not handed over (`search_ask_first`); a question open from
+    before is dropped (`begin` resolves it; `voice_tools.pending` drops one that planning overtook when it was switched on in the panel or
+    on another page, by plan and start, never by a clock); tasks queued before, and any queued meanwhile without a yes (a change that came too
+    late, a task called for in the moment before), wait: `Dispatcher.held` -> `Plans.held`; only those in the plan's `allowed` start. A plan
+    that cannot be read holds nothing (a broken table must never stop every task) but leaves the floor at its last known answer.
+  - **On**: `voice_mode` (group `always`, so no switch removes it; not in the small set until measured: such a model is told that the panel ends
+    planning), Plan in the panel's Permissions menu (Ask when unsure or Allow without asking ends it, the plan kept) or the hotkey (`planning_hotkey`, beside the hotkey table because an older Convo refuses a table with
+    a key it does not know; one that clashes is off, never an unreadable settings file). The model may start it itself (also in a
+    follow-up): it only makes Convo more careful. In one pass it is carried out first, and it does not end the reply's look-ups.
+    **Off**: only on the user's word: their own utterance, read alone, says so (ASKED `voice_mode`), else they are asked; or the panel. The same
+    holds for putting a plan with something in it away for another one (`modes.puts_away`, ASKED `voice_mode:plan`); one with nothing
+    written is simply replaced. Earlier plans, handed-over ones too, are found by exactly what they are
+    called (`Plans.match`, `same`: the same words in the same order; a similar name is another plan's name; the model, which understands what is
+    meant, is told the names when a new one was begun) and listed in the panel (`earlier`: what was kept comes first). Plan in the menu begins a new plan (`fresh`), unless one is being worked on; "Start a new plan" there keeps the one in hand.
+  - **Finishing** (`voice_mode` conversation, `plan` finish, the default): the final plan is written by one request (bounded,
+    `FINAL_SECONDS`; told what the user has just said; when it fails the kept one, with what was said since it was written added as it was said,
+    `SINCE`, `Plans.unwritten`),
+    planning ends (`kept`), the model says the plan and asks whether to hand it over: that
+    question is an ordinary pending one (`voice_mode` hand_over); yes = one task with the whole plan (`handed`), no = it stays `kept` and can be
+    gone on with, handed over later or copied. `keep` ends without all that. Handing over is `work` (`modes.kind`) and happens once
+    (`Plans.hand_over`: one transaction, only from open or kept); the model may name another kept plan (`topic`), a chat (checked before anyone
+    is asked) and a change made with the yes (in the task and in the plan).
+  - **Who writes the plan** (`helpers/convo_plan_writer.py`, settings `plan_writer` and `main_plan_consent`): "auto" = Agent Zero's main chat
+    model when it runs on the user's own machines or they allowed it to receive the planning conversation, and it is not the conversation
+    model itself (same name at the same address); otherwise the conversation model. "main" never widens who receives the conversation (the
+    same consent), "conversation" is always the conversation model. Convo cannot tell how capable a model is, only where it runs and whether
+    it is the same one; the Conversation card's "Plans" row says who writes them and why. The main chat model gets one request per writing
+    (`Host.write_with_main`: the instruction as system text, the conversation as plain text, newest part when long; no tools, no chat log
+    entry, no history), beside the conversation in its own task (`state['plan_task']`), never stopped when the user speaks.
+  - **The written plan** is kept up to date as the LAST step of the background upkeep (`_compaction`: `_chapters`, then `modes.keep`), never
+    before a chapter that is owed, stopped with it when the user speaks, whoever may write summaries (the conversation model hears the
+    conversation anyway). It is a request that begins like the conversation's own (`_upkeep_request`), on its slot. Every exchange on the
+    user's own server, every `KEEP_EVERY`-th on someone else's (by the main chat model: every exchange when it is on the user's machines,
+    every `KEEP_EVERY`-th otherwise); what is not a plan (`planning.tidy`) is not kept and not asked for again
+    before the next exchange (`KEEP_TRIES`). Only a whole answer replaces what is written: never one that does not say it is whole (`WHOLE`: the
+    ends that mean that; no `answer.done` is none of them; a server that names no reason is believed when nothing got shorter). One that
+    lost most of the plan is taken only when the next writing of the same text still says so an exchange later (`plan_shrank`), and a final one
+    when it says so twice (`insist`); its room grows with the plan (`MOST_TOKENS`). The lines the user wrote themselves are known (`own`): every
+    writing is told them, and one that leaves one out or changes it (`planning.missing`: word for word, a line of its own under its heading; what
+    was set aside is none) counts only when the model, asked once about exactly those lines, still says so and has touched no other one. Nothing is put back by force: whether the user has said otherwise since is for the model to
+    understand. Every text that was replaced stays findable (`plan_versions`: the newest `VERSIONS`, and the user's own last words however
+    old; discarding a plan removes them), and the panel puts one back. Revision check: an edit made meanwhile in the panel stands (`was`: a plan that was only ended or
+    named is no conflict). Developer view: memory events `plan`.
+  - **What a reply is told** (`_planning_text`): the partner's rules and the plan (bounded, `TOLD_LIMIT`) in the late part, frozen per turn like
+    the clock, so the held parallel reply is still promoted; the stable start and the tool list never change. More look-ups per reply
+    (`modes.ROUNDS`, `modes.BUDGET`). Voice starting in a conversation that is planning says so once (`_still_planning`), or the first
+    reply does when the user speaks first.
+  - Journal: `plan.started {how}`, `plan.ended {how}`, `plan.edited`, `plan.resumed`. Panel actions (`api/conversation.py` `plan_start`, `plan_save`
+    with a revision, `plan_end`, `plan_hand_over`, `plan_drop` with the status the page showed (one handed over meanwhile is not discarded),
+    `plan_version` to read a replaced text): each is the user's own press. Tests: `test_planning.py`, `plan-panel.test.mjs`.
+- `project_files` (`helpers/convo_files.py`, read-only): list, read and search the folder the chat's agent works in (its project, else the work
+  folder; `Host.work_folder`). Paths are resolved with their links and must stay inside; hidden names, what usually holds keys (by name) and
+  binaries are left out, and a line that looks like a key is replaced, in what is read and what is found. A folder that holds Agent Zero's
+  own `usr` is refused. Also what a link or junction inside the folder leads to decides. A private key written out over several lines is left
+  out whole, for as long as the lines are key text (a sentence that only mentions how one begins hides nothing). That is a help, not a
+  guarantee: a secret that looks like ordinary text cannot be told from it, so never call it one. Measured when the shapes were last
+  changed: 0.3 % of 117 000 lines of source and docs taken for one; made-up keys beside a name that says so always seen; standing alone 95 % of
+  those of letters and digits (24 characters and more), fewer with slashes in them, none of lower-case letters and digits only. No line
+  longer than `CHECK_LIMIT` reaches a pattern (a crafted file must not hold up the process). Bounded in size, files, depth and time; in a
+  thread. Offered as `project_files` (setting) says: `local` (default) only when everything the text goes through runs on the user's own
+  machines (the conversation model, the gateway, whoever writes the summaries), `on`, `off`; read once per voice session. What was looked up
+  is never part of what the classifier is told (`_recent_turns`). Tests: `test_files.py`.
 - A finished task's result (`_notice`): recorded in the notice's turn as a `task_status` use before anything is spoken, so the model
   knows it whether or not it could be said; asked for in at most two sentences, spoken through the reply's own speech queue (`_say`:
   requests of at most `MERGE_LIMIT` characters, never one long one; measured live 2026-11-24: 1100 characters in one request met the

@@ -158,7 +158,7 @@ def tool(turn, name, ok, result):
             _bump()
 
 
-MEMORY_KINDS = ('compaction', 'written', 'swap', 'warm', 'fallback')
+MEMORY_KINDS = ('compaction', 'written', 'swap', 'warm', 'fallback', 'plan')
 
 
 def compaction(target, outcome):
@@ -166,7 +166,8 @@ def compaction(target, outcome):
     'compaction' (a run that changed something: a chapter written and swapped in, rewritten or condensed; or deferred: stopped by
     speech, failed), 'written' (a chapter written and kept until its swap), 'swap' (a kept chapter swapped in; `slot` when pinned),
     'warm' (the new start warmed up: `ms`, `slot`; or stopped by speech or failed), 'fallback' (slots unknown, so one slot and
-    unpinned; or the chosen summary writer refused)."""
+    unpinned; or the chosen summary writer refused), 'plan' (the written plan of planning mode brought up to date: `ms`; or stopped
+    by speech, or nothing usable came)."""
     outcome = outcome if isinstance(outcome, dict) else {}
     kind = outcome.get('kind') if outcome.get('kind') in MEMORY_KINDS else 'compaction'
     entry = {'at': round(time.time(), 3), 'target': str(target or '')[:200], 'ok': bool(outcome.get('ok')), 'kind': kind,
